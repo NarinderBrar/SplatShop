@@ -186,6 +186,8 @@ class ViewerDebugStats {
       computeTileRasterPreviewStaticRamp?: number;
       computeTileRasterPreviewDrawOrder?: "coverage" | "far" | "near";
       computeTileRasterPreviewWindowMode?: "sampled" | "full";
+      computeTileRasterPreviewCoverageMode?: "sampled" | "full";
+      computeTileRasterPreviewTruncatedSplats?: number;
       computeTileRasterPreviewNearWindowMargin?: number;
       computeTileRasterPreviewSampleAlphaCompensation?: number;
       computeTileRasterPreviewRuntimeSampleAlphaCompensation?: number;
@@ -204,6 +206,12 @@ class ViewerDebugStats {
       computeTileRasterPreviewMotionDrawCoverageTarget?: number;
       computeTileRasterPreviewRuntimeDrawCoverageTarget?: number;
       computeTileRasterPreviewDrawCoverageAdaptive?: boolean;
+      computeRendererVisibility?: string;
+      computeTileOrderTiles?: number;
+      computeTileOrderTrackedTiles?: number;
+      computeTileOrderTruncatedSplats?: number;
+      computeTileOrderOverflowSplats?: number;
+      computeTileOrderOverflowTiles?: number;
     };
     const assetStats = splatCloud.asset.stats;
     const lines = [
@@ -214,7 +222,9 @@ class ViewerDebugStats {
       `Renderer requested: ${renderStats.rendererRequested}`,
       `Renderer effective: ${renderStats.rendererEffective}`,
       renderStats.rendererFallbackReason ? `Renderer fallback: ${renderStats.rendererFallbackReason}` : "",
-      renderStats.computeRendererEnabled ? `Compute renderer: ${renderStats.computeRendererPhase}` : "",
+      renderStats.computeRendererEnabled
+        ? `Compute renderer: ${renderStats.computeRendererPhase}${previewLimiterStats.computeRendererVisibility ? ` / ${previewLimiterStats.computeRendererVisibility}` : ""}`
+        : "",
       `Color mode: ${renderStats.colorMode}${renderStats.shNFileCount > 0 ? ` / shN files ${formatCount(renderStats.shNFileCount)} / codebook ${formatCount(renderStats.shNCodebookLength)} / bands ${formatCount(renderStats.shBands)} / coeffs ${formatCount(renderStats.shCoeffCount)} / palette ${formatCount(renderStats.shPaletteCount)}` : ""}`,
       renderStats.shRenderMode === "cpu"
         ? "SH render: CPU baked"
@@ -270,13 +280,13 @@ class ViewerDebugStats {
         ? `Compute work overflow: ${formatCount(renderStats.computeTileWorkQueueOverflowTiles)}`
         : "",
       renderStats.computeTileOrderEnabled
-        ? `Compute tile order: ${renderStats.computeTileOrderDispatched ? "yes" : "pending"} / buckets ${formatCount(renderStats.computeTileOrderBuckets)} / splats ${formatCount(renderStats.computeTileOrderSplats)} / ${formatMs(renderStats.lastComputeTileOrderMs)} ms`
+        ? `Compute tile order: ${renderStats.computeTileOrderDispatched ? "yes" : "pending"} / buckets ${formatCount(renderStats.computeTileOrderBuckets)} / tiles ${formatCount(previewLimiterStats.computeTileOrderTrackedTiles ?? 0)} of ${formatCount(previewLimiterStats.computeTileOrderTiles ?? 0)} / splats ${formatCount(renderStats.computeTileOrderSplats)}${(previewLimiterStats.computeTileOrderTruncatedSplats ?? 0) > 0 ? ` / truncated ${formatCount(previewLimiterStats.computeTileOrderTruncatedSplats ?? 0)}` : ""}${(previewLimiterStats.computeTileOrderOverflowSplats ?? 0) > 0 ? ` / overflow ${formatCount(previewLimiterStats.computeTileOrderOverflowSplats ?? 0)}` : ""}${(previewLimiterStats.computeTileOrderOverflowTiles ?? 0) > 0 ? ` / tile overflow ${formatCount(previewLimiterStats.computeTileOrderOverflowTiles ?? 0)}` : ""} / ${formatMs(renderStats.lastComputeTileOrderMs)} ms`
         : "",
       renderStats.computeTileSplatPreviewEnabled
         ? `Compute splat preview: ${formatCount(renderStats.computeTileSplatPreviewSplats)} / items ${formatCount(renderStats.computeTileSplatPreviewActiveTiles)} / ${formatCount(renderStats.computeTileSplatPreviewWorkTiles)} / samples ${formatCount(renderStats.computeTileSplatPreviewSamplesPerTile)} / ${renderStats.computeTileSplatPreviewColorMode} / ${renderStats.computeTileSplatPreviewShapeMode}`
         : "",
       renderStats.computeTileRasterPreviewEnabled
-        ? `Compute raster preview: ${formatCount(renderStats.computeTileRasterPreviewSplats)} / window ${formatCount(previewLimiterStats.computeTileRasterPreviewWindowSplats ?? 0)} / items ${formatCount(renderStats.computeTileRasterPreviewActiveTiles)} / ${formatCount(renderStats.computeTileRasterPreviewWorkTiles)} / coverage ${((renderStats.computeTileRasterPreviewSplats / Math.max(1, renderStats.computeTileWorkQueueSplats)) * 100).toFixed(1)}% / window ${((previewLimiterStats.computeTileRasterPreviewWindowCoverage ?? 0) * 100).toFixed(1)}% / sampled ${((previewLimiterStats.computeTileRasterPreviewSampledCoverage ?? 0) * 100).toFixed(1)}% / samples ${formatCount(renderStats.computeTileRasterPreviewSamplesPerTile)} / ${renderStats.computeTileRasterPreviewColorMode} / ${renderStats.computeTileRasterPreviewShapeMode}`
+        ? `Compute raster preview: ${formatCount(renderStats.computeTileRasterPreviewSplats)} / window ${formatCount(previewLimiterStats.computeTileRasterPreviewWindowSplats ?? 0)} / items ${formatCount(renderStats.computeTileRasterPreviewActiveTiles)} / ${formatCount(renderStats.computeTileRasterPreviewWorkTiles)} / coverage ${((renderStats.computeTileRasterPreviewSplats / Math.max(1, renderStats.computeTileWorkQueueSplats)) * 100).toFixed(1)}% / window ${((previewLimiterStats.computeTileRasterPreviewWindowCoverage ?? 0) * 100).toFixed(1)}% / ${previewLimiterStats.computeTileRasterPreviewCoverageMode ?? "sampled"} ${((previewLimiterStats.computeTileRasterPreviewSampledCoverage ?? 0) * 100).toFixed(1)}%${(previewLimiterStats.computeTileRasterPreviewTruncatedSplats ?? 0) > 0 ? ` / truncated ${formatCount(previewLimiterStats.computeTileRasterPreviewTruncatedSplats ?? 0)}` : ""} / samples ${formatCount(renderStats.computeTileRasterPreviewSamplesPerTile)} / ${renderStats.computeTileRasterPreviewColorMode} / ${renderStats.computeTileRasterPreviewShapeMode}`
         : "",
       renderStats.computeTileRasterPreviewEnabled && previewLimiterStats.computeTileRasterPreviewDrawLimit !== undefined
         ? `Compute raster limit: draw ${formatCount(previewLimiterStats.computeTileRasterPreviewDrawLimit ?? 0)}${previewLimiterStats.computeTileRasterPreviewDrawCoverageAdaptive ? ` req ${formatCount(previewLimiterStats.computeTileRasterPreviewRequestedDrawLimit ?? 0)} target ${((previewLimiterStats.computeTileRasterPreviewRuntimeDrawCoverageTarget ?? 0) * 100).toFixed(0)}% (${((previewLimiterStats.computeTileRasterPreviewDrawCoverageTarget ?? 0) * 100).toFixed(0)}/${((previewLimiterStats.computeTileRasterPreviewMotionDrawCoverageTarget ?? 0) * 100).toFixed(0)})` : ""} / order ${previewLimiterStats.computeTileRasterPreviewDrawOrder ?? "far"} / window ${previewLimiterStats.computeTileRasterPreviewWindowMode ?? "sampled"} +${((previewLimiterStats.computeTileRasterPreviewNearWindowMargin ?? 0) * 100).toFixed(0)}% / passes ${formatCount(previewLimiterStats.computeTileRasterPreviewSamplePasses ?? 1)} max ${formatCount(previewLimiterStats.computeTileRasterPreviewMaxUsefulSamplePasses ?? 1)} (${formatCount(previewLimiterStats.computeTileRasterPreviewStaticSamplePasses ?? 1)}/${formatCount(previewLimiterStats.computeTileRasterPreviewMotionSamplePasses ?? 1)}${previewLimiterStats.computeTileRasterPreviewSamplePassesAdaptive ? ` target ${((previewLimiterStats.computeTileRasterPreviewRuntimeSampleCoverageTarget ?? 1) * 100).toFixed(0)}% (${((previewLimiterStats.computeTileRasterPreviewSampleCoverageTarget ?? 1) * 100).toFixed(0)}/${((previewLimiterStats.computeTileRasterPreviewMotionSampleCoverageTarget ?? 1) * 100).toFixed(0)})` : ""}) / alpha x${(previewLimiterStats.computeTileRasterPreviewRuntimeSampleAlphaCompensation ?? 1).toFixed(1)} max ${(previewLimiterStats.computeTileRasterPreviewSampleAlphaCompensation ?? 1).toFixed(1)} / static ${formatCount(previewLimiterStats.computeTileRasterPreviewStaticDrawLimit ?? 0)} / motion ${formatCount(previewLimiterStats.computeTileRasterPreviewMotionDrawLimit ?? 0)} / ramp ${((previewLimiterStats.computeTileRasterPreviewStaticRamp ?? 1) * 100).toFixed(0)}% / adaptive ${((previewLimiterStats.computeTileRasterPreviewAdaptiveScale ?? 1) * 100).toFixed(0)}% / frame ${formatMs(previewLimiterStats.computeTileRasterPreviewFrameMs ?? 0)} ms / max ${formatCount(previewLimiterStats.computeTileRasterPreviewMaxMarkerPixels ?? 0)}px`

@@ -40,6 +40,7 @@ type SsogGlobalPackedStats = {
   rendererFallbackReason: string;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
+  computeRendererVisibility: string;
   colorMode: "dc" | "sh";
   shNFileCount: number;
   shNCodebookLength: number;
@@ -99,7 +100,12 @@ type SsogGlobalPackedStats = {
   computeTileOrderEnabled: boolean;
   computeTileOrderDispatched: boolean;
   computeTileOrderBuckets: number;
+  computeTileOrderTiles: number;
+  computeTileOrderTrackedTiles: number;
   computeTileOrderSplats: number;
+  computeTileOrderTruncatedSplats: number;
+  computeTileOrderOverflowSplats: number;
+  computeTileOrderOverflowTiles: number;
   lastComputeTileOrderMs: number;
   computeTileSplatPreviewEnabled: boolean;
   computeTileSplatPreviewSamplesPerTile: number;
@@ -128,6 +134,8 @@ type SsogGlobalPackedStats = {
   computeTileRasterPreviewShapeMode: "gaussian" | "marker";
   computeTileRasterPreviewDrawOrder: "coverage" | "far" | "near";
   computeTileRasterPreviewWindowMode: "sampled" | "full";
+  computeTileRasterPreviewCoverageMode: "sampled" | "full";
+  computeTileRasterPreviewTruncatedSplats: number;
   computeTileRasterPreviewNearWindowMargin: number;
   computeTileRasterPreviewSampleAlphaCompensation: number;
   computeTileRasterPreviewRuntimeSampleAlphaCompensation: number;
@@ -195,6 +203,11 @@ const SORT_FORWARD_DOT_THRESHOLD = Math.cos((0.25 * Math.PI) / 180);
 const SORT_INTERVAL_FRAMES = 6;
 const AUTO_GPU_SORT_SPLAT_THRESHOLD = 2_000_000;
 const GPU_INDEX_GATHER_WORKGROUP_SIZE = 256;
+const DEFAULT_COMPUTE_PRIMARY_MIN_COVERAGE = 0.12;
+const DEFAULT_COMPUTE_PRIMARY_DROP_COVERAGE = 0.06;
+const DEFAULT_COMPUTE_PRIMARY_READY_FRAMES = 6;
+const DEFAULT_COMPUTE_PRIMARY_DROP_FRAMES = 1;
+const DEFAULT_COMPUTE_PRIMARY_MIN_ADAPTIVE_SCALE = 0.75;
 
 const getSsogComputeTileUpdateInterval = (): number => {
   const params = new URLSearchParams(window.location.search);
@@ -203,6 +216,7 @@ const getSsogComputeTileUpdateInterval = (): number => {
     return Math.max(1, Math.floor(explicit));
   }
   if (
+    getRequestedRendererMode() === "compute" ||
     params.get("computeTileRasterPreview") === "true" ||
     params.get("computeTileDepthOverlay") === "true" ||
     params.get("computeTileOverlay") === "true"
@@ -210,6 +224,16 @@ const getSsogComputeTileUpdateInterval = (): number => {
     return 4;
   }
   return 1;
+};
+
+const getSsogComputePrimaryCoverageThreshold = (name: string, fallback: number): number => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
+};
+
+const getSsogComputePrimaryFrameThreshold = (name: string, fallback: number): number => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : fallback;
 };
 
 const GPU_INDEX_GATHER_SOURCE = `
@@ -468,8 +492,31 @@ class SsogGlobalPackedRenderPass {
   private gpuVisibleActive = false;
   private gpuGatheredCurrentSort = false;
   private computePreviewDrawableFrames = 0;
+  private computePreviewLowCoverageFrames = 0;
+  private computeTileRasterPrimaryActive = false;
+  private computeTileRasterPrimaryFallbackReason = "";
   private computeTileFrame = 0;
   private readonly computeTileUpdateInterval = getSsogComputeTileUpdateInterval();
+  private readonly computePrimaryMinCoverage = getSsogComputePrimaryCoverageThreshold(
+    "computeTileRasterPrimaryMinCoverage",
+    DEFAULT_COMPUTE_PRIMARY_MIN_COVERAGE,
+  );
+  private readonly computePrimaryDropCoverage = getSsogComputePrimaryCoverageThreshold(
+    "computeTileRasterPrimaryDropCoverage",
+    DEFAULT_COMPUTE_PRIMARY_DROP_COVERAGE,
+  );
+  private readonly computePrimaryReadyFrames = getSsogComputePrimaryFrameThreshold(
+    "computeTileRasterPrimaryReadyFrames",
+    DEFAULT_COMPUTE_PRIMARY_READY_FRAMES,
+  );
+  private readonly computePrimaryDropFrames = getSsogComputePrimaryFrameThreshold(
+    "computeTileRasterPrimaryDropFrames",
+    DEFAULT_COMPUTE_PRIMARY_DROP_FRAMES,
+  );
+  private readonly computePrimaryMinAdaptiveScale = getSsogComputePrimaryCoverageThreshold(
+    "computeTileRasterPrimaryMinAdaptiveScale",
+    DEFAULT_COMPUTE_PRIMARY_MIN_ADAPTIVE_SCALE,
+  );
   private readonly gpuSortVisibleMode: "cpu" | "auto" | "radix";
   private readonly rendererBackend: {
     requested: RequestedRendererMode;
@@ -486,6 +533,7 @@ class SsogGlobalPackedRenderPass {
   private readonly computeTileRasterPreviewPass?: ComputeTileSplatPreviewPass;
   private readonly computeTileRasterPreviewOnly = isSsogComputeTileRasterPreviewOnlyEnabled();
   private readonly computeTileRasterStrictPreviewOnly = isSsogComputeTileRasterStrictPreviewOnlyEnabled();
+  private readonly computeTileRasterPrimaryAllowed = isSsogComputeTileRasterPrimaryEnabled();
 
   readonly signature: string;
   readonly keys: Set<string>;
@@ -592,7 +640,7 @@ class SsogGlobalPackedRenderPass {
         this.computeTileWorkQueuePass &&
         this.computeTileOrderPass &&
         this.buffers.ordinalToPacked &&
-        isSsogComputeTileRasterPreviewEnabled()
+        isSsogComputeTileRasterPreviewEnabled(this.rendererBackend.requested)
       ) {
         const params = new URLSearchParams(window.location.search);
         this.computeTileRasterPreviewPass = new ComputeTileSplatPreviewPass(
@@ -620,7 +668,9 @@ class SsogGlobalPackedRenderPass {
     this.bindStorageBuffers();
     this.setRenderCount(this.numSplats);
     this.mesh.setEnabled(!(this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass));
-    this.initializeSortWorker(packed.centers, packed.globalIndices);
+    if (!(this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass)) {
+      this.initializeSortWorker(packed.centers, packed.globalIndices);
+    }
 
     this.updateViewport = () => {
       const renderEngine = scene.getEngine();
@@ -662,21 +712,22 @@ class SsogGlobalPackedRenderPass {
       chunkCount: this.chunkCount,
       activeChunks: this.chunkCount,
       selectedLods: this.chunkCount,
-      rendererMode: `ssog-global-packed-raster-sort-${this.gpuVisibleActive ? "gpu-radix" : "cpu-worker"}`,
+      rendererMode:
+        this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass
+          ? "ssog-global-packed-compute-preview-strict"
+          : this.isComputeTileRasterPrimaryActive()
+            ? "ssog-global-packed-compute-tile-raster-primary"
+          : `ssog-global-packed-raster-sort-${this.gpuVisibleActive ? "gpu-radix" : "cpu-worker"}`,
       rendererRequested: this.rendererBackend.requested,
-      rendererEffective: this.gpuVisibleActive ? "gpu" : this.rendererBackend.effective,
+      rendererEffective: this.isComputeTileRasterPrimaryActive()
+        ? "compute"
+        : this.gpuVisibleActive
+          ? "gpu"
+          : this.rendererBackend.effective,
       rendererFallbackReason: this.getRendererFallbackReason(),
       computeRendererEnabled: this.rendererBackend.requested === "compute",
-      computeRendererPhase:
-        this.rendererBackend.requested === "compute"
-          ? this.computeTileRasterPreviewPass
-            ? this.computeTileRasterPreviewOnly && !this.computeTileRasterStrictPreviewOnly
-              ? "global-packed-ssog-tile-raster-preview-over-stable"
-              : this.computeTileRasterStrictPreviewOnly
-                ? "global-packed-ssog-tile-raster-preview-only"
-              : "global-packed-ssog-tile-raster-preview-overlaid"
-            : "global-packed-ssog-raster-fallback"
-          : "disabled",
+      computeRendererPhase: this.getComputeRendererPhase(),
+      computeRendererVisibility: this.getComputeRendererVisibility(),
       colorMode: "dc",
       shNFileCount: 0,
       shNCodebookLength: 0,
@@ -715,6 +766,19 @@ class SsogGlobalPackedRenderPass {
   }
 
   private getRendererFallbackReason(): string {
+    if (this.isComputeTileRasterPrimaryActive()) {
+      return "";
+    }
+    if (this.isComputeTileRasterPrimaryMode()) {
+      return this.computeTileRasterPrimaryFallbackReason || "compute-tile-raster-warming-stable-fallback";
+    }
+    if (
+      this.rendererBackend.requested === "compute" &&
+      this.computeTileRasterPreviewPass &&
+      !this.computeTileRasterStrictPreviewOnly
+    ) {
+      return "compute-tile-raster-diagnostic-over-stable";
+    }
     if (this.gpuVisibleActive) {
       return "";
     }
@@ -731,6 +795,42 @@ class SsogGlobalPackedRenderPass {
       return `auto-kept-cpu-worker-below-${Math.floor(getSsogAutoGpuSortSplatThreshold()).toLocaleString("en-US")}-splats`;
     }
     return this.rendererBackend.fallbackReason;
+  }
+
+  private getComputeRendererPhase(): string {
+    if (this.rendererBackend.requested !== "compute") {
+      return "disabled";
+    }
+    if (!this.computeTileRasterPreviewPass) {
+      return "global-packed-ssog-raster-fallback";
+    }
+    if (this.computeTileRasterStrictPreviewOnly) {
+      return "global-packed-ssog-tile-raster-preview-only";
+    }
+    if (this.isComputeTileRasterPrimaryMode()) {
+      return this.isComputeTileRasterPrimaryActive()
+        ? "global-packed-ssog-tile-raster-primary"
+        : "global-packed-ssog-tile-raster-warming-stable-fallback";
+    }
+    return "global-packed-ssog-tile-raster-diagnostic-over-stable";
+  }
+
+  private getComputeRendererVisibility(): string {
+    if (this.rendererBackend.requested !== "compute") {
+      return "disabled";
+    }
+    if (!this.computeTileRasterPreviewPass) {
+      return "stable-raster-fallback";
+    }
+    if (this.computeTileRasterStrictPreviewOnly) {
+      return "strict-compute-preview-only";
+    }
+    if (this.isComputeTileRasterPrimaryMode()) {
+      return this.isComputeTileRasterPrimaryActive()
+        ? "compute-primary"
+        : "warming-stable-fallback";
+    }
+    return "diagnostic-over-stable";
   }
 
   private updateComputeTilePipeline(): void {
@@ -770,10 +870,72 @@ class SsogGlobalPackedRenderPass {
         previewStats.workTiles > 0;
       this.computePreviewDrawableFrames = previewDrawable ? this.computePreviewDrawableFrames + 1 : 0;
       this.mesh.setEnabled(this.enabled && this.computePreviewDrawableFrames < 6);
+    } else if (this.isComputeTileRasterPrimaryMode()) {
+      const previewStats = this.computeTileRasterPreviewPass?.getStats();
+      const previewDrawable =
+        !!previewStats &&
+        previewStats.activeTiles > 0 &&
+        previewStats.previewSplats > 0 &&
+        previewStats.workTiles > 0;
+      const windowCoverage = previewStats?.windowCoverage ?? 0;
+      const adaptiveScale = previewStats?.adaptiveDrawScale ?? 0;
+      const primaryReady =
+        previewDrawable &&
+        windowCoverage >= this.computePrimaryMinCoverage &&
+        adaptiveScale >= this.computePrimaryMinAdaptiveScale;
+      const primaryDropped =
+        !previewDrawable ||
+        windowCoverage < this.computePrimaryDropCoverage ||
+        adaptiveScale < this.computePrimaryMinAdaptiveScale;
+      this.computeTileRasterPrimaryFallbackReason = this.getComputeTileRasterPrimaryFallbackReason(
+        previewDrawable,
+        windowCoverage,
+        adaptiveScale,
+      );
+
+      if (this.computeTileRasterPrimaryActive) {
+        this.computePreviewLowCoverageFrames = primaryDropped ? this.computePreviewLowCoverageFrames + 1 : 0;
+        if (this.computePreviewLowCoverageFrames >= this.computePrimaryDropFrames) {
+          this.computeTileRasterPrimaryActive = false;
+          this.computePreviewDrawableFrames = 0;
+        }
+      } else {
+        this.computePreviewDrawableFrames = primaryReady ? this.computePreviewDrawableFrames + 1 : 0;
+        this.computePreviewLowCoverageFrames = 0;
+        if (this.computePreviewDrawableFrames >= this.computePrimaryReadyFrames) {
+          this.computeTileRasterPrimaryActive = true;
+          this.computeTileRasterPrimaryFallbackReason = "";
+        }
+      }
+
+      this.mesh.setEnabled(this.enabled && !this.computeTileRasterPrimaryActive);
     } else if (this.computeTileRasterPreviewPass) {
       this.computePreviewDrawableFrames = 0;
+      this.computePreviewLowCoverageFrames = 0;
+      this.computeTileRasterPrimaryActive = false;
+      this.computeTileRasterPrimaryFallbackReason = "";
       this.mesh.setEnabled(this.enabled);
     }
+  }
+
+  private getComputeTileRasterPrimaryFallbackReason(
+    previewDrawable: boolean,
+    windowCoverage: number,
+    adaptiveScale: number,
+  ): string {
+    if (!previewDrawable) {
+      return "compute-primary-waiting-for-drawable-work";
+    }
+    if (adaptiveScale < this.computePrimaryMinAdaptiveScale) {
+      return "compute-primary-waiting-for-adaptive-budget";
+    }
+    if (windowCoverage < this.computePrimaryMinCoverage) {
+      return "compute-primary-waiting-for-window-coverage";
+    }
+    if (this.computePreviewDrawableFrames < this.computePrimaryReadyFrames) {
+      return "compute-primary-waiting-for-stable-frames";
+    }
+    return "";
   }
 
   private getComputeTileStats(): Pick<
@@ -830,7 +992,12 @@ class SsogGlobalPackedRenderPass {
     | "computeTileOrderEnabled"
     | "computeTileOrderDispatched"
     | "computeTileOrderBuckets"
+    | "computeTileOrderTiles"
+    | "computeTileOrderTrackedTiles"
     | "computeTileOrderSplats"
+    | "computeTileOrderTruncatedSplats"
+    | "computeTileOrderOverflowSplats"
+    | "computeTileOrderOverflowTiles"
     | "lastComputeTileOrderMs"
   > {
     const stats: ComputeTileStats | undefined = this.computeTileStatsPass?.getStats();
@@ -890,7 +1057,12 @@ class SsogGlobalPackedRenderPass {
       computeTileOrderEnabled: orderStats?.enabled ?? false,
       computeTileOrderDispatched: orderStats?.dispatched ?? false,
       computeTileOrderBuckets: orderStats?.bucketCount ?? 0,
+      computeTileOrderTiles: orderStats?.tileCount ?? 0,
+      computeTileOrderTrackedTiles: orderStats?.trackedTileCount ?? 0,
       computeTileOrderSplats: orderStats?.orderedSplats ?? 0,
+      computeTileOrderTruncatedSplats: orderStats?.truncatedSplats ?? 0,
+      computeTileOrderOverflowSplats: orderStats?.overflowSplats ?? 0,
+      computeTileOrderOverflowTiles: orderStats?.overflowTiles ?? 0,
       lastComputeTileOrderMs: orderStats?.lastDispatchMs ?? 0,
     };
   }
@@ -938,6 +1110,8 @@ class SsogGlobalPackedRenderPass {
     | "computeTileRasterPreviewShapeMode"
     | "computeTileRasterPreviewDrawOrder"
     | "computeTileRasterPreviewWindowMode"
+    | "computeTileRasterPreviewCoverageMode"
+    | "computeTileRasterPreviewTruncatedSplats"
     | "computeTileRasterPreviewNearWindowMargin"
     | "computeTileRasterPreviewSampleAlphaCompensation"
     | "computeTileRasterPreviewRuntimeSampleAlphaCompensation"
@@ -976,6 +1150,8 @@ class SsogGlobalPackedRenderPass {
       computeTileRasterPreviewShapeMode: stats?.shapeMode ?? "marker",
       computeTileRasterPreviewDrawOrder: stats?.drawOrder ?? "far",
       computeTileRasterPreviewWindowMode: stats?.windowMode ?? "sampled",
+      computeTileRasterPreviewCoverageMode: stats?.rasterCoverageMode ?? "sampled",
+      computeTileRasterPreviewTruncatedSplats: stats?.truncatedSplats ?? 0,
       computeTileRasterPreviewNearWindowMargin: stats?.nearWindowMargin ?? 0,
       computeTileRasterPreviewSampleAlphaCompensation: stats?.sampleAlphaCompensation ?? 1,
       computeTileRasterPreviewRuntimeSampleAlphaCompensation:
@@ -1135,7 +1311,27 @@ class SsogGlobalPackedRenderPass {
     this.material.setFloat("renderSplatCount", renderCount);
   }
 
+  private isComputeTileRasterPrimaryMode(): boolean {
+    return (
+      this.rendererBackend.requested === "compute" &&
+      this.computeTileRasterPrimaryAllowed &&
+      !!this.computeTileRasterPreviewPass &&
+      !this.computeTileRasterPreviewOnly &&
+      !this.computeTileRasterStrictPreviewOnly
+    );
+  }
+
+  private isComputeTileRasterPrimaryActive(): boolean {
+    return this.isComputeTileRasterPrimaryMode() && this.computeTileRasterPrimaryActive;
+  }
+
   private updateSort(): void {
+    if (
+      (this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass) ||
+      this.isComputeTileRasterPrimaryActive()
+    ) {
+      return;
+    }
     if (!this.enabled || this.disposed || !this.sortWorker) {
       return;
     }
@@ -1414,7 +1610,7 @@ const isSsogComputeTileStatsEnabled = (requested: RequestedRendererMode): boolea
     params.get("computeTileOverlay") === "true" ||
     params.get("computeTileStats") === "true" ||
     params.get("computeTileOrder") === "depth-bucket" ||
-    isSsogComputeTileRasterPreviewEnabled()
+    isSsogComputeTileRasterPreviewEnabled(requested)
   );
 };
 
@@ -1425,28 +1621,31 @@ const isSsogComputeTileDepthEnabled = (requested: RequestedRendererMode): boolea
     params.get("computeTileDepth") === "true" ||
     params.get("computeTileDepthOverlay") === "true" ||
     params.get("computeTileWorkQueue") === "true" ||
-    isSsogComputeTileRasterPreviewEnabled()
+    isSsogComputeTileRasterPreviewEnabled(requested)
   );
 };
 
 const isSsogComputeTileWorkQueueEnabled = (requested: RequestedRendererMode): boolean => {
   const params = new URLSearchParams(window.location.search);
-  return requested === "compute" || params.get("computeTileWorkQueue") === "true" || isSsogComputeTileRasterPreviewEnabled();
+  return requested === "compute" || params.get("computeTileWorkQueue") === "true" || isSsogComputeTileRasterPreviewEnabled(requested);
 };
 
 const isSsogComputeTileOrderEnabled = (requested: RequestedRendererMode): boolean => {
   const params = new URLSearchParams(window.location.search);
-  return requested === "compute" || params.get("computeTileOrder") === "depth-bucket" || isSsogComputeTileRasterPreviewEnabled();
+  return requested === "compute" || params.get("computeTileOrder") === "depth-bucket" || isSsogComputeTileRasterPreviewEnabled(requested);
 };
 
-const isSsogComputeTileRasterPreviewEnabled = (): boolean =>
-  new URLSearchParams(window.location.search).get("computeTileRasterPreview") === "true";
+const isSsogComputeTileRasterPreviewEnabled = (requested = getRequestedRendererMode()): boolean =>
+  requested === "compute" || new URLSearchParams(window.location.search).get("computeTileRasterPreview") === "true";
 
 const isSsogComputeTileRasterPreviewOnlyEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("computeTileRasterPreviewOnly") === "true";
 
 const isSsogComputeTileRasterStrictPreviewOnlyEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("computeTileRasterStrictPreviewOnly") === "true";
+
+const isSsogComputeTileRasterPrimaryEnabled = (): boolean =>
+  new URLSearchParams(window.location.search).get("computeTileRasterPrimary") === "true";
 
 const INITIAL_SORT_BUCKETS = 8192;
 

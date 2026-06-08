@@ -16,17 +16,17 @@ const MAX_RASTER_SPLATS_PER_TILE = 512;
 const DEFAULT_PREVIEW_TILE_LIMIT = 512;
 const DEFAULT_RASTER_PREVIEW_WORK_ITEM_LIMIT = 4096;
 const DEFAULT_RASTER_PREVIEW_WORK_ITEM_CAP = 16384;
-const DEFAULT_FAST_RASTER_PREVIEW_DRAW_ITEMS = 2048;
-const DEFAULT_BALANCED_RASTER_PREVIEW_DRAW_ITEMS = 4096;
-const DEFAULT_QUALITY_RASTER_PREVIEW_DRAW_ITEMS = 2048;
-const DEFAULT_FAST_RASTER_PREVIEW_MOTION_DRAW_ITEMS = 1024;
-const DEFAULT_BALANCED_RASTER_PREVIEW_MOTION_DRAW_ITEMS = 2048;
+const DEFAULT_FAST_RASTER_PREVIEW_DRAW_ITEMS = 1536;
+const DEFAULT_BALANCED_RASTER_PREVIEW_DRAW_ITEMS = 2048;
+const DEFAULT_QUALITY_RASTER_PREVIEW_DRAW_ITEMS = 1536;
+const DEFAULT_FAST_RASTER_PREVIEW_MOTION_DRAW_ITEMS = 768;
+const DEFAULT_BALANCED_RASTER_PREVIEW_MOTION_DRAW_ITEMS = 1024;
 const DEFAULT_QUALITY_RASTER_PREVIEW_MOTION_DRAW_ITEMS = 1024;
 const MOTION_DRAW_HOLD_FRAMES = 8;
 const MOTION_DRAW_MOVE_EPSILON_SQ = 0.0025;
 const MOTION_DRAW_FORWARD_DOT = 0.9995;
-const ADAPTIVE_FRAME_TARGET_MS = 42;
-const ADAPTIVE_FRAME_RECOVER_MS = 28;
+const ADAPTIVE_FRAME_TARGET_MS = 36;
+const ADAPTIVE_FRAME_RECOVER_MS = 24;
 const ADAPTIVE_MIN_DRAW_SCALE = 0.2;
 const ADAPTIVE_DECAY = 0.75;
 const ADAPTIVE_RECOVER = 1.1;
@@ -34,6 +34,12 @@ const STATIC_DRAW_RAMP_FRAMES = 12;
 const DEFAULT_PREVIEW_NEAR_WINDOW_MARGIN = 0.35;
 const DEFAULT_RASTER_SAMPLE_ALPHA_COMPENSATION = 1.6;
 const MAX_RASTER_SAMPLE_PASSES = 4;
+const MAX_RASTER_FULL_SAMPLE_PASSES = 16;
+
+type RasterCoverageMode = "sampled" | "full";
+
+const isRasterPreviewRequested = (params = new URLSearchParams(window.location.search)): boolean =>
+  params.get("computeTileRasterPreview") === "true" || params.get("renderer") === "compute";
 
 const getRasterPreviewQuality = (): "fast" | "balanced" | "quality" => {
   const value = new URLSearchParams(window.location.search).get("computeTileRasterQuality");
@@ -46,7 +52,7 @@ const getDefaultRasterPreviewWorkItemCap = (): number => {
     return 8192;
   }
   if (quality === "quality") {
-    return 32768;
+    return 16384;
   }
   return DEFAULT_RASTER_PREVIEW_WORK_ITEM_CAP;
 };
@@ -138,12 +144,12 @@ const getStaticDrawRampFrames = (): number => {
 const getDefaultRasterDrawCoverageTarget = (): number => {
   const quality = getRasterPreviewQuality();
   if (quality === "fast") {
-    return 0.35;
+    return 0.3;
   }
   if (quality === "quality") {
-    return 0.7;
+    return 0.55;
   }
-  return 0.5;
+  return 0.45;
 };
 
 const getRasterDrawCoverageTarget = (): number => {
@@ -161,12 +167,12 @@ const getRasterDrawCoverageTarget = (): number => {
 const getDefaultRasterMotionDrawCoverageTarget = (): number => {
   const quality = getRasterPreviewQuality();
   if (quality === "fast") {
-    return 0.2;
+    return 0.15;
   }
   if (quality === "quality") {
-    return 0.35;
+    return 0.3;
   }
-  return 0.25;
+  return 0.2;
 };
 
 const getRasterMotionDrawCoverageTarget = (staticTarget: number): number => {
@@ -198,7 +204,7 @@ const getRasterMaxMarkerPixels = (fallback: number): number => {
   if (Number.isFinite(value) && value > 0) {
     return Math.min(fallback, Math.max(8, value));
   }
-  if (params.get("computeTileRasterPreview") === "true") {
+  if (isRasterPreviewRequested(params)) {
     return Math.min(fallback, getDefaultRasterMaxMarkerPixels());
   }
   return fallback;
@@ -213,7 +219,7 @@ const isRasterPreviewMotionMarkerEnabled = (): boolean => {
   if (value === "marker" || value === "true") {
     return true;
   }
-  return params.get("computeTileRasterPreview") === "true";
+  return false;
 };
 
 type ComputeTilePreviewColorMode = "asset" | "debug" | "opacity" | "depth";
@@ -239,6 +245,8 @@ type ComputeTileSplatPreviewStats = {
   shapeMode: "gaussian" | "marker";
   orderMode: "source" | "depth-bucket";
   coverageMode: "sampled" | "bounded";
+  rasterCoverageMode: RasterCoverageMode;
+  truncatedSplats: number;
   drawOrder: "coverage" | "far" | "near";
   windowMode: "sampled" | "full";
   nearWindowMargin: number;
@@ -278,7 +286,7 @@ type ComputeTileSplatPreviewOptions = {
 const getSamplesPerTile = (): number => {
   const params = new URLSearchParams(window.location.search);
   const rasterValue = Number(params.get("computeTileRasterMaxSplatsPerTile"));
-  if (params.get("computeTileRasterPreview") === "true") {
+  if (isRasterPreviewRequested(params)) {
     if (Number.isFinite(rasterValue) && rasterValue > 0) {
       return Math.min(MAX_RASTER_SPLATS_PER_TILE, Math.max(1, Math.floor(rasterValue)));
     }
@@ -321,7 +329,7 @@ const getPreviewDrawOrder = (): "coverage" | "far" | "near" => {
   if (value === "coverage" || value === "far" || value === "near") {
     return value;
   }
-  if (params.get("computeTileRasterPreview") === "true") {
+  if (isRasterPreviewRequested(params)) {
     return "near";
   }
   return "far";
@@ -333,7 +341,19 @@ const getPreviewWindowMode = (): "sampled" | "full" => {
   if (value === "sampled" || value === "full") {
     return value;
   }
-  if (params.get("computeTileRasterPreview") === "true" && getRasterPreviewQuality() !== "fast") {
+  if (isRasterPreviewRequested(params) && getRasterPreviewQuality() !== "fast") {
+    return "full";
+  }
+  return "sampled";
+};
+
+const getRasterCoverageMode = (): RasterCoverageMode => {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("computeTileRasterCoverageMode");
+  if (value === "sampled" || value === "full") {
+    return value;
+  }
+  if (isRasterPreviewRequested(params) && getRasterPreviewQuality() !== "fast") {
     return "full";
   }
   return "sampled";
@@ -356,7 +376,7 @@ const getRasterSampleAlphaCompensation = (): number => {
   if (Number.isFinite(value) && value > 0) {
     return Math.min(4, Math.max(1, value));
   }
-  return params.get("computeTileRasterPreview") === "true" ? DEFAULT_RASTER_SAMPLE_ALPHA_COMPENSATION : 1;
+  return isRasterPreviewRequested(params) ? DEFAULT_RASTER_SAMPLE_ALPHA_COMPENSATION : 1;
 };
 
 const getDefaultRasterSamplePasses = (): number => (getRasterPreviewQuality() === "quality" ? 2 : 1);
@@ -437,7 +457,7 @@ const getShapeMode = (): "gaussian" | "marker" =>
 const getAlphaScale = (): number => {
   const params = new URLSearchParams(window.location.search);
   const rasterValue = Number(params.get("computeTileRasterAlphaScale"));
-  if (params.get("computeTileRasterPreview") === "true" && Number.isFinite(rasterValue) && rasterValue > 0) {
+  if (isRasterPreviewRequested(params) && Number.isFinite(rasterValue) && rasterValue > 0) {
     return Math.min(2.0, Math.max(0.02, rasterValue));
   }
   const value = Number(params.get("computeTileSplatAlphaScale"));
@@ -775,6 +795,7 @@ class ComputeTileSplatPreviewPass {
   private readonly shapeMode: "gaussian" | "marker";
   private readonly orderMode: "source" | "depth-bucket";
   private readonly coverageMode: "sampled" | "bounded";
+  private readonly rasterCoverageMode = getRasterCoverageMode();
   private readonly alphaMode: "preview" | "splat";
   private readonly alphaScale = getAlphaScale();
   private readonly previewDrawOrder = getPreviewDrawOrder();
@@ -819,6 +840,8 @@ class ComputeTileSplatPreviewPass {
     shapeMode: "marker",
     orderMode: "source",
     coverageMode: "sampled",
+    rasterCoverageMode: this.rasterCoverageMode,
+    truncatedSplats: 0,
     drawOrder: this.previewDrawOrder,
     windowMode: this.previewWindowMode,
     nearWindowMargin: this.previewNearWindowMargin,
@@ -1047,6 +1070,7 @@ class ComputeTileSplatPreviewPass {
       workStats.maxTileSplats,
     );
     const maxUsefulSamplePasses = this.getMaxUsefulSamplePasses(workStats.maxTileSplats);
+    const previewCapacity = previewTiles * this.samplesPerTile * runtimeSamplePasses;
     this.material.setFloat("workTileCount", previewTiles);
     this.material.setFloat("workSourceTileCount", sourceWindow.count);
     this.material.setFloat("workSourceTileOffset", sourceWindow.offset);
@@ -1057,10 +1081,8 @@ class ComputeTileSplatPreviewPass {
     this.material.setVector2("viewport", this.viewport);
     this.mesh.forcedInstanceCount = Math.max(0, previewTiles * runtimeSamplePasses);
     this.mesh.setEnabled(this.enabled && workStats.dispatched && previewTiles > 0 && workStats.maxTileSplats > 0);
-    const previewSplats = Math.min(
-      windowSplats > 0 ? windowSplats : workStats.queuedSplats,
-      previewTiles * this.samplesPerTile * runtimeSamplePasses,
-    );
+    const previewSplats = Math.min(windowSplats > 0 ? windowSplats : workStats.queuedSplats, previewCapacity);
+    const truncatedSplats = Math.max(0, windowSplats - previewSplats);
     const sampledCoverage = previewSplats / Math.max(1, windowSplats);
     const runtimeSampleAlphaCompensation = this.getRuntimeSampleAlphaCompensation(
       sampledCoverage,
@@ -1088,6 +1110,8 @@ class ComputeTileSplatPreviewPass {
       shapeMode: runtimeShapeMode,
       orderMode: this.orderMode,
       coverageMode: this.coverageMode,
+      rasterCoverageMode: this.rasterCoverageMode,
+      truncatedSplats,
       drawOrder: this.previewDrawOrder,
       windowMode: this.previewWindowMode,
       nearWindowMargin: this.previewNearWindowMargin,
@@ -1200,6 +1224,9 @@ class ComputeTileSplatPreviewPass {
       return maxPasses;
     }
     const maxUsefulPasses = this.getMaxUsefulSamplePasses(maxSplatsPerWorkItem);
+    if (this.rasterCoverageMode === "full") {
+      return Math.min(MAX_RASTER_FULL_SAMPLE_PASSES, maxUsefulPasses);
+    }
     const samplesPerPass = Math.max(1, previewTiles * this.samplesPerTile);
     const targetSamples = Math.max(1, Math.ceil(windowSplats * runtimeSampleCoverageTarget));
     return Math.min(maxPasses, maxUsefulPasses, Math.max(1, Math.ceil(targetSamples / samplesPerPass)));
@@ -1213,6 +1240,9 @@ class ComputeTileSplatPreviewPass {
   }
 
   private getRuntimeSampleCoverageTarget(): number {
+    if (this.rasterCoverageMode === "full") {
+      return 1;
+    }
     if (this.motionSampleCoverageTarget >= this.sampleCoverageTarget) {
       return this.sampleCoverageTarget;
     }
@@ -1224,6 +1254,9 @@ class ComputeTileSplatPreviewPass {
   }
 
   private getRuntimeSampleAlphaCompensation(sampledCoverage: number, runtimeSampleCoverageTarget: number): number {
+    if (this.rasterCoverageMode === "full") {
+      return 1;
+    }
     if (this.sampleAlphaCompensation <= 1 || runtimeSampleCoverageTarget <= 0) {
       return 1;
     }

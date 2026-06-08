@@ -379,6 +379,8 @@ class StreamingSsogRenderPass {
           computeTileRasterPreviewStaticRamp?: number;
           computeTileRasterPreviewDrawOrder?: "coverage" | "far" | "near";
           computeTileRasterPreviewWindowMode?: "sampled" | "full";
+          computeTileRasterPreviewCoverageMode?: "sampled" | "full";
+          computeTileRasterPreviewTruncatedSplats?: number;
           computeTileRasterPreviewNearWindowMargin?: number;
           computeTileRasterPreviewSampleAlphaCompensation?: number;
           computeTileRasterPreviewRuntimeSampleAlphaCompensation?: number;
@@ -555,6 +557,12 @@ class StreamingSsogRenderPass {
       computeTileRasterPreviewStaticRamp: firstPreviewStats?.computeTileRasterPreviewStaticRamp ?? 1,
       computeTileRasterPreviewDrawOrder: firstPreviewStats?.computeTileRasterPreviewDrawOrder ?? "far",
       computeTileRasterPreviewWindowMode: firstPreviewStats?.computeTileRasterPreviewWindowMode ?? "sampled",
+      computeTileRasterPreviewCoverageMode:
+        firstPreviewStats?.computeTileRasterPreviewCoverageMode ?? "sampled",
+      computeTileRasterPreviewTruncatedSplats: activeStats.reduce(
+        (sum, item) => sum + (item.computeTileRasterPreviewTruncatedSplats ?? 0),
+        0,
+      ),
       computeTileRasterPreviewNearWindowMargin: firstPreviewStats?.computeTileRasterPreviewNearWindowMargin ?? 0,
       computeTileRasterPreviewSampleAlphaCompensation:
         firstPreviewStats?.computeTileRasterPreviewSampleAlphaCompensation ?? 1,

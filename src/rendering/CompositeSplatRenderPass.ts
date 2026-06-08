@@ -247,6 +247,11 @@ class CompositeSplatRenderPass {
       computeTileRasterPreviewStaticRamp: first?.computeTileRasterPreviewStaticRamp ?? 1,
       computeTileRasterPreviewDrawOrder: first?.computeTileRasterPreviewDrawOrder ?? "far",
       computeTileRasterPreviewWindowMode: first?.computeTileRasterPreviewWindowMode ?? "sampled",
+      computeTileRasterPreviewCoverageMode: first?.computeTileRasterPreviewCoverageMode ?? "sampled",
+      computeTileRasterPreviewTruncatedSplats: stats.reduce(
+        (sum, item) => sum + (item.computeTileRasterPreviewTruncatedSplats ?? 0),
+        0,
+      ),
       computeTileRasterPreviewNearWindowMargin: first?.computeTileRasterPreviewNearWindowMargin ?? 0,
       computeTileRasterPreviewSampleAlphaCompensation:
         first?.computeTileRasterPreviewSampleAlphaCompensation ?? 1,

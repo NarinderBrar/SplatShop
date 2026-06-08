@@ -416,6 +416,8 @@ type SplatRenderStats = {
   computeTileRasterPreviewShapeMode: "gaussian" | "marker";
   computeTileRasterPreviewDrawOrder: "coverage" | "far" | "near";
   computeTileRasterPreviewWindowMode: "sampled" | "full";
+  computeTileRasterPreviewCoverageMode: "sampled" | "full";
+  computeTileRasterPreviewTruncatedSplats: number;
   computeTileRasterPreviewNearWindowMargin: number;
   computeTileRasterPreviewSampleAlphaCompensation: number;
   computeTileRasterPreviewRuntimeSampleAlphaCompensation: number;
@@ -1038,6 +1040,8 @@ class SplatRenderPass {
     | "computeTileRasterPreviewShapeMode"
     | "computeTileRasterPreviewDrawOrder"
     | "computeTileRasterPreviewWindowMode"
+    | "computeTileRasterPreviewCoverageMode"
+    | "computeTileRasterPreviewTruncatedSplats"
     | "computeTileRasterPreviewNearWindowMargin"
     | "computeTileRasterPreviewSampleAlphaCompensation"
     | "computeTileRasterPreviewRuntimeSampleAlphaCompensation"
@@ -1076,6 +1080,8 @@ class SplatRenderPass {
       computeTileRasterPreviewShapeMode: stats?.shapeMode ?? "marker",
       computeTileRasterPreviewDrawOrder: stats?.drawOrder ?? "far",
       computeTileRasterPreviewWindowMode: stats?.windowMode ?? "sampled",
+      computeTileRasterPreviewCoverageMode: stats?.rasterCoverageMode ?? "sampled",
+      computeTileRasterPreviewTruncatedSplats: stats?.truncatedSplats ?? 0,
       computeTileRasterPreviewNearWindowMargin: stats?.nearWindowMargin ?? 0,
       computeTileRasterPreviewSampleAlphaCompensation: stats?.sampleAlphaCompensation ?? 1,
       computeTileRasterPreviewRuntimeSampleAlphaCompensation:

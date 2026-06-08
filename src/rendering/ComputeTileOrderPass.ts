@@ -11,8 +11,8 @@ import { canCreateComputeShader } from "./GpuDepthKeyPass";
 const WORKGROUP_SIZE = 256;
 const PREFIX_WORKGROUP_SIZE = 64;
 const DEFAULT_BUCKET_COUNT = 16;
-const DEFAULT_RASTER_PREVIEW_BUCKET_COUNT = 32;
-const MAX_BUCKET_COUNT = 64;
+const DEFAULT_RASTER_PREVIEW_BUCKET_COUNT = 64;
+const MAX_BUCKET_COUNT = 256;
 const MAX_TILES = 8192;
 const PARAM_FLOAT_COUNT = 28;
 
@@ -21,13 +21,16 @@ const getRasterPreviewQuality = (): "fast" | "balanced" | "quality" => {
   return value === "fast" || value === "quality" ? value : "balanced";
 };
 
+const isRasterPreviewRequested = (params = new URLSearchParams(window.location.search)): boolean =>
+  params.get("computeTileRasterPreview") === "true" || params.get("renderer") === "compute";
+
 const getDefaultRasterPreviewBucketCount = (): number => {
   const quality = getRasterPreviewQuality();
   if (quality === "fast") {
     return 24;
   }
   if (quality === "quality") {
-    return 64;
+    return 128;
   }
   return DEFAULT_RASTER_PREVIEW_BUCKET_COUNT;
 };
@@ -35,7 +38,7 @@ const getDefaultRasterPreviewBucketCount = (): number => {
 const getBucketCount = (): number => {
   const value = Number(new URLSearchParams(window.location.search).get("computeTileOrderBuckets"));
   if (!Number.isFinite(value) || value <= 0) {
-    return new URLSearchParams(window.location.search).get("computeTileRasterPreview") === "true"
+    return isRasterPreviewRequested()
       ? getDefaultRasterPreviewBucketCount()
       : DEFAULT_BUCKET_COUNT;
   }
@@ -234,13 +237,17 @@ type ComputeTileOrderStats = {
   dispatched: boolean;
   bucketCount: number;
   tileCount: number;
+  trackedTileCount: number;
   orderedSplats: number;
+  truncatedSplats: number;
+  overflowSplats: number;
+  overflowTiles: number;
   lastDispatchMs: number;
 };
 
 const isEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("computeTileOrder") === "depth-bucket" ||
-  new URLSearchParams(window.location.search).get("computeTileRasterPreview") === "true";
+  isRasterPreviewRequested();
 
 class ComputeTileOrderPass {
   private readonly clearShader: ComputeShader;
@@ -259,7 +266,11 @@ class ComputeTileOrderPass {
     dispatched: false,
     bucketCount: this.bucketCount,
     tileCount: 0,
+    trackedTileCount: 0,
     orderedSplats: 0,
+    truncatedSplats: 0,
+    overflowSplats: 0,
+    overflowTiles: 0,
     lastDispatchMs: 0,
   };
 
@@ -418,12 +429,19 @@ class ComputeTileOrderPass {
       clearedAgain && this.scatterShader.dispatch(Math.ceil(this.paramsData[21] / WORKGROUP_SIZE));
 
     if (scattered) {
+      const trackedTileCount = Math.min(tileStats.tileCount, MAX_TILES);
+      const orderedSplats = Math.min(tileStats.visibleSplats, this.paramsData[21]);
+      const truncatedSplats = Math.max(0, tileStats.visibleSplats - orderedSplats) + tileStats.overflowSplats;
       this.stats = {
         enabled: true,
         dispatched: true,
         bucketCount: this.bucketCount,
         tileCount: tileStats.tileCount,
-        orderedSplats: tileStats.visibleSplats,
+        trackedTileCount,
+        orderedSplats,
+        truncatedSplats,
+        overflowSplats: tileStats.overflowSplats,
+        overflowTiles: Math.max(0, tileStats.tileCount - trackedTileCount),
         lastDispatchMs: performance.now() - start,
       };
     }

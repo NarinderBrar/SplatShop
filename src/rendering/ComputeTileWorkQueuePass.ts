@@ -17,8 +17,7 @@ const DEFAULT_DEPTH_BAND_COUNT = 32;
 const MAX_DEPTH_BAND_COUNT = 64;
 const DEFAULT_RASTER_SPLATS_PER_WORK_ITEM = 128;
 const MAX_RASTER_SPLATS_PER_WORK_ITEM = 512;
-const DEFAULT_RASTER_WORK_ITEM_BUDGET = 4096;
-const DEFAULT_RASTER_WORK_ITEM_BUDGET_CAP = 16384;
+const DEFAULT_RASTER_WORK_ITEM_BUDGET = 3072;
 const DEPTH_BAND_QUANTIZATION = 1024;
 const MOTION_COVERAGE_HOLD_FRAMES = 6;
 const MOTION_COVERAGE_MOVE_EPSILON_SQ = 0.0025;
@@ -28,6 +27,9 @@ const getRasterPreviewQuality = (): "fast" | "balanced" | "quality" => {
   const value = new URLSearchParams(window.location.search).get("computeTileRasterQuality");
   return value === "fast" || value === "quality" ? value : "balanced";
 };
+
+const isRasterPreviewRequested = (params = new URLSearchParams(window.location.search)): boolean =>
+  params.get("computeTileRasterPreview") === "true" || params.get("renderer") === "compute";
 
 const getDefaultSplatsPerWorkItem = (): number => {
   const quality = getRasterPreviewQuality();
@@ -43,23 +45,23 @@ const getDefaultSplatsPerWorkItem = (): number => {
 const getDefaultWorkItemBudgetCap = (): number => {
   const quality = getRasterPreviewQuality();
   if (quality === "fast") {
-    return 8192;
+    return 6144;
   }
   if (quality === "quality") {
-    return 32768;
+    return 16384;
   }
-  return DEFAULT_RASTER_WORK_ITEM_BUDGET_CAP;
+  return 12288;
 };
 
 const getDefaultRasterCoverageTarget = (): number => {
   const quality = getRasterPreviewQuality();
   if (quality === "fast") {
-    return 0.75;
+    return 0.65;
   }
   if (quality === "quality") {
-    return 1.0;
+    return 0.85;
   }
-  return 0.9;
+  return 0.8;
 };
 
 const getDefaultDepthBandCount = (): number => {
@@ -354,11 +356,11 @@ const isEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("computeTileWorkQueue") === "true" ||
   new URLSearchParams(window.location.search).get("computeTilePreview") === "true" ||
   new URLSearchParams(window.location.search).get("computeTileSplatPreview") === "true" ||
-  new URLSearchParams(window.location.search).get("computeTileRasterPreview") === "true";
+  isRasterPreviewRequested();
 
 const isAutoBatchedRasterPreview = (params: URLSearchParams): boolean =>
-  params.get("computeTileRasterPreview") === "true" &&
-  params.get("computeTileWorkQueueOrder") === "depth-band" &&
+  isRasterPreviewRequested(params) &&
+  getWorkQueueOrderMode(params) === "depth-band" &&
   params.get("computeTileRasterBatch") !== "false";
 
 const getMaxSplatsPerWorkItem = (): number => {
@@ -410,12 +412,12 @@ const hasExplicitRasterCoverageTarget = (): boolean => {
 const getDefaultMotionCoverageTarget = (): number => {
   const quality = getRasterPreviewQuality();
   if (quality === "fast") {
-    return 0.6;
+    return 0.5;
   }
   if (quality === "quality") {
-    return 0.75;
+    return 0.65;
   }
-  return 0.75;
+  return 0.6;
 };
 
 const getRasterMotionCoverageTarget = (coverageTarget: number, explicitCoverageTarget: boolean): number => {
@@ -435,20 +437,23 @@ const hasExplicitWorkItemBudget = (): boolean => {
   return Number.isFinite(value) && value > 0;
 };
 
-const getWorkQueueOrderMode = (): "compact" | "depth-band" =>
-  new URLSearchParams(window.location.search).get("computeTileWorkQueueOrder") === "depth-band"
-    ? "depth-band"
-    : "compact";
+function getWorkQueueOrderMode(params = new URLSearchParams(window.location.search)): "compact" | "depth-band" {
+  const value = params.get("computeTileWorkQueueOrder");
+  if (value === "compact" || value === "depth-band") {
+    return value;
+  }
+  return isRasterPreviewRequested(params) ? "depth-band" : "compact";
+}
 
 const getStableDepthBandOrder = (): boolean => {
   const params = new URLSearchParams(window.location.search);
   if (params.get("computeTileWorkQueueStableOrder") === "true") {
-    return params.get("computeTileWorkQueueOrder") === "depth-band";
+    return getWorkQueueOrderMode(params) === "depth-band";
   }
   if (params.get("computeTileWorkQueueStableOrder") === "false") {
     return false;
   }
-  return params.get("computeTileWorkQueueOrder") === "depth-band" && getRasterPreviewQuality() === "quality";
+  return false;
 };
 
 const getDepthBandRangeOverride = (): number | undefined => {
