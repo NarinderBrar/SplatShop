@@ -29,6 +29,21 @@ type InitialSortView = {
   cameraForward: Vector3;
 };
 
+type GlobalPackedShChunk = {
+  splatOffset: number;
+  data: SogPackedData;
+};
+
+type GlobalPackedShStats = {
+  colorMode: "dc" | "sh";
+  shNFileCount: number;
+  shNCodebookLength: number;
+  shBands: number;
+  shCoeffCount: number;
+  shPaletteCount: number;
+  shRenderMode: "dc" | "loaded" | "cpu";
+};
+
 type SsogGlobalPackedStats = {
   renderSplats: number;
   chunkCount: number;
@@ -234,6 +249,16 @@ const getSsogComputePrimaryCoverageThreshold = (name: string, fallback: number):
 const getSsogComputePrimaryFrameThreshold = (name: string, fallback: number): number => {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : fallback;
+};
+
+const getCpuShIntervalFrames = (): number => {
+  const value = Number(new URLSearchParams(window.location.search).get("sogShInterval"));
+  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : 30;
+};
+
+const isCpuShEnabled = (): boolean => {
+  const value = new URLSearchParams(window.location.search).get("sogSh");
+  return value === "cpu" || value === "true";
 };
 
 const GPU_INDEX_GATHER_SOURCE = `
@@ -475,6 +500,10 @@ class SsogGlobalPackedRenderPass {
     ordinalToPacked?: StorageBuffer;
   };
   private readonly indices: Uint32Array;
+  private readonly colorData: Float32Array;
+  private readonly dcColorData: Float32Array;
+  private readonly shChunks: GlobalPackedShChunk[];
+  private readonly shStats: GlobalPackedShStats;
   private readonly updateViewport: () => void;
   private readonly viewport = new Vector2(1, 1);
   private sortWorker?: Worker;
@@ -496,6 +525,8 @@ class SsogGlobalPackedRenderPass {
   private computeTileRasterPrimaryActive = false;
   private computeTileRasterPrimaryFallbackReason = "";
   private computeTileFrame = 0;
+  private cpuShFrame = 0;
+  private lastCpuShMs = 0;
   private readonly computeTileUpdateInterval = getSsogComputeTileUpdateInterval();
   private readonly computePrimaryMinCoverage = getSsogComputePrimaryCoverageThreshold(
     "computeTileRasterPrimaryMinCoverage",
@@ -534,6 +565,8 @@ class SsogGlobalPackedRenderPass {
   private readonly computeTileRasterPreviewOnly = isSsogComputeTileRasterPreviewOnlyEnabled();
   private readonly computeTileRasterStrictPreviewOnly = isSsogComputeTileRasterStrictPreviewOnlyEnabled();
   private readonly computeTileRasterPrimaryAllowed = isSsogComputeTileRasterPrimaryEnabled();
+  private readonly cpuShEnabled = isCpuShEnabled();
+  private readonly cpuShIntervalFrames = getCpuShIntervalFrames();
 
   readonly signature: string;
   readonly keys: Set<string>;
@@ -554,6 +587,10 @@ class SsogGlobalPackedRenderPass {
     this.gpuSortVisibleMode = getSsogGpuSortVisibleMode(this.rendererBackend.requested, this.numSplats);
 
     const packed = buildGlobalPackedArrays(chunks, initialSortView);
+    this.colorData = packed.color;
+    this.dcColorData = packed.dcColor;
+    this.shChunks = packed.shChunks;
+    this.shStats = packed.shStats;
     this.indices = new Uint32Array(this.numSplats);
     for (let i = 0; i < this.indices.length; i++) {
       this.indices[i] = packed.initialDrawIndices[i];
@@ -728,13 +765,13 @@ class SsogGlobalPackedRenderPass {
       computeRendererEnabled: this.rendererBackend.requested === "compute",
       computeRendererPhase: this.getComputeRendererPhase(),
       computeRendererVisibility: this.getComputeRendererVisibility(),
-      colorMode: "dc",
-      shNFileCount: 0,
-      shNCodebookLength: 0,
-      shBands: 0,
-      shCoeffCount: 0,
-      shPaletteCount: 0,
-      shRenderMode: "dc",
+      colorMode: this.shStats.colorMode,
+      shNFileCount: this.shStats.shNFileCount,
+      shNCodebookLength: this.shStats.shNCodebookLength,
+      shBands: this.shStats.shBands,
+      shCoeffCount: this.shStats.shCoeffCount,
+      shPaletteCount: this.shStats.shPaletteCount,
+      shRenderMode: this.shStats.shRenderMode,
       ...this.getComputeTileStats(),
       ...this.getComputeTileSplatPreviewStats(),
       ...this.getComputeTileRasterPreviewStats(),
@@ -1343,6 +1380,7 @@ class SsogGlobalPackedRenderPass {
 
     const cameraPosition = camera.globalPosition;
     const cameraForward = camera.getDirection(Vector3.Forward());
+    this.updateCpuShColors(cameraPosition);
     const initialSort = !Number.isFinite(this.lastCameraPosition.x);
     const moved = Vector3.DistanceSquared(cameraPosition, this.lastCameraPosition) > SORT_MOVE_EPSILON_SQ;
     const turned = Vector3.Dot(cameraForward, this.lastCameraForward) < SORT_FORWARD_DOT_THRESHOLD;
@@ -1461,6 +1499,26 @@ class SsogGlobalPackedRenderPass {
       centers.buffer,
       indices.buffer,
     ]);
+  }
+
+  private updateCpuShColors(cameraPosition: Vector3): void {
+    if (!this.cpuShEnabled || this.shChunks.length === 0) {
+      return;
+    }
+
+    this.cpuShFrame = (this.cpuShFrame + 1) % this.cpuShIntervalFrames;
+    if (this.cpuShFrame !== 1 && this.lastCpuShMs > 0) {
+      return;
+    }
+
+    const start = performance.now();
+    this.colorData.set(this.dcColorData);
+    for (const chunk of this.shChunks) {
+      bakePackedShColors(chunk.data, chunk.splatOffset, cameraPosition, this.colorData);
+    }
+    this.buffers.color.update(this.colorData, 0, this.colorData.byteLength);
+    this.shStats.shRenderMode = "cpu";
+    this.lastCpuShMs = performance.now() - start;
   }
 }
 
@@ -1703,6 +1761,7 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
   const quats = new Uint32Array(numSplats);
   const scales = new Uint32Array(numSplats);
   const color = new Float32Array(numSplats * 4);
+  const dcColor = new Float32Array(numSplats * 4);
   const centers = new Float32Array(numSplats * 3);
   const centerScale = new Float32Array(numSplats * 4);
   const globalIndices = new Uint32Array(numSplats);
@@ -1711,6 +1770,16 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
   const chunkInfo = new Float32Array(chunks.length * 8);
   const scaleCodebookLength = chunks.reduce((sum, chunk) => sum + chunk.data.scaleCodebook.length, 0);
   const scaleCodebook = new Float32Array(scaleCodebookLength);
+  const shChunks: GlobalPackedShChunk[] = [];
+  const shStats: GlobalPackedShStats = {
+    colorMode: "dc",
+    shNFileCount: 0,
+    shNCodebookLength: 0,
+    shBands: 0,
+    shCoeffCount: 0,
+    shPaletteCount: 0,
+    shRenderMode: "dc",
+  };
   const boundsMin: [number, number, number] = [
     Number.POSITIVE_INFINITY,
     Number.POSITIVE_INFINITY,
@@ -1736,6 +1805,16 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
     scales.set(data.scales, splatOffset);
     centers.set(data.centers, splatOffset * 3);
     scaleCodebook.set(data.scaleCodebook, codebookOffset);
+    if (data.shN) {
+      shChunks.push({ splatOffset, data });
+      shStats.colorMode = "sh";
+      shStats.shRenderMode = "loaded";
+      shStats.shNFileCount += data.shN.fileCount;
+      shStats.shNCodebookLength += data.shN.codebookLength;
+      shStats.shBands = Math.max(shStats.shBands, data.shN.bands);
+      shStats.shCoeffCount = Math.max(shStats.shCoeffCount, data.shN.coeffsPerChannel);
+      shStats.shPaletteCount = Math.max(shStats.shPaletteCount, data.shN.paletteCount);
+    }
     for (let axis = 0; axis < 3; axis++) {
       boundsMin[axis] = Math.min(boundsMin[axis], data.boundsMin[axis]);
       boundsMax[axis] = Math.max(boundsMax[axis], data.boundsMax[axis]);
@@ -1762,6 +1841,10 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
       color[colorOffset + 1] = 0.5 + data.sh0Codebook[chan(pixel, 1)] * SH_C0;
       color[colorOffset + 2] = 0.5 + data.sh0Codebook[chan(pixel, 2)] * SH_C0;
       color[colorOffset + 3] = chan(pixel, 3) / 255;
+      dcColor[colorOffset + 0] = color[colorOffset + 0];
+      dcColor[colorOffset + 1] = color[colorOffset + 1];
+      dcColor[colorOffset + 2] = color[colorOffset + 2];
+      dcColor[colorOffset + 3] = color[colorOffset + 3];
     }
 
     splatOffset += data.numSplats;
@@ -1780,6 +1863,7 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
     quats,
     scales,
     color,
+    dcColor,
     centers,
     centerScale,
     globalIndices,
@@ -1787,13 +1871,98 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
     chunkBaseOffsets,
     chunkInfo,
     scaleCodebook,
+    shChunks,
+    shStats,
     boundsMin,
     boundsMax,
   };
 };
 
 const SH_C0 = 0.28209479177387814;
+const SH_C1 = 0.4886025119029199;
+const SH_C2 = [
+  1.0925484305920792,
+  -1.0925484305920792,
+  0.31539156525252005,
+  -1.0925484305920792,
+  0.5462742152960396,
+];
+const SH_C3 = [
+  -0.5900435899266435,
+  2.890611442640554,
+  -0.4570457994644658,
+  0.3731763325901154,
+  -0.4570457994644658,
+  1.445305721320277,
+  -0.5900435899266435,
+];
 const chan = (pixel: number, component: number): number => (pixel >>> (component * 8)) & 0xff;
+
+const evalShBasis = (x: number, y: number, z: number, coeffs: number): number[] => {
+  const basis = new Array<number>(coeffs).fill(0);
+  if (coeffs >= 3) {
+    basis[0] = -SH_C1 * y;
+    basis[1] = SH_C1 * z;
+    basis[2] = -SH_C1 * x;
+  }
+  if (coeffs >= 8) {
+    basis[3] = SH_C2[0] * x * y;
+    basis[4] = SH_C2[1] * y * z;
+    basis[5] = SH_C2[2] * (2 * z * z - x * x - y * y);
+    basis[6] = SH_C2[3] * x * z;
+    basis[7] = SH_C2[4] * (x * x - y * y);
+  }
+  if (coeffs >= 15) {
+    basis[8] = SH_C3[0] * y * (3 * x * x - y * y);
+    basis[9] = SH_C3[1] * x * y * z;
+    basis[10] = SH_C3[2] * y * (4 * z * z - x * x - y * y);
+    basis[11] = SH_C3[3] * z * (2 * z * z - 3 * x * x - 3 * y * y);
+    basis[12] = SH_C3[4] * x * (4 * z * z - x * x - y * y);
+    basis[13] = SH_C3[5] * z * (x * x - y * y);
+    basis[14] = SH_C3[6] * x * (x * x - 3 * y * y);
+  }
+  return basis;
+};
+
+const bakePackedShColors = (
+  data: SogPackedData,
+  splatOffset: number,
+  cameraPosition: Vector3,
+  colors: Float32Array,
+): void => {
+  const shN = data.shN;
+  if (!shN) {
+    return;
+  }
+
+  const coeffs = shN.coeffsPerChannel;
+  const codebook = shN.codebook;
+  const centroids = shN.centroids;
+  const labels = shN.labels;
+  const stride = shN.centroidWidth;
+
+  for (let i = 0; i < data.numSplats; i++) {
+    const centerOffset = i * 3;
+    const dx = cameraPosition.x - data.centers[centerOffset + 0];
+    const dy = cameraPosition.y - data.centers[centerOffset + 1];
+    const dz = cameraPosition.z - data.centers[centerOffset + 2];
+    const invLen = 1 / Math.max(1e-6, Math.hypot(dx, dy, dz));
+    const basis = evalShBasis(dx * invLen, dy * invLen, dz * invLen, coeffs);
+    const label = labels[i];
+    const paletteIndex = (label & 0xff) | (((label >>> 8) & 0xff) << 8);
+    const paletteX = paletteIndex % 64;
+    const paletteY = Math.floor(paletteIndex / 64);
+    const colorOffset = (splatOffset + i) * 4;
+
+    for (let coeff = 0; coeff < coeffs; coeff++) {
+      const pixel = centroids[paletteY * stride + paletteX * coeffs + coeff];
+      const basisValue = basis[coeff];
+      colors[colorOffset + 0] += codebook[pixel & 0xff] * basisValue;
+      colors[colorOffset + 1] += codebook[(pixel >>> 8) & 0xff] * basisValue;
+      colors[colorOffset + 2] += codebook[(pixel >>> 16) & 0xff] * basisValue;
+    }
+  }
+};
 
 export { SsogGlobalPackedRenderPass };
 export type { SsogGlobalPackedChunk, SsogGlobalPackedStats };

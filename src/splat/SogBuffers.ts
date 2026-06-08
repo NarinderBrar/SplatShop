@@ -41,6 +41,7 @@ class SogBuffers {
   readonly indices: Uint32Array;
   readonly stats: SogBufferStats;
   readonly storage: Nullable<SogStorageBuffers>;
+  private readonly dcColorData: Float32Array;
   private readonly colorData: Float32Array;
 
   constructor(engine: unknown, readonly packed: SogPackedData) {
@@ -49,7 +50,8 @@ class SogBuffers {
       this.indices[i] = i;
     }
 
-    this.colorData = this.createDcColorData();
+    this.dcColorData = this.createDcColorData();
+    this.colorData = this.dcColorData.slice();
     this.stats = {
       numSplats: packed.numSplats,
       boundsMin: packed.boundsMin,
@@ -155,9 +157,9 @@ class SogBuffers {
       const paletteX = paletteIndex % 64;
       const paletteY = Math.floor(paletteIndex / 64);
       const colorOffset = i * 4;
-      let r = colors[colorOffset + 0];
-      let g = colors[colorOffset + 1];
-      let b = colors[colorOffset + 2];
+      let r = this.dcColorData[colorOffset + 0];
+      let g = this.dcColorData[colorOffset + 1];
+      let b = this.dcColorData[colorOffset + 2];
 
       for (let coeff = 0; coeff < coeffs; coeff++) {
         const pixel = centroids[paletteY * stride + paletteX * coeffs + coeff];
