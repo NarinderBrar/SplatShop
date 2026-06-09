@@ -40,7 +40,7 @@ const getFilenameFromUrl = (url: string): string => {
   }
 };
 
-export async function createBabySplatApp(
+export async function createApp(
   canvas: HTMLCanvasElement,
   status: HTMLElement,
 ): Promise<void> {

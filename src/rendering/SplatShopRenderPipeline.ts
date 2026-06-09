@@ -10,8 +10,8 @@ import "@babylonjs/core/Shaders/postprocess.vertex";
 import "@babylonjs/core/ShadersWGSL/postprocess.vertex";
 import "@babylonjs/core/PostProcesses/RenderPipeline/postProcessRenderPipelineManagerSceneComponent";
 
-const PIPELINE_NAME = "BabySplatPipeline";
-const COMPOSITE_PASS = "BabySplatComposite";
+const PIPELINE_NAME = "SplatShopPipeline";
+const COMPOSITE_PASS = "SplatShopComposite";
 
 ShaderStore.ShadersStore[`${COMPOSITE_PASS}PixelShader`] = `
 precision highp float;
@@ -49,7 +49,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
 }
 `;
 
-export class BabySplatRenderPipeline extends PostProcessRenderPipeline {
+export class SplatShopRenderPipeline extends PostProcessRenderPipeline {
   private readonly scene: Scene;
   private readonly camera: ArcRotateCamera;
   private readonly compositePass: PostProcess;

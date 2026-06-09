@@ -1,7 +1,7 @@
 /**
  * Unified loader for all splat file formats using splat-transform.
  *
- * This follows SuperSplat's `src/io/read/loader.ts` closely. BabySplat converts
+ * This follows SuperSplat's `src/io/read/loader.ts` closely. SplatShop converts
  * the `DataTable` into its own runtime-neutral `SplatData` instead of
  * PlayCanvas `GSplatData`.
  */
@@ -145,7 +145,7 @@ const loadPackedSogData = async (
     const metaBytes = await readBytes(sogFs, metaFilename);
     const meta = JSON.parse(new TextDecoder().decode(metaBytes)) as SogMetaV2;
     if (meta.version !== 2) {
-      throw new Error(`Packed BabySplat SOG currently supports SOG v2 only. Found v${meta.version}.`);
+      throw new Error(`Packed SplatShop SOG currently supports SOG v2 only. Found v${meta.version}.`);
     }
 
     const decoder = await WebPCodec.create();

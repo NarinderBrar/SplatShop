@@ -2,7 +2,7 @@
  * File system implementations for reading splat data from various sources.
  *
  * Ported from SuperSplat's `src/io/read/file-systems.ts`. Keep this close to
- * upstream so loader behavior stays compatible while BabySplat replaces the
+ * upstream so loader behavior stays compatible while SplatShop replaces the
  * PlayCanvas runtime with Babylon.js.
  */
 
