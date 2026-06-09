@@ -37,7 +37,8 @@ const getGpuSortMode = (): GpuSortMode => {
     return value;
   }
 
-  return getRequestedRendererMode() === "cpu" ? "shadow" : "active";
+  const requested = getRequestedRendererMode();
+  return requested === "gpu" || requested === "compute" ? "active" : "shadow";
 };
 
 const getGpuSortVisibleMode = (): GpuSortVisibleMode => {
@@ -46,7 +47,8 @@ const getGpuSortVisibleMode = (): GpuSortVisibleMode => {
   if (value === "auto" || value === "radix" || value === "coarse") {
     return value;
   }
-  if (params.get("gpuSort") === "active" || getRequestedRendererMode() !== "cpu") {
+  const requested = getRequestedRendererMode();
+  if (params.get("gpuSort") === "active" || requested === "gpu" || requested === "compute") {
     return "auto";
   }
   return "cpu";
@@ -75,8 +77,8 @@ const resolveRendererBackend = (scene: Scene): RendererBackend => {
   if (requested === "auto") {
     return {
       requested,
-      effective: supportsCompute ? "gpu" : "cpu",
-      fallbackReason: supportsCompute ? "auto-gpu-radix-sort" : "webgpu-compute-unavailable",
+      effective: "cpu",
+      fallbackReason: supportsCompute ? "auto-kept-cpu-until-gpu-validation" : "webgpu-compute-unavailable",
     };
   }
 

@@ -102,44 +102,48 @@ const getPositiveNumberParam = (name: string, fallback: number): number => {
 };
 
 const getSsogQualityPreset = (): SsogQualityPreset => {
-  const value = new URLSearchParams(window.location.search).get("quality");
-  return value === "balanced" || value === "fast" ? value : "full";
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("quality");
+  if (value === "full" || value === "balanced" || value === "fast") {
+    return value;
+  }
+  return params.get("ssogReference") === "true" ? "full" : "balanced";
 };
 
 const getSsogStreamingPreset = (): SsogStreamingPreset => {
   switch (getSsogQualityPreset()) {
     case "fast":
       return {
-        cacheChunks: 64,
-        maxPendingLoads: 4,
+        cacheChunks: 48,
+        maxPendingLoads: 3,
         prefetchMultiplier: 1,
-        evictAfterFrames: 2,
-        cacheSplatMultiplier: 1.15,
-        lodMoveEpsilon: 0.5,
-        lodAngleDegrees: 12,
-        selectionStableFrames: 4,
+        evictAfterFrames: 4,
+        cacheSplatMultiplier: 1.1,
+        lodMoveEpsilon: 0.8,
+        lodAngleDegrees: 18,
+        selectionStableFrames: 6,
       };
     case "balanced":
       return {
-        cacheChunks: 128,
-        maxPendingLoads: 8,
-        prefetchMultiplier: 1.15,
-        evictAfterFrames: 6,
-        cacheSplatMultiplier: 1.55,
-        lodMoveEpsilon: 0.8,
-        lodAngleDegrees: 16,
-        selectionStableFrames: 16,
+        cacheChunks: 96,
+        maxPendingLoads: 6,
+        prefetchMultiplier: 1.08,
+        evictAfterFrames: 8,
+        cacheSplatMultiplier: 1.35,
+        lodMoveEpsilon: 0.65,
+        lodAngleDegrees: 14,
+        selectionStableFrames: 12,
       };
     default:
       return {
         cacheChunks: 128,
-        maxPendingLoads: 8,
-        prefetchMultiplier: 1.2,
-        evictAfterFrames: 4,
-        cacheSplatMultiplier: 1.6,
+        maxPendingLoads: 6,
+        prefetchMultiplier: 1.05,
+        evictAfterFrames: 8,
+        cacheSplatMultiplier: 1.35,
         lodMoveEpsilon: 0.08,
         lodAngleDegrees: 1,
-        selectionStableFrames: 0,
+        selectionStableFrames: 2,
       };
   }
 };
@@ -155,16 +159,16 @@ const getSplatBudget = (sourceSplats: number): number => {
     return sourceSplats;
   }
 
-  const quality = params.get("quality");
+  const quality = getSsogQualityPreset();
   const expandedGlobalSort = params.get("ssogGlobalSort") === "expanded";
   if (expandedGlobalSort && quality !== "fast") {
     return sourceSplats;
   }
   if (quality === "fast") {
-    return Math.min(sourceSplats, expandedGlobalSort ? Math.ceil(sourceSplats * 0.55) : 1_000_000);
+    return Math.min(sourceSplats, expandedGlobalSort ? Math.ceil(sourceSplats * 0.55) : 900_000);
   }
   if (quality === "balanced") {
-    return Math.min(sourceSplats, 2_500_000);
+    return Math.min(sourceSplats, 2_000_000);
   }
   return sourceSplats;
 };
