@@ -111,6 +111,7 @@ uniform viewport: vec2f;
 uniform minPixelRadius: f32;
 uniform maxPixelRadius: f32;
 uniform renderSplatCount: f32;
+uniform vizMode: f32;
 uniform meansMin: vec3f;
 uniform meansMax: vec3f;
 
@@ -124,6 +125,8 @@ var<storage, read> indexBuffer: array<u32>;
 
 varying vCorner: vec2f;
 varying vColor: vec4f;
+
+const CHUNK_SIZE: u32 = 4096u;
 
 #define CUSTOM_VERTEX_DEFINITIONS
 
@@ -248,6 +251,26 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let rotation = normalize(decodeRotation(splatIndex));
   let logScale = decodeScale(splatIndex);
   let centerClip = uniforms.worldViewProjection * vec4f(center, 1.0);
+
+  if (uniforms.vizMode >= 1.0) {
+    let pixelRadius = 2.0;
+    let clipOffset = corner * pixelRadius * 2.0 / uniforms.viewport * centerClip.w;
+    vertexOutputs.position = vec4f(centerClip.xy + clipOffset, centerClip.zw);
+    vertexOutputs.vCorner = corner;
+    if (uniforms.vizMode == 2.0) {
+      let chunkId = f32(splatIndex / CHUNK_SIZE);
+      let rng = vec3f(
+        fract(sin(chunkId * 12.9898 + 1.0) * 43758.5453),
+        fract(sin(chunkId * 78.233 + 2.0) * 43758.5453),
+        fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
+      );
+      vertexOutputs.vColor = vec4f(rng, 1.0);
+    } else {
+      vertexOutputs.vColor = decodeColor(splatIndex);
+    }
+    return vertexOutputs;
+  }
+
   vertexOutputs.position = initCornerCov(center, rotation, exp(logScale), corner, centerClip);
   vertexOutputs.vCorner = corner;
   vertexOutputs.vColor = decodeColor(splatIndex);
@@ -257,6 +280,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
 const WGSL_FRAGMENT_SOURCE = `
 varying vCorner: vec2f;
 varying vColor: vec4f;
+
+uniform vizMode: f32;
 
 const EXP4: f32 = 0.01831563888873418;
 const INV_ONE_MINUS_EXP4: f32 = 1.018657360363774;
@@ -273,7 +298,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   if (radius2 > 1.0) {
     discard;
   }
-  let alpha = normExp(radius2) * clamp(input.vColor.a, 0.0, 1.0);
+  let splatAlpha = clamp(input.vColor.a, 0.0, 1.0);
+  let effectiveAlpha = select(splatAlpha, 1.0, uniforms.vizMode == 1.0);
+  let alpha = normExp(radius2) * effectiveAlpha;
   if (alpha < ${ALPHA_CLIP.toFixed(10)}) {
     discard;
   }
@@ -577,6 +604,10 @@ class PackedSogRenderPass {
 
     this.lastTransparentSortIndex = nextIndex;
     this.mesh.alphaIndex = nextIndex;
+  }
+
+  setVizMode(mode: number): void {
+    this.material.setFloat("vizMode", mode);
   }
 
   getStats(): PackedSogRenderStats {
@@ -1350,6 +1381,7 @@ class PackedSogRenderPass {
           "minPixelRadius",
           "maxPixelRadius",
           "renderSplatCount",
+          "vizMode",
           "meansMin",
           "meansMax",
         ],
@@ -1373,6 +1405,7 @@ class PackedSogRenderPass {
     material.setFloat("minPixelRadius", MIN_PIXEL_RADIUS);
     material.setFloat("maxPixelRadius", MAX_PIXEL_RADIUS);
     material.setFloat("renderSplatCount", 0);
+    material.setFloat("vizMode", 0);
     material.setVector3("meansMin", Vector3.FromArray(this.sogBuffers.packed.meansMins));
     material.setVector3("meansMax", Vector3.FromArray(this.sogBuffers.packed.meansMaxs));
     return material;

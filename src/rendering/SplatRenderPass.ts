@@ -98,13 +98,19 @@ uniform vec2 viewport;
 uniform float gaussianScale;
 uniform float minPixelRadius;
 uniform float maxPixelRadius;
+uniform float vizMode;
 
 varying vec2 vCorner;
 varying vec4 vColor;
 
 void main(void) {
   vec4 centerClip = worldViewProjection * vec4(position, 1.0);
-  float pixelRadius = clamp(exp(splatScale) * gaussianScale, minPixelRadius, maxPixelRadius);
+  float pixelRadius;
+  if (vizMode >= 1.0) {
+    pixelRadius = 2.0;
+  } else {
+    pixelRadius = clamp(exp(splatScale) * gaussianScale, minPixelRadius, maxPixelRadius);
+  }
   vec2 clipOffset = corner * pixelRadius * 2.0 / viewport * centerClip.w;
 
   gl_Position = vec4(centerClip.xy + clipOffset, centerClip.zw);
@@ -119,6 +125,8 @@ precision highp float;
 varying vec2 vCorner;
 varying vec4 vColor;
 
+uniform float vizMode;
+
 const float EXP4 = 0.01831563888873418;
 const float INV_ONE_MINUS_EXP4 = 1.018657360363774;
 
@@ -132,7 +140,9 @@ void main(void) {
     discard;
   }
 
-  float alpha = normExp(radius2) * clamp(vColor.a, 0.0, 1.0);
+  float splatAlpha = clamp(vColor.a, 0.0, 1.0);
+  float effectiveAlpha = vizMode == 1.0 ? 1.0 : splatAlpha;
+  float alpha = normExp(radius2) * effectiveAlpha;
   if (alpha < ${ALPHA_CLIP.toFixed(10)}) {
     discard;
   }
@@ -152,6 +162,7 @@ uniform gaussianScale: f32;
 uniform minPixelRadius: f32;
 uniform maxPixelRadius: f32;
 uniform renderSplatCount: f32;
+uniform vizMode: f32;
 
 var<storage, read> centerScaleBuffer: array<vec4f>;
 var<storage, read> scaleBuffer: array<vec4f>;
@@ -161,6 +172,8 @@ var<storage, read> indexBuffer: array<u32>;
 
 varying vCorner: vec2f;
 varying vColor: vec4f;
+
+const CHUNK_SIZE: u32 = 4096u;
 
 #define CUSTOM_VERTEX_DEFINITIONS
 
@@ -270,6 +283,25 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let rotation = normalize(rotationBuffer[splatIndex]);
   let splatColor = colorBuffer[splatIndex];
   let centerClip = uniforms.worldViewProjection * vec4f(centerScale.xyz, 1.0);
+
+  if (uniforms.vizMode >= 1.0) {
+    let pixelRadius = 2.0;
+    let clipOffset = corner * pixelRadius * 2.0 / uniforms.viewport * centerClip.w;
+    vertexOutputs.position = vec4f(centerClip.xy + clipOffset, centerClip.zw);
+    vertexOutputs.vCorner = corner;
+    if (uniforms.vizMode == 2.0) {
+      let chunkId = f32(splatIndex / CHUNK_SIZE);
+      let rng = vec3f(
+        fract(sin(chunkId * 12.9898 + 1.0) * 43758.5453),
+        fract(sin(chunkId * 78.233 + 2.0) * 43758.5453),
+        fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
+      );
+      vertexOutputs.vColor = vec4f(rng, 1.0);
+    } else {
+      vertexOutputs.vColor = splatColor;
+    }
+    return vertexOutputs;
+  }
   
   let modelView = uniforms.view * uniforms.world;
   
@@ -293,6 +325,8 @@ const WGSL_FRAGMENT_SOURCE = `
 varying vCorner: vec2f;
 varying vColor: vec4f;
 
+uniform vizMode: f32;
+
 const EXP4: f32 = 0.01831563888873418;
 const INV_ONE_MINUS_EXP4: f32 = 1.018657360363774;
 
@@ -309,7 +343,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     discard;
   }
 
-  let alpha = normExp(radius2) * clamp(input.vColor.a, 0.0, 1.0);
+  let splatAlpha = clamp(input.vColor.a, 0.0, 1.0);
+  let effectiveAlpha = select(splatAlpha, 1.0, uniforms.vizMode == 1.0);
+  let alpha = normExp(radius2) * effectiveAlpha;
   if (alpha < ${ALPHA_CLIP.toFixed(10)}) {
     discard;
   }
@@ -604,6 +640,10 @@ class SplatRenderPass {
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     this.mesh.setEnabled(enabled);
+  }
+
+  setVizMode(mode: number): void {
+    this.material.setFloat("vizMode", mode);
   }
 
   getStats(): SplatRenderStats {
@@ -1384,6 +1424,7 @@ class SplatRenderPass {
           "minPixelRadius",
           "maxPixelRadius",
           "renderSplatCount",
+          "vizMode",
         ],
         storageBuffers: isWebGPU
           ? ["centerScaleBuffer", "scaleBuffer", "rotationBuffer", "colorBuffer", "indexBuffer"]
@@ -1400,6 +1441,7 @@ class SplatRenderPass {
     material.setFloat("minPixelRadius", MIN_PIXEL_RADIUS);
     material.setFloat("maxPixelRadius", MAX_PIXEL_RADIUS);
     material.setFloat("renderSplatCount", 0);
+    material.setFloat("vizMode", 0);
 
     return material;
   }

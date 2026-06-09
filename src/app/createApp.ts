@@ -7,6 +7,7 @@ import { LoadingProgress } from "../debug/LoadingProgress";
 import { ViewerDebugStats } from "../debug/ViewerDebugStats";
 import { initFileHandler } from "../file-handler";
 import { createEngine } from "../rendering/createEngine";
+import { createUI } from "./createUI";
 import type { SplatCloud } from "../splat/SplatCloud";
 
 const DEFAULT_SPLAT_URL = "/Room.sog";
@@ -67,8 +68,16 @@ export async function createApp(
   status.textContent = `${mode} active. Loading SuperSplat-compatible splat path.`;
 
   const assetLoader = new AssetLoader();
+  let activeVizMode = 0;
+
+  createUI(debugStats, (mode) => {
+    activeVizMode = mode;
+    currentSplatCloud?.setVizMode(mode);
+  });
+
   const fileHandler = initFileHandler(canvas, scene, assetLoader, status, (splatCloud) => {
     currentSplatCloud = splatCloud;
+    splatCloud.setVizMode(activeVizMode);
     debugStats.setCloud(splatCloud);
     loadingProgress.setCloud(splatCloud);
     const framing = splatCloud.getCenterAndRadius();

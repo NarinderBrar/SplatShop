@@ -113,6 +113,14 @@ class CompositeSplatRenderPass {
     this.runtimes.forEach((runtime) => runtime.pass.dispose());
   }
 
+  setVizMode(mode: number): void {
+    this.runtimes.forEach((runtime) => {
+      if ("setVizMode" in runtime.pass) {
+        (runtime.pass as unknown as { setVizMode: (m: number) => void }).setVizMode(mode);
+      }
+    });
+  }
+
   getStats(): SplatRenderStats | PackedSogRenderStats {
     const stats = this.runtimes.filter((runtime) => runtime.active).map((runtime) => runtime.pass.getStats());
     const first = stats[0];

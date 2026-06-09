@@ -103,6 +103,13 @@ class SplatCloud {
     return { center, radius };
   }
 
+  setVizMode(mode: number): void {
+    const pass = this.renderPass;
+    if ("setVizMode" in pass) {
+      (pass as unknown as { setVizMode: (m: number) => void }).setVizMode(mode);
+    }
+  }
+
   dispose(): void {
     this.renderPass.dispose();
     this.preview.dispose();

@@ -22,6 +22,7 @@ class ViewerDebugStats {
   constructor(private readonly mode: string) {
     this.root = document.createElement("div");
     this.root.id = "debug-stats";
+    this.root.style.display = "none";
     document.body.appendChild(this.root);
     const params = new URLSearchParams(window.location.search);
     this.tileOverlayMode = params.get("computeTileDepthOverlay") === "true" ? "depth" : "occupancy";
@@ -37,6 +38,10 @@ class ViewerDebugStats {
   setCloud(splatCloud: SplatCloud): void {
     this.splatCloud = splatCloud;
     this.render();
+  }
+
+  setVisible(visible: boolean): void {
+    this.root.style.display = visible ? "" : "none";
   }
 
   update(): void {

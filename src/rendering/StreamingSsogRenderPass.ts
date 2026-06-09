@@ -356,6 +356,17 @@ class StreamingSsogRenderPass {
     this.queued.clear();
   }
 
+  setVizMode(mode: number): void {
+    this.loaded.forEach((runtime) => runtime.pass.setVizMode(mode));
+    this.mergedRuntimes.forEach((runtime) => runtime.pass.setVizMode(mode));
+    if (this.packedGlobalRuntime) {
+      this.packedGlobalRuntime.setVizMode(mode);
+    }
+    if (this.expandedRuntime) {
+      this.expandedRuntime.pass.setVizMode(mode);
+    }
+  }
+
   getStats(): StreamingSsogRenderStats {
     const mergedKeys = this.getMergedKeys();
     const packedMetadata = this.getActivePackedMetadataStats();

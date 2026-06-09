@@ -300,6 +300,7 @@ uniform viewport: vec2f;
 uniform minPixelRadius: f32;
 uniform maxPixelRadius: f32;
 uniform renderSplatCount: f32;
+uniform vizMode: f32;
 
 var<storage, read> meansLBuffer: array<u32>;
 var<storage, read> meansUBuffer: array<u32>;
@@ -455,6 +456,26 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let rotation = normalize(decodeRotation(packedSplatIndex));
   let logScale = decodeScale(packedSplatIndex);
   let centerClip = uniforms.worldViewProjection * vec4f(center, 1.0);
+
+  if (uniforms.vizMode >= 1.0) {
+    let pixelRadius = 2.0;
+    let clipOffset = corner * pixelRadius * 2.0 / uniforms.viewport * centerClip.w;
+    vertexOutputs.position = vec4f(centerClip.xy + clipOffset, centerClip.zw);
+    vertexOutputs.vCorner = corner;
+    if (uniforms.vizMode == 2.0) {
+      let chunkId = f32(chunkIndex(packedSplatIndex));
+      let rng = vec3f(
+        fract(sin(chunkId * 12.9898 + 1.0) * 43758.5453),
+        fract(sin(chunkId * 78.233 + 2.0) * 43758.5453),
+        fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
+      );
+      vertexOutputs.vColor = vec4f(rng, 1.0);
+    } else {
+      vertexOutputs.vColor = colorBuffer[splatIndex];
+    }
+    return vertexOutputs;
+  }
+
   vertexOutputs.position = initCornerCov(center, rotation, exp(logScale), corner, centerClip);
   vertexOutputs.vCorner = corner;
   vertexOutputs.vColor = colorBuffer[splatIndex];
@@ -464,6 +485,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
 const WGSL_FRAGMENT_SOURCE = `
 varying vCorner: vec2f;
 varying vColor: vec4f;
+
+uniform vizMode: f32;
 
 const EXP4: f32 = 0.01831563888873418;
 const INV_ONE_MINUS_EXP4: f32 = 1.018657360363774;
@@ -480,7 +503,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   if (radius2 > 1.0) {
     discard;
   }
-  let alpha = normExp(radius2) * clamp(input.vColor.a, 0.0, 1.0);
+  let splatAlpha = clamp(input.vColor.a, 0.0, 1.0);
+  let effectiveAlpha = select(splatAlpha, 1.0, uniforms.vizMode == 1.0);
+  let alpha = normExp(radius2) * effectiveAlpha;
   if (alpha < ${ALPHA_CLIP.toFixed(10)}) {
     discard;
   }
@@ -1311,6 +1336,7 @@ class SsogGlobalPackedRenderPass {
           "minPixelRadius",
           "maxPixelRadius",
           "renderSplatCount",
+          "vizMode",
         ],
         storageBuffers: [
           "meansLBuffer",
@@ -1333,7 +1359,12 @@ class SsogGlobalPackedRenderPass {
     material.setFloat("minPixelRadius", MIN_PIXEL_RADIUS);
     material.setFloat("maxPixelRadius", MAX_PIXEL_RADIUS);
     material.setFloat("renderSplatCount", 0);
+    material.setFloat("vizMode", 0);
     return material;
+  }
+
+  setVizMode(mode: number): void {
+    this.material.setFloat("vizMode", mode);
   }
 
   private bindStorageBuffers(): void {
