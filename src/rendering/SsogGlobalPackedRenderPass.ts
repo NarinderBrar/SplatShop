@@ -218,11 +218,12 @@ const SORT_FORWARD_DOT_THRESHOLD = Math.cos((0.25 * Math.PI) / 180);
 const SORT_INTERVAL_FRAMES = 6;
 const AUTO_GPU_SORT_SPLAT_THRESHOLD = 2_000_000;
 const GPU_INDEX_GATHER_WORKGROUP_SIZE = 256;
-const DEFAULT_COMPUTE_PRIMARY_MIN_COVERAGE = 0.12;
-const DEFAULT_COMPUTE_PRIMARY_DROP_COVERAGE = 0.06;
-const DEFAULT_COMPUTE_PRIMARY_READY_FRAMES = 6;
+const DEFAULT_COMPUTE_PRIMARY_MIN_COVERAGE = 0.45;
+const DEFAULT_COMPUTE_PRIMARY_DROP_COVERAGE = 0.25;
+const DEFAULT_COMPUTE_PRIMARY_READY_FRAMES = 12;
 const DEFAULT_COMPUTE_PRIMARY_DROP_FRAMES = 1;
 const DEFAULT_COMPUTE_PRIMARY_MIN_ADAPTIVE_SCALE = 0.75;
+const DEFAULT_COMPUTE_PRIMARY_MAX_FRAME_MS = 40;
 
 const getSsogComputeTileUpdateInterval = (): number => {
   const params = new URLSearchParams(window.location.search);
@@ -249,6 +250,11 @@ const getSsogComputePrimaryCoverageThreshold = (name: string, fallback: number):
 const getSsogComputePrimaryFrameThreshold = (name: string, fallback: number): number => {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : fallback;
+};
+
+const getSsogComputePrimaryFrameBudget = (name: string, fallback: number): number => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) && value > 0 ? Math.max(8, value) : fallback;
 };
 
 const getCpuShIntervalFrames = (): number => {
@@ -547,6 +553,10 @@ class SsogGlobalPackedRenderPass {
   private readonly computePrimaryMinAdaptiveScale = getSsogComputePrimaryCoverageThreshold(
     "computeTileRasterPrimaryMinAdaptiveScale",
     DEFAULT_COMPUTE_PRIMARY_MIN_ADAPTIVE_SCALE,
+  );
+  private readonly computePrimaryMaxFrameMs = getSsogComputePrimaryFrameBudget(
+    "computeTileRasterPrimaryMaxFrameMs",
+    DEFAULT_COMPUTE_PRIMARY_MAX_FRAME_MS,
   );
   private readonly gpuSortVisibleMode: "cpu" | "auto" | "radix";
   private readonly rendererBackend: {
@@ -915,19 +925,29 @@ class SsogGlobalPackedRenderPass {
         previewStats.previewSplats > 0 &&
         previewStats.workTiles > 0;
       const windowCoverage = previewStats?.windowCoverage ?? 0;
+      const sampledCoverage = previewStats?.sampledCoverage ?? 0;
       const adaptiveScale = previewStats?.adaptiveDrawScale ?? 0;
+      const frameMs = previewStats?.smoothedFrameMs ?? 0;
+      const runtimeDrawCoverageTarget = previewStats?.runtimeDrawCoverageTarget ?? this.computePrimaryMinCoverage;
       const primaryReady =
         previewDrawable &&
-        windowCoverage >= this.computePrimaryMinCoverage &&
-        adaptiveScale >= this.computePrimaryMinAdaptiveScale;
+        windowCoverage >= this.getComputePrimaryRuntimeMinCoverage(runtimeDrawCoverageTarget) &&
+        sampledCoverage >= 0.95 &&
+        adaptiveScale >= this.computePrimaryMinAdaptiveScale &&
+        (frameMs <= 0 || frameMs <= this.computePrimaryMaxFrameMs);
       const primaryDropped =
         !previewDrawable ||
         windowCoverage < this.computePrimaryDropCoverage ||
-        adaptiveScale < this.computePrimaryMinAdaptiveScale;
+        sampledCoverage < 0.9 ||
+        adaptiveScale < this.computePrimaryMinAdaptiveScale ||
+        (frameMs > 0 && frameMs > this.computePrimaryMaxFrameMs * 1.25);
       this.computeTileRasterPrimaryFallbackReason = this.getComputeTileRasterPrimaryFallbackReason(
         previewDrawable,
         windowCoverage,
+        sampledCoverage,
         adaptiveScale,
+        frameMs,
+        runtimeDrawCoverageTarget,
       );
 
       if (this.computeTileRasterPrimaryActive) {
@@ -958,7 +978,10 @@ class SsogGlobalPackedRenderPass {
   private getComputeTileRasterPrimaryFallbackReason(
     previewDrawable: boolean,
     windowCoverage: number,
+    sampledCoverage: number,
     adaptiveScale: number,
+    frameMs: number,
+    runtimeDrawCoverageTarget: number,
   ): string {
     if (!previewDrawable) {
       return "compute-primary-waiting-for-drawable-work";
@@ -966,13 +989,23 @@ class SsogGlobalPackedRenderPass {
     if (adaptiveScale < this.computePrimaryMinAdaptiveScale) {
       return "compute-primary-waiting-for-adaptive-budget";
     }
-    if (windowCoverage < this.computePrimaryMinCoverage) {
+    if (frameMs > 0 && frameMs > this.computePrimaryMaxFrameMs) {
+      return "compute-primary-waiting-for-frame-budget";
+    }
+    if (sampledCoverage < 0.95) {
+      return "compute-primary-waiting-for-full-sample-coverage";
+    }
+    if (windowCoverage < this.getComputePrimaryRuntimeMinCoverage(runtimeDrawCoverageTarget)) {
       return "compute-primary-waiting-for-window-coverage";
     }
     if (this.computePreviewDrawableFrames < this.computePrimaryReadyFrames) {
       return "compute-primary-waiting-for-stable-frames";
     }
     return "";
+  }
+
+  private getComputePrimaryRuntimeMinCoverage(runtimeDrawCoverageTarget: number): number {
+    return Math.max(this.computePrimaryMinCoverage, runtimeDrawCoverageTarget * 0.9);
   }
 
   private getComputeTileStats(): Pick<
@@ -1458,6 +1491,7 @@ class SsogGlobalPackedRenderPass {
     }
 
     const stats = this.gpuRadixSortPass.getStats();
+    const forceVisible = isSsogGpuSortForceVisible();
     const isValidAscending =
       stats.dispatched &&
       !stats.validationPending &&
@@ -1466,7 +1500,7 @@ class SsogGlobalPackedRenderPass {
       stats.outOfRangeIndices === 0 &&
       stats.duplicateAdjacentIndices === 0 &&
       stats.checksumValid;
-    if (!isValidAscending) {
+    if (!isValidAscending && !(forceVisible && stats.dispatched)) {
       return;
     }
 
@@ -1660,6 +1694,11 @@ const getSsogAutoGpuSortSplatThreshold = (): number => {
 
 const isSsogGpuSortShadowContinuous = (): boolean =>
   new URLSearchParams(window.location.search).get("ssogGpuSortShadow") === "continuous";
+
+const isSsogGpuSortForceVisible = (): boolean => {
+  const value = new URLSearchParams(window.location.search).get("ssogGpuSortForce");
+  return value === "true" || value === "radix";
+};
 
 const isSsogComputeTileStatsEnabled = (requested: RequestedRendererMode): boolean => {
   const params = new URLSearchParams(window.location.search);
