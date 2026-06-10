@@ -19,11 +19,10 @@ class ViewerDebugStats {
   private fps = 0;
   private lastFpsTime = performance.now();
 
-  constructor(private readonly mode: string) {
+  constructor(private readonly mode: string, container?: HTMLElement) {
     this.root = document.createElement("div");
     this.root.id = "debug-stats";
-    this.root.style.display = "none";
-    document.body.appendChild(this.root);
+    (container ?? document.body).appendChild(this.root);
     const params = new URLSearchParams(window.location.search);
     this.tileOverlayMode = params.get("computeTileDepthOverlay") === "true" ? "depth" : "occupancy";
     if (params.get("computeTileOverlay") === "true" || params.get("computeTileDepthOverlay") === "true") {
@@ -33,6 +32,10 @@ class ViewerDebugStats {
       document.body.appendChild(this.tileOverlay);
     }
     this.render();
+  }
+
+  getElement(): HTMLDivElement {
+    return this.root;
   }
 
   setCloud(splatCloud: SplatCloud): void {

@@ -70,10 +70,16 @@ export async function createApp(
   const assetLoader = new AssetLoader();
   let activeVizMode = 0;
 
-  createUI(debugStats, (mode) => {
-    activeVizMode = mode;
-    currentSplatCloud?.setVizMode(mode);
-  });
+  debugStats.setVisible(false);
+  createUI({
+    onVizModeChange: (mode) => {
+      activeVizMode = mode;
+      currentSplatCloud?.setVizMode(mode);
+    },
+    onPropertyTabChange: (tab) => {
+      debugStats.setVisible(tab === "debug");
+    },
+  }, debugStats.getElement());
 
   const fileHandler = initFileHandler(canvas, scene, assetLoader, status, (splatCloud) => {
     currentSplatCloud = splatCloud;

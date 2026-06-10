@@ -125,23 +125,13 @@ body {
 }
 
 #debug-stats {
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  min-width: 260px;
-  max-width: min(360px, calc(100vw - 32px));
-  padding: 7px 9px;
-  border: 1px solid rgb(255 255 255 / 12%);
-  border-radius: 6px;
-  background: rgb(8 11 13 / 72%);
+  padding: 4px;
   color: #dbe7ea;
   font-family:
     "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.18;
+  font-size: 10px;
+  line-height: 1.25;
   white-space: pre;
-  pointer-events: none;
-  backdrop-filter: blur(10px);
 }
 
 #compute-tile-overlay {
@@ -153,6 +143,356 @@ body {
   z-index: 2;
 }
 
+/* ===== Left Toolbar ===== */
+.tool-rail {
+  position: fixed;
+  left: 12px;
+  top: 12px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 8px;
+  background: rgb(8 12 16 / 0.74);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  pointer-events: auto;
+}
+
+.tool-mode-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: rgb(221 232 244);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.tool-mode-button:hover {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.tool-mode-button.is-active {
+  border-color: rgb(96 179 255 / 0.75);
+  color: rgb(255 255 255);
+  background: rgb(64 140 220 / 0.28);
+}
+
+.tool-mode-button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-separator {
+  width: 22px;
+  height: 1px;
+  margin: 2px 0;
+  background: rgb(255 255 255 / 0.12);
+  flex-shrink: 0;
+}
+
+/* ===== Top Options Bar ===== */
+.tool-options-bar {
+  position: fixed;
+  left: 62px;
+  right: 12px;
+  top: 12px;
+  z-index: 12;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 8px;
+  background: rgb(8 12 16 / 0.74);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  pointer-events: auto;
+}
+
+.tool-options-bar:empty {
+  display: none;
+}
+
+.tool-settings {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding-left: 4px;
+}
+
+.tool-settings.is-visible {
+  display: flex;
+}
+
+/* Selection mode toggle group */
+.selection-mode-control {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.06);
+}
+
+.selection-mode-control button {
+  height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 4px;
+  color: rgb(213 224 235);
+  background: transparent;
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.selection-mode-control button:hover {
+  background: rgb(255 255 255 / 0.08);
+}
+
+.selection-mode-control button.is-active {
+  color: rgb(255 255 255);
+  background: rgb(64 140 220 / 0.42);
+}
+
+/* Options controls */
+.selection-control {
+  display: grid;
+  gap: 2px;
+  color: rgb(213 224 235);
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.selection-control input[type="range"] {
+  width: 90px;
+  height: 4px;
+  accent-color: rgb(96 179 255);
+  cursor: pointer;
+}
+
+.selection-control input[type="checkbox"] {
+  accent-color: rgb(96 179 255);
+  cursor: pointer;
+}
+
+.selection-control input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 1px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.selection-control label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* Coord inputs (X/Y/Z) */
+.coord-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.coord-input-group label {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: rgb(213 224 235);
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.coord-input-group input {
+  width: 52px;
+  height: 22px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 4px;
+  color: rgb(245 250 255);
+  background: rgb(255 255 255 / 0.08);
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-align: right;
+}
+
+.coord-input-group input:focus {
+  border-color: rgb(96 179 255 / 0.6);
+  outline: none;
+}
+
+/* ===== Right Properties Panel ===== */
+.properties-panel {
+  position: fixed;
+  right: 12px;
+  top: 66px;
+  bottom: 56px;
+  z-index: 12;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 8px;
+  background: rgb(8 12 16 / 0.74);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.properties-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid rgb(255 255 255 / 0.1);
+  flex-shrink: 0;
+}
+
+.properties-tab {
+  flex: 1;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: rgb(170 185 200);
+  background: transparent;
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.properties-tab:hover {
+  color: rgb(221 232 244);
+  background: rgb(255 255 255 / 0.04);
+}
+
+.properties-tab.is-active {
+  color: rgb(255 255 255);
+  border-bottom-color: rgb(96 179 255);
+}
+
+.properties-content {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.properties-content.is-visible {
+  display: flex;
+}
+
+.properties-section {
+  display: grid;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.properties-section + .properties-section {
+  border-top: 1px solid rgb(255 255 255 / 0.08);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+
+.properties-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.properties-row label {
+  color: rgb(170 185 200);
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+  min-width: 24px;
+}
+
+.properties-row input[type="range"] {
+  flex: 1;
+  height: 4px;
+  accent-color: rgb(96 179 255);
+  cursor: pointer;
+}
+
+.properties-row input[type="number"] {
+  width: 44px;
+  height: 20px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 4px;
+  color: rgb(245 250 255);
+  background: rgb(255 255 255 / 0.06);
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-align: right;
+}
+
+.properties-row input[type="number"]:focus {
+  border-color: rgb(96 179 255 / 0.6);
+  outline: none;
+}
+
+.properties-row .properties-value {
+  color: rgb(213 224 235);
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  min-width: 28px;
+  text-align: right;
+}
+
+.properties-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.properties-action-button {
+  flex: 1;
+  min-width: 60px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 4px;
+  color: rgb(235 244 255);
+  background: rgb(255 255 255 / 0.08);
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.properties-action-button:hover {
+  background: rgb(255 255 255 / 0.14);
+}
+
+.properties-action-button.is-danger {
+  border-color: rgb(255 100 100 / 0.3);
+  color: rgb(255 160 160);
+}
+
+.properties-action-button.is-danger:hover {
+  background: rgb(200 60 60 / 0.25);
+}
+
+/* ===== Bottom Viz Bar ===== */
 .viz-bar {
   position: fixed;
   left: 50%;
@@ -204,37 +544,4 @@ body {
   stroke-linejoin: round;
 }
 
-.debug-toggle {
-  position: fixed;
-  bottom: 14px;
-  right: 14px;
-  z-index: 12;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid rgb(255 255 255 / 0.18);
-  border-radius: 50%;
-  background: rgb(8 12 16 / 0.74);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
-  color: rgb(170 185 200);
-  font-family: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-  user-select: none;
-  backdrop-filter: blur(10px);
-  pointer-events: auto;
-}
 
-.debug-toggle:hover {
-  background: rgb(255 255 255 / 0.1);
-  color: rgb(221 232 244);
-}
-
-.debug-toggle.is-active {
-  border-color: rgb(96 179 255 / 0.75);
-  color: rgb(255 255 255);
-  background: rgb(64 140 220 / 0.28);
-}
