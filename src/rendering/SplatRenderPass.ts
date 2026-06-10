@@ -1,4 +1,5 @@
 import { Constants } from "@babylonjs/core/Engines/constants";
+import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
@@ -170,6 +171,7 @@ var<storage, read> scaleBuffer: array<vec4f>;
 var<storage, read> rotationBuffer: array<vec4f>;
 var<storage, read> colorBuffer: array<vec4f>;
 var<storage, read> colorGroupBuffer: array<u32>;
+var<storage, read> selectionBuffer: array<u32>;
 var<storage, read> indexBuffer: array<u32>;
 
 varying vCorner: vec2f;
@@ -284,6 +286,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let logScale = scaleBuffer[splatIndex];
   let rotation = normalize(rotationBuffer[splatIndex]);
   let splatColor = colorBuffer[splatIndex];
+  let isSelected = selectionBuffer[splatIndex] > 0u;
   let centerClip = uniforms.worldViewProjection * vec4f(centerScale.xyz, 1.0);
 
   if (uniforms.vizMode >= 1.0) {
@@ -310,6 +313,9 @@ fn main(input: VertexInputs) -> FragmentInputs {
     } else {
       vertexOutputs.vColor = splatColor;
     }
+    if (isSelected) {
+      vertexOutputs.vColor = vec4f(mix(vertexOutputs.vColor.rgb, vec3f(0.3, 1.0, 0.4), 0.85), 1.0);
+    }
     return vertexOutputs;
   }
   
@@ -327,7 +333,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
 
   vertexOutputs.position = pos;
   vertexOutputs.vCorner = corner;
-  vertexOutputs.vColor = splatColor;
+  vertexOutputs.vColor = select(splatColor, vec4f(mix(splatColor.rgb, vec3f(0.3, 1.0, 0.4), 0.8), 1.0), isSelected);
 }
 `;
 
@@ -629,6 +635,10 @@ class SplatRenderPass {
     };
     scene.registerBeforeRender(this.updateViewport);
     this.updateViewport();
+  }
+
+  setSelectionBuffer(buffer: StorageBuffer): void {
+    this.material.setStorageBuffer("selectionBuffer", buffer);
   }
 
   dispose(): void {
@@ -1452,7 +1462,7 @@ class SplatRenderPass {
           "vizMode",
         ],
         storageBuffers: isWebGPU
-          ? ["centerScaleBuffer", "scaleBuffer", "rotationBuffer", "colorBuffer", "colorGroupBuffer", "indexBuffer"]
+          ? ["centerScaleBuffer", "scaleBuffer", "rotationBuffer", "colorBuffer", "colorGroupBuffer", "selectionBuffer", "indexBuffer"]
           : [],
         needAlphaBlending: true,
         shaderLanguage: isWebGPU ? ShaderLanguage.WGSL : ShaderLanguage.GLSL,

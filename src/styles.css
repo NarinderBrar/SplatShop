@@ -413,6 +413,26 @@ body {
   padding-top: 8px;
 }
 
+.properties-summary {
+  padding-top: 0;
+}
+
+.properties-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+  color: rgb(170 185 200);
+  font: 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.properties-summary-row strong {
+  color: rgb(245 250 255);
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-align: right;
+}
+
 .properties-row {
   display: flex;
   align-items: center;
@@ -543,5 +563,4 @@ body {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-
 

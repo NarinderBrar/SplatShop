@@ -10,6 +10,8 @@ import { SogBuffers } from "./SogBuffers";
 import type { SplatData } from "./SplatData";
 import { SplatBuffers } from "./SplatBuffers";
 import { SplatPreview } from "./SplatPreview";
+import { SelectionPass, type SelectionSource } from "./SelectionPass";
+import type { SelectionMode } from "../app/createUI";
 
 const requireWebGpuForPackedAsset = (scene: Scene, assetKind: string): void => {
   if (!scene.getEngine().isWebGPU) {
@@ -32,6 +34,7 @@ class SplatCloud {
   };
   readonly preview: SplatPreview;
   readonly renderPass: SplatRenderPass | PackedSogRenderPass | CompositeSplatRenderPass | StreamingSsogRenderPass;
+  readonly selectionPass?: SelectionPass;
 
   constructor(
     readonly filename: string,
@@ -45,6 +48,15 @@ class SplatCloud {
       this.sogBuffers = new SogBuffers(scene.getEngine(), asset.packed.data);
       this.renderPass = new PackedSogRenderPass(scene, this.sogBuffers);
       this.bufferStats = this.sogBuffers.stats;
+      this.selectionPass = this.tryCreateSelectionPass(
+        scene,
+        {
+          centers: this.sogBuffers.packed.centers,
+          centerStride: 3,
+          colors: this.sogBuffers.getSelectionColorData(),
+        },
+        this.sogBuffers.stats.numSplats,
+      );
     } else if (asset.kind === "ssog" && asset.entries && asset.loadChunk) {
       requireWebGpuForPackedAsset(scene, "SSOG");
       this.renderPass = new StreamingSsogRenderPass(scene, asset.entries, asset.loadChunk);
@@ -68,11 +80,41 @@ class SplatCloud {
       this.preview.setData(splatData);
       this.renderPass = new SplatRenderPass(scene, this.buffers);
       this.bufferStats = this.buffers.stats;
+      if (this.buffers.storage) {
+        this.selectionPass = this.tryCreateSelectionPass(
+          scene,
+          {
+            centers: this.buffers.packed.centerScale,
+            centerStride: 4,
+            colors: this.buffers.packed.color,
+          },
+          this.buffers.stats.numSplats,
+        );
+      }
     } else {
       throw new Error(`Unsupported splat asset runtime: ${asset.kind}`);
     }
 
+    if (this.selectionPass && "setSelectionBuffer" in this.renderPass) {
+      (this.renderPass as { setSelectionBuffer: (b: import("@babylonjs/core/Buffers/storageBuffer").StorageBuffer) => void }).setSelectionBuffer(this.selectionPass.getSelectionBuffer());
+    }
+
     this.preview.setVisible(false);
+  }
+
+  private tryCreateSelectionPass(
+    scene: Scene,
+    source: SelectionSource,
+    numSplats: number,
+  ): SelectionPass | undefined {
+    if (!scene.getEngine().isWebGPU) {
+      return undefined;
+    }
+    try {
+      return new SelectionPass(scene, source, numSplats);
+    } catch {
+      return undefined;
+    }
   }
 
   get splatData(): SplatData {
@@ -110,12 +152,32 @@ class SplatCloud {
     }
   }
 
+  selectPoint(
+    ndcX: number,
+    ndcY: number,
+    threshold: number,
+    selectionMode: SelectionMode,
+    selectBehind: boolean,
+    viewProjection: Float32Array,
+  ): Promise<number> {
+    return this.selectionPass?.selectPoint(ndcX, ndcY, threshold, selectionMode, selectBehind, viewProjection) ?? Promise.resolve(0);
+  }
+
+  clearSelection(): Promise<number> {
+    return this.selectionPass?.clearSelection() ?? Promise.resolve(0);
+  }
+
+  get hasSelection(): boolean {
+    return this.selectionPass !== undefined;
+  }
+
   dispose(): void {
     this.renderPass.dispose();
     this.preview.dispose();
     this.buffers?.dispose();
     this.sogBuffers?.dispose();
     this.ssogBuffers?.forEach((buffers) => buffers.dispose());
+    this.selectionPass?.dispose();
   }
 
   private mergeSogStats(buffers: SogBuffers[]): SplatCloud["bufferStats"] {

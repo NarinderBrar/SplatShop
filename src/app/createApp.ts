@@ -9,6 +9,7 @@ import { initFileHandler } from "../file-handler";
 import { createEngine } from "../rendering/createEngine";
 import { createUI } from "./createUI";
 import type { SplatCloud } from "../splat/SplatCloud";
+import type { ToolId, SelectionMode } from "./createUI";
 
 const DEFAULT_SPLAT_URL = "/Room.sog";
 const DEFAULT_CAMERA_RADIUS_SCALE = 0.72;
@@ -69,9 +70,25 @@ export async function createApp(
 
   const assetLoader = new AssetLoader();
   let activeVizMode = 0;
+  let activeTool: ToolId = "pointSelect";
+  let selectionThreshold = 0.14;
+  let selectionMode: SelectionMode = "normal";
+  let selectBehind = true;
 
   debugStats.setVisible(false);
-  createUI({
+  const ui = createUI({
+    onToolSelect: (tool) => {
+      activeTool = tool;
+    },
+    onSelectionModeChange: (mode) => {
+      selectionMode = mode;
+    },
+    onThresholdChange: (value) => {
+      selectionThreshold = value;
+    },
+    onBehindToggle: (value) => {
+      selectBehind = value;
+    },
     onVizModeChange: (mode) => {
       activeVizMode = mode;
       currentSplatCloud?.setVizMode(mode);
@@ -81,8 +98,34 @@ export async function createApp(
     },
   }, debugStats.getElement());
 
+  canvas.addEventListener("pointerdown", (event: PointerEvent) => {
+    if (activeTool !== "pointSelect" || !currentSplatCloud?.hasSelection) {
+      return;
+    }
+
+    const targetCloud = currentSplatCloud;
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    const viewProjArray = new Float32Array(camera.getTransformationMatrix().toArray());
+
+    void targetCloud.selectPoint(ndcX, ndcY, selectionThreshold, selectionMode, selectBehind, viewProjArray)
+      .then((selectedCount) => {
+        if (currentSplatCloud === targetCloud) {
+          ui.setSelectedCount(selectedCount);
+        }
+      })
+      .catch(() => {
+        if (currentSplatCloud === targetCloud) {
+          ui.setSelectedCount(0);
+        }
+      });
+  });
+
   const fileHandler = initFileHandler(canvas, scene, assetLoader, status, (splatCloud) => {
     currentSplatCloud = splatCloud;
+    ui.setSelectedCount(0);
     splatCloud.setVizMode(activeVizMode);
     debugStats.setCloud(splatCloud);
     loadingProgress.setCloud(splatCloud);

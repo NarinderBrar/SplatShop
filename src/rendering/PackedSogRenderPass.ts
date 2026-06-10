@@ -1,4 +1,5 @@
 import { Constants } from "@babylonjs/core/Engines/constants";
+import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
@@ -122,6 +123,7 @@ var<storage, read> quatsBuffer: array<u32>;
 var<storage, read> scalesBuffer: array<u32>;
 var<storage, read> colorBuffer: array<vec4f>;
 var<storage, read> colorGroupBuffer: array<u32>;
+var<storage, read> selectionBuffer: array<u32>;
 var<storage, read> scaleCodebookBuffer: array<f32>;
 var<storage, read> indexBuffer: array<u32>;
 
@@ -252,6 +254,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let center = decodeCenter(splatIndex);
   let rotation = normalize(decodeRotation(splatIndex));
   let logScale = decodeScale(splatIndex);
+  let isSelected = selectionBuffer[splatIndex] > 0u;
   let centerClip = uniforms.worldViewProjection * vec4f(center, 1.0);
 
   if (uniforms.vizMode >= 1.0) {
@@ -278,12 +281,16 @@ fn main(input: VertexInputs) -> FragmentInputs {
     } else {
       vertexOutputs.vColor = decodeColor(splatIndex);
     }
+    if (isSelected) {
+      vertexOutputs.vColor = vec4f(mix(vertexOutputs.vColor.rgb, vec3f(0.3, 1.0, 0.4), 0.85), 1.0);
+    }
     return vertexOutputs;
   }
 
   vertexOutputs.position = initCornerCov(center, rotation, exp(logScale), corner, centerClip);
   vertexOutputs.vCorner = corner;
-  vertexOutputs.vColor = decodeColor(splatIndex);
+  let splatColor = decodeColor(splatIndex);
+  vertexOutputs.vColor = select(splatColor, vec4f(mix(splatColor.rgb, vec3f(0.3, 1.0, 0.4), 0.8), 1.0), isSelected);
 }
 `;
 
@@ -579,6 +586,10 @@ class PackedSogRenderPass {
     };
     scene.registerBeforeRender(this.updateViewport);
     this.updateViewport();
+  }
+
+  setSelectionBuffer(buffer: StorageBuffer): void {
+    this.material.setStorageBuffer("selectionBuffer", buffer);
   }
 
   dispose(): void {
@@ -1418,6 +1429,7 @@ class PackedSogRenderPass {
           "scalesBuffer",
           "colorBuffer",
           "colorGroupBuffer",
+          "selectionBuffer",
           "scaleCodebookBuffer",
           "indexBuffer",
         ],

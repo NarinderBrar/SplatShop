@@ -179,6 +179,10 @@ class SogBuffers {
     return performance.now() - start;
   }
 
+  getSelectionColorData(): Float32Array {
+    return this.colorData;
+  }
+
   private createDcColorData(): Float32Array {
     const out = new Float32Array(this.packed.numSplats * 4);
     for (let i = 0; i < this.packed.numSplats; i++) {

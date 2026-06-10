@@ -20,6 +20,10 @@ export interface ToolCallbacks {
   onVizModeChange?: (mode: number) => void;
 }
 
+export interface UIController {
+  setSelectedCount: (count: number) => void;
+}
+
 const VIZ_MODES: Array<{ mode: number; label: string; svg: string }> = [
   {
     mode: 0,
@@ -62,7 +66,7 @@ const TOOLS: ToolDef[] = [
 const SELECTION_TOOLS: ToolId[] = ["pointSelect", "circleSelect", "marqueeSelect", "lassoSelect"];
 const isSelectionTool = (t: ToolId) => SELECTION_TOOLS.includes(t);
 
-export function createUI(callbacks?: ToolCallbacks, statsElement?: HTMLElement): void {
+export function createUI(callbacks?: ToolCallbacks, statsElement?: HTMLElement): UIController {
   let activeTool: ToolId = "pointSelect";
 
   const toolbar = document.createElement("div");
@@ -102,7 +106,7 @@ export function createUI(callbacks?: ToolCallbacks, statsElement?: HTMLElement):
   optionsBar.append(selectionOptions, moveOptions, rotateOptions, paintOptions);
 
   const propertiesPanel = createPropertiesPanel(callbacks, statsElement);
-  document.body.append(propertiesPanel);
+  document.body.append(propertiesPanel.panel);
 
   const vizBar = document.createElement("div");
   vizBar.className = "viz-bar";
@@ -139,6 +143,10 @@ export function createUI(callbacks?: ToolCallbacks, statsElement?: HTMLElement):
   }
 
   setActiveTool(activeTool);
+
+  return {
+    setSelectedCount: propertiesPanel.setSelectedCount,
+  };
 }
 
 function createSelectionOptions(callbacks?: ToolCallbacks): HTMLDivElement {
@@ -299,7 +307,10 @@ function createPaintOptions(callbacks?: ToolCallbacks): HTMLDivElement {
   return container;
 }
 
-function createPropertiesPanel(callbacks?: ToolCallbacks, statsElement?: HTMLElement): HTMLDivElement {
+function createPropertiesPanel(
+  callbacks?: ToolCallbacks,
+  statsElement?: HTMLElement,
+): { panel: HTMLDivElement; setSelectedCount: (count: number) => void } {
   const panel = document.createElement("div");
   panel.className = "properties-panel";
 
@@ -321,6 +332,18 @@ function createPropertiesPanel(callbacks?: ToolCallbacks, statsElement?: HTMLEle
 
   const propertiesContent = document.createElement("div");
   propertiesContent.className = "properties-content is-visible";
+
+  const summarySection = document.createElement("div");
+  summarySection.className = "properties-section properties-summary";
+  const selectedRow = document.createElement("div");
+  selectedRow.className = "properties-summary-row";
+  const selectedLabel = document.createElement("span");
+  selectedLabel.textContent = "Selected";
+  const selectedValue = document.createElement("strong");
+  selectedValue.textContent = "0";
+  selectedRow.append(selectedLabel, selectedValue);
+  summarySection.append(selectedRow);
+  propertiesContent.append(summarySection);
 
   const hsvSection = document.createElement("div");
   hsvSection.className = "properties-section";
@@ -377,7 +400,12 @@ function createPropertiesPanel(callbacks?: ToolCallbacks, statsElement?: HTMLEle
     debugContent.classList.toggle("is-visible", tab === "debug");
   }
 
-  return panel;
+  return {
+    panel,
+    setSelectedCount: (count: number) => {
+      selectedValue.textContent = Math.max(0, Math.floor(count)).toLocaleString();
+    },
+  };
 }
 
 function createSliderRow(
