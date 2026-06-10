@@ -13,6 +13,7 @@ import type { SogPackedData } from "../splat/SplatAsset";
 import { ComputeTileDepthRangePass, type ComputeTileDepthRangeStats } from "./ComputeTileDepthRangePass";
 import { ComputeTileOrderPass, type ComputeTileOrderStats } from "./ComputeTileOrderPass";
 import { ComputeTileSplatPreviewPass, type ComputeTileSplatPreviewStats } from "./ComputeTileSplatPreviewPass";
+import { ColorSegmentationPass } from "./ColorSegmentationPass";
 import { ComputeTileStatsPass, type ComputeTileStats } from "./ComputeTileStatsPass";
 import { ComputeTileWorkQueuePass, type ComputeTileWorkQueueStats } from "./ComputeTileWorkQueuePass";
 import { canCreateComputeShader, GpuDepthKeyPass, type GpuDepthKeyStats } from "./GpuDepthKeyPass";
@@ -307,6 +308,7 @@ var<storage, read> meansUBuffer: array<u32>;
 var<storage, read> quatsBuffer: array<u32>;
 var<storage, read> scalesBuffer: array<u32>;
 var<storage, read> colorBuffer: array<vec4f>;
+var<storage, read> colorGroupBuffer: array<u32>;
 var<storage, read> scaleCodebookBuffer: array<f32>;
 var<storage, read> chunkInfoBuffer: array<vec4f>;
 var<storage, read> indexBuffer: array<u32>;
@@ -470,6 +472,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
         fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
       );
       vertexOutputs.vColor = vec4f(rng, 1.0);
+    } else if (uniforms.vizMode == 3.0) {
+      let groupId = f32(colorGroupBuffer[splatIndex]);
+      let palette = vec3f(
+        fract(sin(groupId * 12.9898 + 1.0) * 43758.5453),
+        fract(sin(groupId * 78.233 + 2.0) * 43758.5453),
+        fract(sin(groupId * 45.164 + 3.0) * 43758.5453),
+      );
+      vertexOutputs.vColor = vec4f(palette, 1.0);
     } else {
       vertexOutputs.vColor = colorBuffer[splatIndex];
     }
@@ -529,6 +539,7 @@ class SsogGlobalPackedRenderPass {
     depthKeys?: StorageBuffer;
     gpuSortIndices?: StorageBuffer;
     ordinalToPacked?: StorageBuffer;
+    colorGroup?: StorageBuffer;
   };
   private readonly indices: Uint32Array;
   private readonly colorData: Float32Array;
@@ -592,6 +603,7 @@ class SsogGlobalPackedRenderPass {
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuRadixSortPass?: GpuRadixSortPass;
   private readonly gpuIndexGatherPass?: SsogGlobalPackedIndexGatherPass;
+  private readonly colorSegmentationPass?: ColorSegmentationPass;
   private readonly computeTileStatsPass?: ComputeTileStatsPass;
   private readonly computeTileDepthRangePass?: ComputeTileDepthRangePass;
   private readonly computeTileWorkQueuePass?: ComputeTileWorkQueuePass;
@@ -736,6 +748,7 @@ class SsogGlobalPackedRenderPass {
         );
       }
     }
+    this.colorSegmentationPass = this.createColorSegmentationPass(scene);
     this.buildGeometry();
     this.bindStorageBuffers();
     this.setRenderCount(this.numSplats);
@@ -766,10 +779,20 @@ class SsogGlobalPackedRenderPass {
     this.computeTileWorkQueuePass?.dispose();
     this.computeTileOrderPass?.dispose();
     this.computeTileRasterPreviewPass?.dispose();
+    this.colorSegmentationPass?.dispose();
     this.scene.unregisterBeforeRender(this.updateViewport);
     Object.values(this.buffers).forEach((buffer) => buffer.dispose());
     this.mesh.dispose();
     this.material.dispose();
+  }
+
+  private createColorSegmentationPass(scene: Scene): ColorSegmentationPass | undefined {
+    if (!canCreateComputeShader(scene) || !this.buffers.color) {
+      return undefined;
+    }
+    const pass = new ColorSegmentationPass(scene, this.buffers.color, this.numSplats);
+    pass.dispatch();
+    return pass;
   }
 
   setEnabled(enabled: boolean): void {
@@ -1344,6 +1367,7 @@ class SsogGlobalPackedRenderPass {
           "quatsBuffer",
           "scalesBuffer",
           "colorBuffer",
+          "colorGroupBuffer",
           "scaleCodebookBuffer",
           "chunkInfoBuffer",
           "indexBuffer",
@@ -1373,6 +1397,9 @@ class SsogGlobalPackedRenderPass {
     this.material.setStorageBuffer("quatsBuffer", this.buffers.quats);
     this.material.setStorageBuffer("scalesBuffer", this.buffers.scales);
     this.material.setStorageBuffer("colorBuffer", this.buffers.color);
+    if (this.colorSegmentationPass) {
+      this.material.setStorageBuffer("colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
+    }
     this.material.setStorageBuffer("scaleCodebookBuffer", this.buffers.scaleCodebook);
     this.material.setStorageBuffer("chunkInfoBuffer", this.buffers.chunkInfo);
     this.material.setStorageBuffer("indexBuffer", this.buffers.indices);

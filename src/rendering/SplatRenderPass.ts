@@ -7,6 +7,7 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { SplatBuffers } from "../splat/SplatBuffers";
 import { SplatLodManager } from "../splat/SplatLodManager";
+import { ColorSegmentationPass } from "./ColorSegmentationPass";
 import { ComputeTileDensityOverlayPass } from "./ComputeTileDensityOverlayPass";
 import { ComputeTileDepthRangePass, type ComputeTileDepthRangeStats } from "./ComputeTileDepthRangePass";
 import { ComputeTileOrderPass, type ComputeTileOrderStats } from "./ComputeTileOrderPass";
@@ -168,6 +169,7 @@ var<storage, read> centerScaleBuffer: array<vec4f>;
 var<storage, read> scaleBuffer: array<vec4f>;
 var<storage, read> rotationBuffer: array<vec4f>;
 var<storage, read> colorBuffer: array<vec4f>;
+var<storage, read> colorGroupBuffer: array<u32>;
 var<storage, read> indexBuffer: array<u32>;
 
 varying vCorner: vec2f;
@@ -297,6 +299,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
         fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
       );
       vertexOutputs.vColor = vec4f(rng, 1.0);
+    } else if (uniforms.vizMode == 3.0) {
+      let groupId = f32(colorGroupBuffer[splatIndex]);
+      let palette = vec3f(
+        fract(sin(groupId * 12.9898 + 1.0) * 43758.5453),
+        fract(sin(groupId * 78.233 + 2.0) * 43758.5453),
+        fract(sin(groupId * 45.164 + 3.0) * 43758.5453),
+      );
+      vertexOutputs.vColor = vec4f(palette, 1.0);
     } else {
       vertexOutputs.vColor = splatColor;
     }
@@ -537,6 +547,7 @@ class SplatRenderPass {
   private readonly computeTileSplatPreviewPass?: ComputeTileSplatPreviewPass;
   private readonly computeTileRasterPreviewPass?: ComputeTileSplatPreviewPass;
   private readonly computeTileDensityOverlayPass?: ComputeTileDensityOverlayPass;
+  private readonly colorSegmentationPass?: ColorSegmentationPass;
   private readonly gpuSortMode = getGpuSortMode();
   private readonly gpuSortVisibleMode = getGpuSortVisibleMode();
   private readonly sortMode = getSortMode();
@@ -586,6 +597,7 @@ class SplatRenderPass {
       this.computeTileStatsPass = this.createComputeTileStatsPass(scene, splatBuffers);
       this.computeTileDepthRangePass = this.createComputeTileDepthRangePass(scene, splatBuffers);
       this.computeTileWorkQueuePass = this.createComputeTileWorkQueuePass(scene);
+      this.colorSegmentationPass = this.createColorSegmentationPass(scene, splatBuffers);
       this.computeTileOrderPass = this.createComputeTileOrderPass(scene, splatBuffers);
       this.computeTilePreviewPass = this.createComputeTilePreviewPass(scene);
       this.computeTileSplatPreviewPass = this.createComputeTileSplatPreviewPass(scene, splatBuffers);
@@ -596,6 +608,9 @@ class SplatRenderPass {
       this.material.setStorageBuffer("scaleBuffer", splatBuffers.storage.scale);
       this.material.setStorageBuffer("rotationBuffer", splatBuffers.storage.rotationOpacity);
       this.material.setStorageBuffer("colorBuffer", splatBuffers.storage.color);
+      if (this.colorSegmentationPass) {
+        this.material.setStorageBuffer("colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
+      }
       this.material.setStorageBuffer("indexBuffer", splatBuffers.storage.indices);
     } else {
       this.buildExpandedQuadGeometry(splatBuffers);
@@ -632,9 +647,19 @@ class SplatRenderPass {
     this.computeTileSplatPreviewPass?.dispose();
     this.computeTileRasterPreviewPass?.dispose();
     this.computeTileDensityOverlayPass?.dispose();
+    this.colorSegmentationPass?.dispose();
     this.mesh.getScene().unregisterBeforeRender(this.updateViewport);
     this.mesh.dispose();
     this.material.dispose();
+  }
+
+  private createColorSegmentationPass(scene: Scene, splatBuffers: SplatBuffers): ColorSegmentationPass | undefined {
+    if (!splatBuffers.storage || !canCreateComputeShader(scene)) {
+      return undefined;
+    }
+    const pass = new ColorSegmentationPass(scene, splatBuffers.storage.color, splatBuffers.stats.numSplats);
+    pass.dispatch();
+    return pass;
   }
 
   setEnabled(enabled: boolean): void {
@@ -1427,7 +1452,7 @@ class SplatRenderPass {
           "vizMode",
         ],
         storageBuffers: isWebGPU
-          ? ["centerScaleBuffer", "scaleBuffer", "rotationBuffer", "colorBuffer", "indexBuffer"]
+          ? ["centerScaleBuffer", "scaleBuffer", "rotationBuffer", "colorBuffer", "colorGroupBuffer", "indexBuffer"]
           : [],
         needAlphaBlending: true,
         shaderLanguage: isWebGPU ? ShaderLanguage.WGSL : ShaderLanguage.GLSL,

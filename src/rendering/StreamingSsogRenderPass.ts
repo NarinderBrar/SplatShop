@@ -297,6 +297,7 @@ class StreamingSsogRenderPass {
   private readonly transitionLocks = new Map<number, number>();
   private packedGlobalRuntime?: SsogGlobalPackedRenderPass;
   private expandedRuntime?: ExpandedRuntime;
+  private activeVizMode = 0;
   private frame = 0;
   private generation = 0;
   private disposed = false;
@@ -357,6 +358,7 @@ class StreamingSsogRenderPass {
   }
 
   setVizMode(mode: number): void {
+    this.activeVizMode = mode;
     this.loaded.forEach((runtime) => runtime.pass.setVizMode(mode));
     this.mergedRuntimes.forEach((runtime) => runtime.pass.setVizMode(mode));
     if (this.packedGlobalRuntime) {
@@ -905,6 +907,7 @@ class StreamingSsogRenderPass {
         this.lastChunkLoadMs = performance.now() - loadStart;
         const buffers = new SogBuffers(this.scene.getEngine(), chunk.data);
         const pass = new PackedSogRenderPass(this.scene, buffers);
+        pass.setVizMode(this.activeVizMode);
         const active = this.selectedKeys.has(key);
         pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && active);
         this.loaded.set(key, {
@@ -1153,6 +1156,7 @@ class StreamingSsogRenderPass {
       depthSortedEntries.map(([key, runtime]) => ({ key, data: runtime.chunk.data })),
       { cameraPosition, cameraForward },
     );
+    this.packedGlobalRuntime.setVizMode(this.activeVizMode);
     this.packedGlobalRuntime.setEnabled(true);
     this.globalSortFallbackReason = "";
     this.lastGlobalSortBuildMs = performance.now() - buildStart;
@@ -1194,6 +1198,7 @@ class StreamingSsogRenderPass {
     const packed = expandSogChunks(activeEntries.map(([, runtime]) => runtime.chunk.data));
     const buffers = new SplatBuffers(this.scene.getEngine(), packed);
     const pass = new SplatRenderPass(this.scene, buffers, { renderBudget: packed.indices.length });
+    pass.setVizMode(this.activeVizMode);
     pass.setEnabled(true);
     this.expandedRuntime = { signature, buffers, pass };
     this.lastGlobalSortBuildMs = performance.now() - buildStart;
@@ -1271,6 +1276,7 @@ class StreamingSsogRenderPass {
       keys.forEach((key) => mergedKeys.add(key));
       const buffers = new SogBuffers(this.scene.getEngine(), merged);
       const pass = new PackedSogRenderPass(this.scene, buffers);
+      pass.setVizMode(this.activeVizMode);
       pass.setEnabled(true);
       this.mergedRuntimes.set(groupKey, { signature, keys, buffers, pass });
     }

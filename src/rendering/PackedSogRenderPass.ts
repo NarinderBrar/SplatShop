@@ -7,6 +7,7 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { SogBuffers } from "../splat/SogBuffers";
 import { SogLodManager } from "../splat/SogLodManager";
+import { ColorSegmentationPass } from "./ColorSegmentationPass";
 import { ComputeTileDensityOverlayPass } from "./ComputeTileDensityOverlayPass";
 import { ComputeTileDepthRangePass, type ComputeTileDepthRangeStats } from "./ComputeTileDepthRangePass";
 import { ComputeTileOrderPass, type ComputeTileOrderStats } from "./ComputeTileOrderPass";
@@ -120,6 +121,7 @@ var<storage, read> meansUBuffer: array<u32>;
 var<storage, read> quatsBuffer: array<u32>;
 var<storage, read> scalesBuffer: array<u32>;
 var<storage, read> colorBuffer: array<vec4f>;
+var<storage, read> colorGroupBuffer: array<u32>;
 var<storage, read> scaleCodebookBuffer: array<f32>;
 var<storage, read> indexBuffer: array<u32>;
 
@@ -265,6 +267,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
         fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
       );
       vertexOutputs.vColor = vec4f(rng, 1.0);
+    } else if (uniforms.vizMode == 3.0) {
+      let groupId = f32(colorGroupBuffer[splatIndex]);
+      let palette = vec3f(
+        fract(sin(groupId * 12.9898 + 1.0) * 43758.5453),
+        fract(sin(groupId * 78.233 + 2.0) * 43758.5453),
+        fract(sin(groupId * 45.164 + 3.0) * 43758.5453),
+      );
+      vertexOutputs.vColor = vec4f(palette, 1.0);
     } else {
       vertexOutputs.vColor = decodeColor(splatIndex);
     }
@@ -488,6 +498,7 @@ class PackedSogRenderPass {
   private readonly computeTileSplatPreviewPass?: ComputeTileSplatPreviewPass;
   private readonly computeTileRasterPreviewPass?: ComputeTileSplatPreviewPass;
   private readonly computeTileDensityOverlayPass?: ComputeTileDensityOverlayPass;
+  private readonly colorSegmentationPass?: ColorSegmentationPass;
   private readonly gpuSortMode = getGpuSortMode();
   private readonly gpuSortVisibleMode = getGpuSortVisibleMode();
   private readonly cpuShEnabled = isCpuShEnabled();
@@ -549,6 +560,7 @@ class PackedSogRenderPass {
     this.computeTileSplatPreviewPass = this.createComputeTileSplatPreviewPass(scene);
     this.computeTileRasterPreviewPass = this.createComputeTileRasterPreviewPass(scene);
     this.computeTileDensityOverlayPass = this.createComputeTileDensityOverlayPass(scene);
+    this.colorSegmentationPass = this.createColorSegmentationPass(scene);
 
     this.buildGeometry();
     this.bindStorageBuffers();
@@ -580,17 +592,31 @@ class PackedSogRenderPass {
     this.computeTileStatsPass?.dispose();
     this.computeTileDepthRangePass?.dispose();
     this.computeTileWorkQueuePass?.dispose();
-    this.computeTileOrderPass?.dispose();
-    this.computeTilePreviewPass?.dispose();
-    this.computeTileSplatPreviewPass?.dispose();
-    this.computeTileRasterPreviewPass?.dispose();
-    this.computeTileDensityOverlayPass?.dispose();
-    this.mesh.getScene().unregisterBeforeRender(this.updateViewport);
-    this.mesh.dispose();
-    this.material.dispose();
-  }
+		this.computeTileOrderPass?.dispose();
+		this.computeTilePreviewPass?.dispose();
+		this.computeTileSplatPreviewPass?.dispose();
+		this.computeTileRasterPreviewPass?.dispose();
+		this.computeTileDensityOverlayPass?.dispose();
+		this.colorSegmentationPass?.dispose();
+		this.mesh.getScene().unregisterBeforeRender(this.updateViewport);
+		this.mesh.dispose();
+		this.material.dispose();
+	}
 
-  setEnabled(enabled: boolean): void {
+	private createColorSegmentationPass(scene: Scene): ColorSegmentationPass | undefined {
+		if (!canCreateComputeShader(scene)) {
+			return undefined;
+		}
+		const storage = this.sogBuffers.storage;
+		if (!storage) {
+			return undefined;
+		}
+		const pass = new ColorSegmentationPass(scene, storage.color, this.sogBuffers.packed.numSplats);
+		pass.dispatch();
+		return pass;
+	}
+
+	setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     this.mesh.setEnabled(enabled);
   }
@@ -1391,6 +1417,7 @@ class PackedSogRenderPass {
           "quatsBuffer",
           "scalesBuffer",
           "colorBuffer",
+          "colorGroupBuffer",
           "scaleCodebookBuffer",
           "indexBuffer",
         ],
@@ -1421,6 +1448,9 @@ class PackedSogRenderPass {
     this.material.setStorageBuffer("quatsBuffer", storage.quats);
     this.material.setStorageBuffer("scalesBuffer", storage.scales);
     this.material.setStorageBuffer("colorBuffer", storage.color);
+    if (this.colorSegmentationPass) {
+      this.material.setStorageBuffer("colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
+    }
     this.material.setStorageBuffer("scaleCodebookBuffer", storage.scaleCodebook);
     this.material.setStorageBuffer("indexBuffer", storage.indices);
   }

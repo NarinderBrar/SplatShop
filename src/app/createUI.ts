@@ -16,6 +16,11 @@ const VIZ_MODES: Array<{ mode: number; label: string; svg: string }> = [
     label: "Chunk color",
     svg: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor"/><path d="M5 6h6M5 8h6M5 10h6" stroke="currentColor" stroke-width="1.2"/></svg>`,
   },
+  {
+    mode: 3,
+    label: "Color group",
+    svg: `<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="5" height="5" rx="1" fill="currentColor" stroke="none"/><rect x="8.5" y="2.5" width="5" height="5" rx="1" fill="currentColor" stroke="none" opacity="0.6"/><rect x="2.5" y="8.5" width="5" height="5" rx="1" fill="currentColor" stroke="none" opacity="0.4"/><rect x="8.5" y="8.5" width="5" height="5" rx="1" fill="currentColor" stroke="none" opacity="0.8"/></svg>`,
+  },
 ];
 
 export function createUI(
