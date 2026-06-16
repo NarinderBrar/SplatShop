@@ -182,6 +182,10 @@ class ViewerDebugStats {
       pendingReplacementNodes?: number;
       finestSelectedNodes?: number;
       coarseFallbackNodes?: number;
+      candidateChunks?: number;
+      frustumVisibleChunks?: number;
+      frustumCulledChunks?: number;
+      frustumMargin?: number;
     };
     const previewLimiterStats = renderStats as typeof renderStats & {
       computeTileRasterPreviewDrawLimit?: number;
@@ -302,6 +306,9 @@ class ViewerDebugStats {
       `Source splats: ${formatCount(bufferStats.numSplats)}`,
       `Rendered splats: ${formatCount(renderStats.renderSplats)}`,
       `Chunks: ${formatCount(renderStats.activeChunks)} / ${formatCount(renderStats.chunkCount)}`,
+      streamingStats.candidateChunks !== undefined
+        ? `Frustum: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.frustumCulledChunks ?? 0)} culled / ${formatCount(streamingStats.candidateChunks)} candidates / margin ${(streamingStats.frustumMargin ?? 1).toFixed(2)}`
+        : "",
       streamingStats.selectedNodes !== undefined
         ? `Selected nodes: ${formatCount(streamingStats.selectedNodes)} / splats ${formatCount(streamingStats.selectedSplats ?? 0)}`
         : "",

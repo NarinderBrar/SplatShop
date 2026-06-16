@@ -36,7 +36,9 @@ const getStartupSplatUrl = (): string => {
 const getFilenameFromUrl = (url: string): string => {
   try {
     const pathname = new URL(url, window.location.href).pathname;
-    return decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "Room.sog");
+    return decodeURIComponent(
+      pathname.split("/").filter(Boolean).at(-1) ?? "Room.sog",
+    );
   } catch {
     return url.split("/").filter(Boolean).at(-1) ?? "Room.sog";
   }
@@ -53,7 +55,7 @@ export async function createApp(
   const camera = new ArcRotateCamera(
     "MainCamera",
     Math.PI * 0.25,
-    Math.PI * 0.35,
+    Math.PI * 0.45,
     6,
     Vector3.Zero(),
     scene,
@@ -76,27 +78,30 @@ export async function createApp(
   let selectBehind = true;
 
   debugStats.setVisible(false);
-  const ui = createUI({
-    onToolSelect: (tool) => {
-      activeTool = tool;
+  const ui = createUI(
+    {
+      onToolSelect: (tool) => {
+        activeTool = tool;
+      },
+      onSelectionModeChange: (mode) => {
+        selectionMode = mode;
+      },
+      onThresholdChange: (value) => {
+        selectionThreshold = value;
+      },
+      onBehindToggle: (value) => {
+        selectBehind = value;
+      },
+      onVizModeChange: (mode) => {
+        activeVizMode = mode;
+        currentSplatCloud?.setVizMode(mode);
+      },
+      onPropertyTabChange: (tab) => {
+        debugStats.setVisible(tab === "debug");
+      },
     },
-    onSelectionModeChange: (mode) => {
-      selectionMode = mode;
-    },
-    onThresholdChange: (value) => {
-      selectionThreshold = value;
-    },
-    onBehindToggle: (value) => {
-      selectBehind = value;
-    },
-    onVizModeChange: (mode) => {
-      activeVizMode = mode;
-      currentSplatCloud?.setVizMode(mode);
-    },
-    onPropertyTabChange: (tab) => {
-      debugStats.setVisible(tab === "debug");
-    },
-  }, debugStats.getElement());
+    debugStats.getElement(),
+  );
 
   canvas.addEventListener("pointerdown", (event: PointerEvent) => {
     if (activeTool !== "pointSelect" || !currentSplatCloud?.hasSelection) {
@@ -108,9 +113,19 @@ export async function createApp(
     const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-    const viewProjArray = new Float32Array(camera.getTransformationMatrix().toArray());
+    const viewProjArray = new Float32Array(
+      camera.getTransformationMatrix().toArray(),
+    );
 
-    void targetCloud.selectPoint(ndcX, ndcY, selectionThreshold, selectionMode, selectBehind, viewProjArray)
+    void targetCloud
+      .selectPoint(
+        ndcX,
+        ndcY,
+        selectionThreshold,
+        selectionMode,
+        selectBehind,
+        viewProjArray,
+      )
       .then((selectedCount) => {
         if (currentSplatCloud === targetCloud) {
           ui.setSelectedCount(selectedCount);
@@ -123,23 +138,27 @@ export async function createApp(
       });
   });
 
-  const fileHandler = initFileHandler(canvas, scene, assetLoader, status, (splatCloud) => {
-    currentSplatCloud = splatCloud;
-    ui.setSelectedCount(0);
-    splatCloud.setVizMode(activeVizMode);
-    debugStats.setCloud(splatCloud);
-    loadingProgress.setCloud(splatCloud);
-    const framing = splatCloud.getCenterAndRadius();
-    if (framing) {
-      camera.setTarget(framing.center);
-      camera.radius = Math.max(framing.radius * DEFAULT_CAMERA_RADIUS_SCALE, 0.35);
-    }
-  }, (filename) => loadingProgress.start(`Loading ${filename}`));
+  const fileHandler = initFileHandler(
+    canvas,
+    scene,
+    assetLoader,
+    status,
+    (splatCloud) => {
+      currentSplatCloud = splatCloud;
+      ui.setSelectedCount(0);
+      splatCloud.setVizMode(activeVizMode);
+      debugStats.setCloud(splatCloud);
+      loadingProgress.setCloud(splatCloud);
+    },
+    (filename) => loadingProgress.start(`Loading ${filename}`),
+  );
 
   const startupUrl = getStartupSplatUrl();
   status.textContent = `Loading ${startupUrl}...`;
   loadingProgress.start(`Loading ${getFilenameFromUrl(startupUrl)}`);
-  void fileHandler.importFiles([{ filename: getFilenameFromUrl(startupUrl), url: startupUrl }]);
+  void fileHandler.importFiles([
+    { filename: getFilenameFromUrl(startupUrl), url: startupUrl },
+  ]);
 
   engine.runRenderLoop(() => {
     scene.render();

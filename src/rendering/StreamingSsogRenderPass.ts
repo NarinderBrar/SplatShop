@@ -5,6 +5,8 @@ import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } 
 import { SogBuffers } from "../splat/SogBuffers";
 import { SplatBuffers, type PackedSplatArrays } from "../splat/SplatBuffers";
 import { selectSsogLod } from "../splat/SsogLodSelector";
+import { Frustum } from "@babylonjs/core/Maths/math.frustum";
+import { isAabbInFrustum } from "../splat/SsogFrustumCulling";
 import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRenderPass";
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
@@ -44,6 +46,10 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   pendingReplacementNodes: number;
   finestSelectedNodes: number;
   coarseFallbackNodes: number;
+  candidateChunks: number;
+  frustumVisibleChunks: number;
+  frustumCulledChunks: number;
+  frustumMargin: number;
 };
 
 type LoadedChunk = {
@@ -321,6 +327,9 @@ class StreamingSsogRenderPass {
   private pendingReplacementNodes = 0;
   private finestSelectedNodes = 0;
   private coarseFallbackNodes = 0;
+  private candidateChunks = 0;
+  private frustumVisibleChunks = 0;
+  private frustumCulledChunks = 0;
 
   constructor(
     private readonly scene: Scene,
@@ -692,6 +701,10 @@ class StreamingSsogRenderPass {
       pendingReplacementNodes: this.pendingReplacementNodes,
       finestSelectedNodes: this.finestSelectedNodes,
       coarseFallbackNodes: this.coarseFallbackNodes,
+      candidateChunks: this.candidateChunks,
+      frustumVisibleChunks: this.frustumVisibleChunks,
+      frustumCulledChunks: this.frustumCulledChunks,
+      frustumMargin: getPositiveNumberParam("frustumMargin", 1),
     };
   }
 
@@ -714,24 +727,32 @@ class StreamingSsogRenderPass {
     }
 
     const start = performance.now();
+    const frustumCullingEnabled = new URLSearchParams(window.location.search).get("ssogFrustumCulling") !== "false";
+    const frustumMargin = getPositiveNumberParam("frustumMargin", 1);
+    const frustumPlanes = frustumCullingEnabled ? Frustum.GetPlanes(camera.getTransformationMatrix()) : undefined;
+    const visibleEntries = frustumPlanes
+      ? this.entries.filter((entry) => isAabbInFrustum(entry.bound, frustumPlanes, frustumMargin))
+      : this.entries;
+    this.candidateChunks = this.entries.length;
+    this.frustumVisibleChunks = visibleEntries.length;
+    this.frustumCulledChunks = this.entries.length - visibleEntries.length;
+
     const fov = "fov" in camera && typeof camera.fov === "number" ? camera.fov : Math.PI / 3;
     const viewportHeight = this.scene.getEngine().getRenderHeight(true);
     const focalPixels = viewportHeight / Math.max(0.001, 2 * Math.tan(fov * 0.5));
+    const mapEntry = (entry: SsogChunkEntry, wasSelected: boolean) => ({
+      value: entry,
+      key: chunkKey(entry),
+      nodeId: entry.nodeId,
+      parentNodeId: entry.parentNodeId,
+      depth: entry.depth,
+      lod: entry.lod,
+      count: entry.count,
+      bound: entry.bound,
+      wasSelected,
+    });
     const selection = selectSsogLod(
-      this.entries.map((entry) => {
-        const key = chunkKey(entry);
-        return {
-          value: entry,
-          key,
-          nodeId: entry.nodeId,
-          parentNodeId: entry.parentNodeId,
-          depth: entry.depth,
-          lod: entry.lod,
-          count: entry.count,
-          bound: entry.bound,
-          wasSelected: this.selectedKeys.has(key),
-        };
-      }),
+      visibleEntries.map((entry) => mapEntry(entry, this.selectedKeys.has(chunkKey(entry)))),
       {
         budget: this.splatBudget,
         cameraPosition,
@@ -747,19 +768,9 @@ class StreamingSsogRenderPass {
     const prefetchSelection =
       this.prefetchMultiplier > 1
         ? selectSsogLod(
-            this.entries.map((entry) => {
+            visibleEntries.map((entry) => {
               const key = chunkKey(entry);
-              return {
-                value: entry,
-                key,
-                nodeId: entry.nodeId,
-                parentNodeId: entry.parentNodeId,
-                depth: entry.depth,
-                lod: entry.lod,
-                count: entry.count,
-                bound: entry.bound,
-                wasSelected: this.selectedKeys.has(key) || this.prefetchKeys.has(key),
-              };
+              return mapEntry(entry, this.selectedKeys.has(key) || this.prefetchKeys.has(key));
             }),
             {
               budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * this.prefetchMultiplier)),
