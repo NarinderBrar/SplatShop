@@ -1,7 +1,4 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { Color3 } from "@babylonjs/core/Maths/math.color";
-import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
-import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import type { Scene } from "@babylonjs/core/scene";
 
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
@@ -10,6 +7,7 @@ import { SplatBuffers, type PackedSplatArrays } from "../splat/SplatBuffers";
 import { selectSsogLod } from "../splat/SsogLodSelector";
 import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { isAabbInFrustum } from "../splat/SsogFrustumCulling";
+import { SsogDebugBounds } from "../debug/SsogDebugBounds";
 import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRenderPass";
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
@@ -76,10 +74,6 @@ type LoadedChunk = {
   lastUsedFrame: number;
 };
 
-type DebugChunkBound = {
-  mesh: LinesMesh;
-};
-
 type SelectedSsogItem = {
   value: SsogChunkEntry;
   key: string;
@@ -120,50 +114,6 @@ const LOD_SELECT_INTERVAL_FRAMES = 15;
 
 const chunkKey = (entry: SsogChunkEntry): string =>
   `${entry.fileIndex}:${entry.offset}:${entry.count}:${entry.lod}:${entry.nodeId}`;
-
-const getDebugChunkColor = (key: string): Color3 => {
-  let hash = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    hash ^= key.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  const r = 0.35 + ((hash & 0xff) / 255) * 0.65;
-  const g = 0.35 + (((hash >> 8) & 0xff) / 255) * 0.65;
-  const b = 0.35 + (((hash >> 16) & 0xff) / 255) * 0.65;
-  return new Color3(r, g, b);
-};
-
-const getDebugChunkBoundLines = (entry: SsogChunkEntry): Vector3[][] => {
-  const min = entry.bound.min;
-  const max = entry.bound.max;
-  const corners = [
-    new Vector3(min[0], min[1], min[2]),
-    new Vector3(max[0], min[1], min[2]),
-    new Vector3(max[0], max[1], min[2]),
-    new Vector3(min[0], max[1], min[2]),
-    new Vector3(min[0], min[1], max[2]),
-    new Vector3(max[0], min[1], max[2]),
-    new Vector3(max[0], max[1], max[2]),
-    new Vector3(min[0], max[1], max[2]),
-  ];
-  const edges: [number, number][] = [
-    [0, 1],
-    [1, 2],
-    [2, 3],
-    [3, 0],
-    [4, 5],
-    [5, 6],
-    [6, 7],
-    [7, 4],
-    [0, 4],
-    [1, 5],
-    [2, 6],
-    [3, 7],
-  ];
-
-  return edges.map(([start, end]) => [corners[start], corners[end]]);
-};
 
 const getPositiveNumberParam = (name: string, fallback: number): number => {
   const value = Number(new URLSearchParams(window.location.search).get(name));
@@ -369,7 +319,6 @@ class StreamingSsogRenderPass {
   private readonly pendingEntries = new Map<string, SsogChunkEntry>();
   private readonly queued = new Map<string, SsogChunkEntry>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
-  private readonly debugChunkBounds = new Map<string, DebugChunkBound>();
   private readonly selectedKeys = new Set<string>();
   private readonly prefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
@@ -433,12 +382,14 @@ class StreamingSsogRenderPass {
   private prefetchFrustumChunks = 0;
   private nearPrefetchChunks = 0;
   private debugChunkBoundsVisible = false;
+  private debugBounds!: SsogDebugBounds;
 
   constructor(
     private readonly scene: Scene,
     private readonly entries: SsogChunkEntry[],
     private readonly loadChunk: SsogChunkLoader,
   ) {
+    this.debugBounds = new SsogDebugBounds(scene);
     entries.forEach((entry) => this.entriesByKey.set(chunkKey(entry), entry));
     const finestEntries = entries.filter((entry) => entry.lod === 0);
     this.sourceSplats = (finestEntries.length > 0 ? finestEntries : entries).reduce(
@@ -464,7 +415,7 @@ class StreamingSsogRenderPass {
     this.disposeMergedRuntimes();
     this.disposePackedGlobalRuntime();
     this.disposeExpandedRuntime();
-    this.disposeDebugChunkBounds();
+    this.debugBounds.disposeAll();
     this.loaded.clear();
     this.pending.clear();
     this.pendingEntries.clear();
@@ -474,17 +425,17 @@ class StreamingSsogRenderPass {
   setDebugChunkBoundsVisible(visible: boolean): void {
     this.debugChunkBoundsVisible = visible;
     if (visible) {
-      this.queued.forEach((entry, key) => this.ensureDebugChunkBound(key, entry));
-      this.pendingEntries.forEach((entry, key) => this.ensureDebugChunkBound(key, entry));
+      this.queued.forEach((entry, key) => this.debugBounds.ensure(key, entry, "unloaded"));
+      this.pendingEntries.forEach((entry, key) => this.debugBounds.ensure(key, entry, "unloaded"));
       this.loaded.forEach((runtime, key) => {
-        if (runtime.active) {
-          this.disposeDebugChunkBound(key);
+        if (runtime.active && this.isChunkRepresentedByReadyRenderPath(key)) {
+          this.debugBounds.dispose(key);
         } else {
-          this.ensureDebugChunkBound(key, runtime.entry);
+          this.debugBounds.ensure(key, runtime.entry, "loaded-waiting");
         }
       });
     }
-    this.debugChunkBounds.forEach((bound) => bound.mesh.setEnabled(visible));
+    this.debugBounds.setVisible(visible);
   }
 
   setVizMode(mode: number): void {
@@ -976,18 +927,20 @@ class StreamingSsogRenderPass {
     this.loaded.forEach((runtime, key) => {
       const selected = this.selectedKeys.has(key);
       const fallback = this.fallbackKeys.has(key) && missingSelectedNodeIds.has(runtime.entry.nodeId);
-      runtime.active = selected || fallback || (missingSelectedNodeIds.size > 0 && runtime.active && selectedNodeIds.has(runtime.entry.nodeId));
+      const keepPreviousActive =
+        missingSelectedNodeIds.size > 0 && runtime.active && selectedNodeIds.has(runtime.entry.nodeId);
+      runtime.active = selected || fallback || keepPreviousActive;
       runtime.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && runtime.active);
-      if (runtime.active) {
-        this.disposeDebugChunkBound(key);
+      if (runtime.active && this.isChunkRepresentedByReadyRenderPath(key)) {
+        this.debugBounds.dispose(key);
         activeChunks++;
         activeLods.add(runtime.entry.lod);
         runtime.lastUsedFrame = this.generation;
       } else if (this.debugChunkBoundsVisible) {
-        this.ensureDebugChunkBound(key, runtime.entry);
+        this.debugBounds.ensure(key, runtime.entry, "loaded-waiting");
       }
     });
-    this.disposeDebugChunkBoundsForActiveNodes();
+    this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.activeChunks = Math.max(stableSelected.length, activeChunks);
     this.selectedLods = Math.max(new Set(stableSelected.map((item) => item.lod)).size, activeLods.size);
     stableSelected.forEach((item) => this.requestChunk(item.value));
@@ -1006,6 +959,7 @@ class StreamingSsogRenderPass {
     } else {
       this.updateMergedRuntime();
     }
+    this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.lastLodBuildMs = performance.now() - start;
   }
 
@@ -1017,7 +971,7 @@ class StreamingSsogRenderPass {
 
     this.queued.set(key, entry);
     if (this.debugChunkBoundsVisible) {
-      this.ensureDebugChunkBound(key, entry);
+      this.debugBounds.ensure(key, entry, "unloaded");
     }
   }
 
@@ -1057,7 +1011,7 @@ class StreamingSsogRenderPass {
         return entry;
       }
       this.queued.delete(key);
-      this.disposeDebugChunkBound(key);
+      this.debugBounds.dispose(key);
     }
 
     return undefined;
@@ -1071,7 +1025,7 @@ class StreamingSsogRenderPass {
 
     this.pendingEntries.set(key, entry);
     if (this.debugChunkBoundsVisible) {
-      this.ensureDebugChunkBound(key, entry);
+      this.debugBounds.ensure(key, entry, "unloaded");
     }
     const loadStart = performance.now();
     const promise = this.loadChunk(entry)
@@ -1095,10 +1049,10 @@ class StreamingSsogRenderPass {
           lastUsedFrame: this.generation,
         });
         this.cacheSplats += chunk.data.numSplats;
-        if (active) {
-          this.disposeDebugChunkBound(key);
+        if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
+          this.debugBounds.dispose(key);
         } else if (this.debugChunkBoundsVisible) {
-          this.ensureDebugChunkBound(key, entry);
+          this.debugBounds.ensure(key, entry, "loaded-waiting");
         }
         this.updateLodSelection(true);
         this.evictInactiveChunks();
@@ -1107,7 +1061,7 @@ class StreamingSsogRenderPass {
         this.pending.delete(key);
         this.pendingEntries.delete(key);
         if (!this.loaded.has(key)) {
-          this.disposeDebugChunkBound(key);
+          this.debugBounds.dispose(key);
         }
         this.pumpChunkQueue();
       });
@@ -1141,7 +1095,7 @@ class StreamingSsogRenderPass {
       runtime.buffers.dispose();
       this.cacheSplats -= runtime.chunk.data.numSplats;
       this.loaded.delete(key);
-      this.disposeDebugChunkBound(key);
+      this.debugBounds.dispose(key);
       this.evictedChunks++;
     }
 
@@ -1572,65 +1526,45 @@ class StreamingSsogRenderPass {
     Array.from(this.mergedRuntimes.keys()).forEach((groupKey) => this.disposeMergedRuntime(groupKey));
   }
 
-  private ensureDebugChunkBound(key: string, entry: SsogChunkEntry): void {
-    if (!this.debugChunkBoundsVisible || this.hasActiveLoadedNode(entry.nodeId)) {
-      this.disposeDebugChunkBound(key);
-      return;
+  private isChunkRepresentedByReadyRenderPath(key: string): boolean {
+    const runtime = this.loaded.get(key);
+    if (!runtime?.active) {
+      return false;
     }
 
-    const existing = this.debugChunkBounds.get(key);
-    if (existing) {
-      existing.mesh.setEnabled(this.debugChunkBoundsVisible);
-      return;
+    if (this.packedGlobalRuntime) {
+      return this.packedGlobalRuntime.signature.split("|").includes(key);
     }
-
-    const mesh = MeshBuilder.CreateLineSystem(
-      `ssog-debug-bound-${key}`,
-      { lines: getDebugChunkBoundLines(entry) },
-      this.scene,
-    );
-    mesh.color = getDebugChunkColor(key);
-    mesh.isPickable = false;
-    mesh.alwaysSelectAsActiveMesh = true;
-    mesh.setEnabled(this.debugChunkBoundsVisible);
-    this.debugChunkBounds.set(key, { mesh });
+    if (this.expandedRuntime) {
+      return this.expandedRuntime.signature.split("|").includes(key);
+    }
+    for (const merged of this.mergedRuntimes.values()) {
+      if (merged.keys.has(key)) {
+        return true;
+      }
+    }
+    return this.globalSortMode === "off";
   }
 
-  private hasActiveLoadedNode(nodeId: number): boolean {
-    for (const runtime of this.loaded.values()) {
-      if (runtime.active && runtime.entry.nodeId === nodeId) {
+  private hasReadyRenderedNode(nodeId: number): boolean {
+    for (const [key, runtime] of this.loaded) {
+      if (runtime.entry.nodeId === nodeId && this.isChunkRepresentedByReadyRenderPath(key)) {
         return true;
       }
     }
     return false;
   }
 
-  private disposeDebugChunkBoundsForActiveNodes(): void {
+  private disposeDebugChunkBoundsForReadyRenderedNodes(): void {
     if (!this.debugChunkBoundsVisible) {
       return;
     }
 
-    for (const key of Array.from(this.debugChunkBounds.keys())) {
-      const entry = this.entriesByKey.get(key);
-      if (entry && this.hasActiveLoadedNode(entry.nodeId)) {
-        this.disposeDebugChunkBound(key);
+    for (const key of Array.from(this.entriesByKey.keys())) {
+      if (this.debugBounds.has(key) && this.hasReadyRenderedNode(this.entriesByKey.get(key)!.nodeId)) {
+        this.debugBounds.dispose(key);
       }
     }
-  }
-
-  private disposeDebugChunkBound(key: string): void {
-    const bound = this.debugChunkBounds.get(key);
-    if (!bound) {
-      return;
-    }
-
-    bound.mesh.dispose();
-    this.debugChunkBounds.delete(key);
-  }
-
-  private disposeDebugChunkBounds(): void {
-    this.debugChunkBounds.forEach((bound) => bound.mesh.dispose());
-    this.debugChunkBounds.clear();
   }
 
   private mergePackedChunks(chunks: SogPackedData[]): SogPackedData | undefined {
