@@ -1,6 +1,7 @@
 node_modules
 public
 dist
+extra
 .env
 .env.local
 npm-debug.log*
