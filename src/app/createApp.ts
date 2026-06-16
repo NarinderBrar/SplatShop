@@ -1,5 +1,4 @@
-import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
-import { Color4, Vector3 } from "@babylonjs/core/Maths/math";
+import { Color4 } from "@babylonjs/core/Maths/math";
 import { Scene } from "@babylonjs/core/scene";
 
 import { AssetLoader } from "../asset-loader";
@@ -8,16 +7,11 @@ import { ViewerDebugStats } from "../debug/ViewerDebugStats";
 import { initFileHandler } from "../file-handler";
 import { createEngine } from "../rendering/createEngine";
 import { createUI } from "./createUI";
+import { CameraManager } from "./CameraManager";
 import type { SplatCloud } from "../splat/SplatCloud";
 import type { ToolId, SelectionMode } from "./createUI";
 
 const DEFAULT_SPLAT_URL = "/Room.sog";
-const DEFAULT_CAMERA_RADIUS_SCALE = 0.72;
-
-const getViewerUpVector = (): Vector3 => {
-  const value = new URLSearchParams(window.location.search).get("up");
-  return value === "y" || value === "positiveY" ? Vector3.Up() : Vector3.Down();
-};
 
 const getStartupSplatUrl = (): string => {
   const params = new URLSearchParams(window.location.search);
@@ -51,19 +45,7 @@ export async function createApp(
   const { engine, mode } = await createEngine(canvas);
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.03, 0.035, 0.04, 1);
-
-  const camera = new ArcRotateCamera(
-    "MainCamera",
-    Math.PI * 0.25,
-    Math.PI * 0.45,
-    6,
-    Vector3.Zero(),
-    scene,
-  );
-  camera.upVector = getViewerUpVector();
-  camera.attachControl(canvas, true);
-  camera.minZ = 0.01;
-  camera.wheelPrecision = 45;
+  const cameraManager = new CameraManager(canvas, scene);
 
   const debugStats = new ViewerDebugStats(mode);
   const loadingProgress = new LoadingProgress();
@@ -113,9 +95,7 @@ export async function createApp(
     const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-    const viewProjArray = new Float32Array(
-      camera.getTransformationMatrix().toArray(),
-    );
+    const viewProjArray = cameraManager.getViewProjectionArray();
 
     void targetCloud
       .selectPoint(
