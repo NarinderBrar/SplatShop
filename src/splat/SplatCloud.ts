@@ -152,6 +152,13 @@ class SplatCloud {
     }
   }
 
+  setDebugChunkBoundsVisible(visible: boolean): void {
+    const pass = this.renderPass;
+    if ("setDebugChunkBoundsVisible" in pass) {
+      (pass as unknown as { setDebugChunkBoundsVisible: (v: boolean) => void }).setDebugChunkBoundsVisible(visible);
+    }
+  }
+
   selectPoint(
     ndcX: number,
     ndcY: number,

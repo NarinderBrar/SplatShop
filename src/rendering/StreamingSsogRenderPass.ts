@@ -1,4 +1,7 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+import type { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import type { Scene } from "@babylonjs/core/scene";
 
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
@@ -57,6 +60,11 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   frustumVisibleChunks: number;
   frustumCulledChunks: number;
   frustumMargin: number;
+  prefetchCandidateChunks: number;
+  prefetchFrustumChunks: number;
+  nearPrefetchChunks: number;
+  prefetchFrustumMargin: number;
+  nearPrefetchDistance: number;
 };
 
 type LoadedChunk = {
@@ -66,6 +74,10 @@ type LoadedChunk = {
   pass: PackedSogRenderPass;
   active: boolean;
   lastUsedFrame: number;
+};
+
+type DebugChunkBound = {
+  mesh: LinesMesh;
 };
 
 type SelectedSsogItem = {
@@ -109,9 +121,58 @@ const LOD_SELECT_INTERVAL_FRAMES = 15;
 const chunkKey = (entry: SsogChunkEntry): string =>
   `${entry.fileIndex}:${entry.offset}:${entry.count}:${entry.lod}:${entry.nodeId}`;
 
+const getDebugChunkColor = (key: string): Color3 => {
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  const r = 0.35 + ((hash & 0xff) / 255) * 0.65;
+  const g = 0.35 + (((hash >> 8) & 0xff) / 255) * 0.65;
+  const b = 0.35 + (((hash >> 16) & 0xff) / 255) * 0.65;
+  return new Color3(r, g, b);
+};
+
+const getDebugChunkBoundLines = (entry: SsogChunkEntry): Vector3[][] => {
+  const min = entry.bound.min;
+  const max = entry.bound.max;
+  const corners = [
+    new Vector3(min[0], min[1], min[2]),
+    new Vector3(max[0], min[1], min[2]),
+    new Vector3(max[0], max[1], min[2]),
+    new Vector3(min[0], max[1], min[2]),
+    new Vector3(min[0], min[1], max[2]),
+    new Vector3(max[0], min[1], max[2]),
+    new Vector3(max[0], max[1], max[2]),
+    new Vector3(min[0], max[1], max[2]),
+  ];
+  const edges: [number, number][] = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4],
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7],
+  ];
+
+  return edges.map(([start, end]) => [corners[start], corners[end]]);
+};
+
 const getPositiveNumberParam = (name: string, fallback: number): number => {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const getNonNegativeNumberParam = (name: string, fallback: number): number => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 };
 
 const getSsogQualityPreset = (): SsogQualityPreset => {
@@ -200,6 +261,18 @@ const getSsogMaxPendingLoads = (): number =>
 const getSsogPrefetchMultiplier = (): number =>
   Math.max(1, getPositiveNumberParam("ssogPrefetchMultiplier", getSsogStreamingPreset().prefetchMultiplier));
 
+const getSsogPrefetchFrustumMargin = (): number => {
+  const preset = getSsogQualityPreset();
+  const fallback = preset === "fast" ? 8 : preset === "balanced" ? 12 : 6;
+  return getNonNegativeNumberParam("ssogPrefetchFrustumMargin", fallback);
+};
+
+const getSsogNearPrefetchDistance = (): number => {
+  const preset = getSsogQualityPreset();
+  const fallback = preset === "fast" ? 12 : preset === "balanced" ? 20 : 16;
+  return getNonNegativeNumberParam("ssogNearPrefetchDistance", fallback);
+};
+
 const getSsogEvictAfterFrames = (): number =>
   Math.max(0, Math.floor(getPositiveNumberParam("ssogEvictAfterFrames", getSsogStreamingPreset().evictAfterFrames)));
 
@@ -273,11 +346,30 @@ const getSsogSelectionStableFrames = (): number => {
 const isSsogProgressiveGlobalBuildEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("ssogProgressiveGlobalBuild") === "true";
 
+const getChunkCenterDistance = (entry: SsogChunkEntry, cameraPosition: Vector3): number => {
+  const min = entry.bound.min;
+  const max = entry.bound.max;
+  const centerX = (min[0] + max[0]) * 0.5;
+  const centerY = (min[1] + max[1]) * 0.5;
+  const centerZ = (min[2] + max[2]) * 0.5;
+  const radiusX = max[0] - centerX;
+  const radiusY = max[1] - centerY;
+  const radiusZ = max[2] - centerZ;
+  const dx = centerX - cameraPosition.x;
+  const dy = centerY - cameraPosition.y;
+  const dz = centerZ - cameraPosition.z;
+  const centerDistance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  const radius = Math.sqrt(radiusX * radiusX + radiusY * radiusY + radiusZ * radiusZ);
+  return Math.max(0, centerDistance - radius);
+};
+
 class StreamingSsogRenderPass {
   private readonly loaded = new Map<string, LoadedChunk>();
   private readonly pending = new Map<string, Promise<void>>();
+  private readonly pendingEntries = new Map<string, SsogChunkEntry>();
   private readonly queued = new Map<string, SsogChunkEntry>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
+  private readonly debugChunkBounds = new Map<string, DebugChunkBound>();
   private readonly selectedKeys = new Set<string>();
   private readonly prefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
@@ -337,6 +429,10 @@ class StreamingSsogRenderPass {
   private candidateChunks = 0;
   private frustumVisibleChunks = 0;
   private frustumCulledChunks = 0;
+  private prefetchCandidateChunks = 0;
+  private prefetchFrustumChunks = 0;
+  private nearPrefetchChunks = 0;
+  private debugChunkBoundsVisible = false;
 
   constructor(
     private readonly scene: Scene,
@@ -368,9 +464,27 @@ class StreamingSsogRenderPass {
     this.disposeMergedRuntimes();
     this.disposePackedGlobalRuntime();
     this.disposeExpandedRuntime();
+    this.disposeDebugChunkBounds();
     this.loaded.clear();
     this.pending.clear();
+    this.pendingEntries.clear();
     this.queued.clear();
+  }
+
+  setDebugChunkBoundsVisible(visible: boolean): void {
+    this.debugChunkBoundsVisible = visible;
+    if (visible) {
+      this.queued.forEach((entry, key) => this.ensureDebugChunkBound(key, entry));
+      this.pendingEntries.forEach((entry, key) => this.ensureDebugChunkBound(key, entry));
+      this.loaded.forEach((runtime, key) => {
+        if (runtime.active) {
+          this.disposeDebugChunkBound(key);
+        } else {
+          this.ensureDebugChunkBound(key, runtime.entry);
+        }
+      });
+    }
+    this.debugChunkBounds.forEach((bound) => bound.mesh.setEnabled(visible));
   }
 
   setVizMode(mode: number): void {
@@ -721,6 +835,11 @@ class StreamingSsogRenderPass {
       frustumVisibleChunks: this.frustumVisibleChunks,
       frustumCulledChunks: this.frustumCulledChunks,
       frustumMargin: getPositiveNumberParam("frustumMargin", 1),
+      prefetchCandidateChunks: this.prefetchCandidateChunks,
+      prefetchFrustumChunks: this.prefetchFrustumChunks,
+      nearPrefetchChunks: this.nearPrefetchChunks,
+      prefetchFrustumMargin: getSsogPrefetchFrustumMargin(),
+      nearPrefetchDistance: getSsogNearPrefetchDistance(),
     };
   }
 
@@ -745,13 +864,29 @@ class StreamingSsogRenderPass {
     const start = performance.now();
     const frustumCullingEnabled = new URLSearchParams(window.location.search).get("ssogFrustumCulling") !== "false";
     const frustumMargin = getPositiveNumberParam("frustumMargin", 1);
+    const prefetchFrustumMargin = Math.max(frustumMargin, getSsogPrefetchFrustumMargin());
+    const nearPrefetchDistance = getSsogNearPrefetchDistance();
     const frustumPlanes = frustumCullingEnabled ? Frustum.GetPlanes(camera.getTransformationMatrix()) : undefined;
     const visibleEntries = frustumPlanes
       ? this.entries.filter((entry) => isAabbInFrustum(entry.bound, frustumPlanes, frustumMargin))
       : this.entries;
+    const prefetchFrustumEntries = frustumPlanes
+      ? this.entries.filter((entry) => isAabbInFrustum(entry.bound, frustumPlanes, prefetchFrustumMargin))
+      : this.entries;
+    const nearPrefetchEntries =
+      nearPrefetchDistance > 0
+        ? this.entries.filter((entry) => getChunkCenterDistance(entry, cameraPosition) <= nearPrefetchDistance)
+        : [];
+    const prefetchEntriesByKey = new Map<string, SsogChunkEntry>();
+    prefetchFrustumEntries.forEach((entry) => prefetchEntriesByKey.set(chunkKey(entry), entry));
+    nearPrefetchEntries.forEach((entry) => prefetchEntriesByKey.set(chunkKey(entry), entry));
+    const prefetchEntries = Array.from(prefetchEntriesByKey.values());
     this.candidateChunks = this.entries.length;
     this.frustumVisibleChunks = visibleEntries.length;
     this.frustumCulledChunks = this.entries.length - visibleEntries.length;
+    this.prefetchFrustumChunks = prefetchFrustumEntries.length;
+    this.nearPrefetchChunks = nearPrefetchEntries.length;
+    this.prefetchCandidateChunks = prefetchEntries.length;
 
     const fov = "fov" in camera && typeof camera.fov === "number" ? camera.fov : Math.PI / 3;
     const viewportHeight = this.scene.getEngine().getRenderHeight(true);
@@ -781,15 +916,17 @@ class StreamingSsogRenderPass {
         forceFineViewDot: this.forceFineViewDot,
       },
     );
+    const prefetchBudgetMultiplier =
+      prefetchEntries.length > visibleEntries.length ? Math.max(this.prefetchMultiplier, 1.25) : this.prefetchMultiplier;
     const prefetchSelection =
-      this.prefetchMultiplier > 1
+      prefetchEntries.length > visibleEntries.length || this.prefetchMultiplier > 1
         ? selectSsogLod(
-            visibleEntries.map((entry) => {
+            prefetchEntries.map((entry) => {
               const key = chunkKey(entry);
               return mapEntry(entry, this.selectedKeys.has(key) || this.prefetchKeys.has(key));
             }),
             {
-              budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * this.prefetchMultiplier)),
+              budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * prefetchBudgetMultiplier)),
               cameraPosition,
               cameraForward,
               focalPixels,
@@ -842,11 +979,15 @@ class StreamingSsogRenderPass {
       runtime.active = selected || fallback || (missingSelectedNodeIds.size > 0 && runtime.active && selectedNodeIds.has(runtime.entry.nodeId));
       runtime.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && runtime.active);
       if (runtime.active) {
+        this.disposeDebugChunkBound(key);
         activeChunks++;
         activeLods.add(runtime.entry.lod);
         runtime.lastUsedFrame = this.generation;
+      } else if (this.debugChunkBoundsVisible) {
+        this.ensureDebugChunkBound(key, runtime.entry);
       }
     });
+    this.disposeDebugChunkBoundsForActiveNodes();
     this.activeChunks = Math.max(stableSelected.length, activeChunks);
     this.selectedLods = Math.max(new Set(stableSelected.map((item) => item.lod)).size, activeLods.size);
     stableSelected.forEach((item) => this.requestChunk(item.value));
@@ -875,6 +1016,9 @@ class StreamingSsogRenderPass {
     }
 
     this.queued.set(key, entry);
+    if (this.debugChunkBoundsVisible) {
+      this.ensureDebugChunkBound(key, entry);
+    }
   }
 
   private pumpChunkQueue(): void {
@@ -913,6 +1057,7 @@ class StreamingSsogRenderPass {
         return entry;
       }
       this.queued.delete(key);
+      this.disposeDebugChunkBound(key);
     }
 
     return undefined;
@@ -924,6 +1069,10 @@ class StreamingSsogRenderPass {
       return;
     }
 
+    this.pendingEntries.set(key, entry);
+    if (this.debugChunkBoundsVisible) {
+      this.ensureDebugChunkBound(key, entry);
+    }
     const loadStart = performance.now();
     const promise = this.loadChunk(entry)
       .then((chunk) => {
@@ -946,11 +1095,20 @@ class StreamingSsogRenderPass {
           lastUsedFrame: this.generation,
         });
         this.cacheSplats += chunk.data.numSplats;
+        if (active) {
+          this.disposeDebugChunkBound(key);
+        } else if (this.debugChunkBoundsVisible) {
+          this.ensureDebugChunkBound(key, entry);
+        }
         this.updateLodSelection(true);
         this.evictInactiveChunks();
       })
       .finally(() => {
         this.pending.delete(key);
+        this.pendingEntries.delete(key);
+        if (!this.loaded.has(key)) {
+          this.disposeDebugChunkBound(key);
+        }
         this.pumpChunkQueue();
       });
 
@@ -983,6 +1141,7 @@ class StreamingSsogRenderPass {
       runtime.buffers.dispose();
       this.cacheSplats -= runtime.chunk.data.numSplats;
       this.loaded.delete(key);
+      this.disposeDebugChunkBound(key);
       this.evictedChunks++;
     }
 
@@ -1411,6 +1570,67 @@ class StreamingSsogRenderPass {
 
   private disposeMergedRuntimes(): void {
     Array.from(this.mergedRuntimes.keys()).forEach((groupKey) => this.disposeMergedRuntime(groupKey));
+  }
+
+  private ensureDebugChunkBound(key: string, entry: SsogChunkEntry): void {
+    if (!this.debugChunkBoundsVisible || this.hasActiveLoadedNode(entry.nodeId)) {
+      this.disposeDebugChunkBound(key);
+      return;
+    }
+
+    const existing = this.debugChunkBounds.get(key);
+    if (existing) {
+      existing.mesh.setEnabled(this.debugChunkBoundsVisible);
+      return;
+    }
+
+    const mesh = MeshBuilder.CreateLineSystem(
+      `ssog-debug-bound-${key}`,
+      { lines: getDebugChunkBoundLines(entry) },
+      this.scene,
+    );
+    mesh.color = getDebugChunkColor(key);
+    mesh.isPickable = false;
+    mesh.alwaysSelectAsActiveMesh = true;
+    mesh.setEnabled(this.debugChunkBoundsVisible);
+    this.debugChunkBounds.set(key, { mesh });
+  }
+
+  private hasActiveLoadedNode(nodeId: number): boolean {
+    for (const runtime of this.loaded.values()) {
+      if (runtime.active && runtime.entry.nodeId === nodeId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private disposeDebugChunkBoundsForActiveNodes(): void {
+    if (!this.debugChunkBoundsVisible) {
+      return;
+    }
+
+    for (const key of Array.from(this.debugChunkBounds.keys())) {
+      const entry = this.entriesByKey.get(key);
+      if (entry && this.hasActiveLoadedNode(entry.nodeId)) {
+        this.disposeDebugChunkBound(key);
+      }
+    }
+  }
+
+  private disposeDebugChunkBound(key: string): void {
+    const bound = this.debugChunkBounds.get(key);
+    if (!bound) {
+      return;
+    }
+
+    bound.mesh.dispose();
+    this.debugChunkBounds.delete(key);
+  }
+
+  private disposeDebugChunkBounds(): void {
+    this.debugChunkBounds.forEach((bound) => bound.mesh.dispose());
+    this.debugChunkBounds.clear();
   }
 
   private mergePackedChunks(chunks: SogPackedData[]): SogPackedData | undefined {

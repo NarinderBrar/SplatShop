@@ -29,6 +29,7 @@ const DEBUG_GROUPS: Array<Omit<DebugGroup, "lines">> = [
 const getDebugGroupKey = (line: string): DebugGroupKey => {
   if (
     line.startsWith("Frustum:") ||
+    line.startsWith("Prefetch candidates:") ||
     line.startsWith("Streaming chunks:") ||
     line.startsWith("Selected residency:") ||
     line.startsWith("Selected nodes:") ||
@@ -251,6 +252,11 @@ class ViewerDebugStats {
       frustumVisibleChunks?: number;
       frustumCulledChunks?: number;
       frustumMargin?: number;
+      prefetchCandidateChunks?: number;
+      prefetchFrustumChunks?: number;
+      nearPrefetchChunks?: number;
+      prefetchFrustumMargin?: number;
+      nearPrefetchDistance?: number;
     };
     const previewLimiterStats = renderStats as typeof renderStats & {
       computeTileRasterPreviewDrawLimit?: number;
@@ -373,6 +379,9 @@ class ViewerDebugStats {
       `Chunks: ${formatCount(renderStats.activeChunks)} / ${formatCount(renderStats.chunkCount)}`,
       streamingStats.candidateChunks !== undefined
         ? `Frustum: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.frustumCulledChunks ?? 0)} culled / ${formatCount(streamingStats.candidateChunks)} candidates / margin ${(streamingStats.frustumMargin ?? 1).toFixed(2)}`
+        : "",
+      streamingStats.prefetchCandidateChunks !== undefined
+        ? `Prefetch candidates: ${formatCount(streamingStats.prefetchCandidateChunks)} total / ${formatCount(streamingStats.prefetchFrustumChunks ?? 0)} expanded-frustum / ${formatCount(streamingStats.nearPrefetchChunks ?? 0)} near-camera / margin ${(streamingStats.prefetchFrustumMargin ?? 0).toFixed(2)} / near ${(streamingStats.nearPrefetchDistance ?? 0).toFixed(1)}`
         : "",
       streamingStats.selectedChunks !== undefined
         ? `Streaming chunks: selected ${formatCount(streamingStats.selectedChunks)} / loaded ${formatCount(streamingStats.loadedChunks ?? 0)} (${formatCount(streamingStats.loadedActiveChunks ?? 0)} active, ${formatCount(streamingStats.loadedInactiveChunks ?? 0)} inactive) / pending ${formatCount(streamingStats.pendingChunks ?? 0)} / queued ${formatCount(streamingStats.queuedChunks ?? 0)} / evicted ${formatCount(streamingStats.evictedChunks ?? 0)}`

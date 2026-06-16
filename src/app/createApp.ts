@@ -54,6 +54,7 @@ export async function createApp(
 
   const assetLoader = new AssetLoader();
   let activeVizMode = 0;
+  let debugVisible = false;
   let activeTool: ToolId = "pointSelect";
   let selectionThreshold = 0.14;
   let selectionMode: SelectionMode = "normal";
@@ -79,7 +80,9 @@ export async function createApp(
         currentSplatCloud?.setVizMode(mode);
       },
       onPropertyTabChange: (tab) => {
-        debugStats.setVisible(tab === "debug");
+        debugVisible = tab === "debug";
+        debugStats.setVisible(debugVisible);
+        currentSplatCloud?.setDebugChunkBoundsVisible(debugVisible);
       },
     },
     debugStats.getElement(),
@@ -127,6 +130,7 @@ export async function createApp(
       currentSplatCloud = splatCloud;
       ui.setSelectedCount(0);
       splatCloud.setVizMode(activeVizMode);
+      splatCloud.setDebugChunkBoundsVisible(debugVisible);
       debugStats.setCloud(splatCloud);
       loadingProgress.setCloud(splatCloud);
     },
