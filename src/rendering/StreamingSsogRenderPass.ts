@@ -22,8 +22,15 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   cacheChunkPressure: number;
   cacheSplatPressure: number;
   selectedCacheRatio: number;
+  selectedChunks: number;
+  selectedLoadedChunks: number;
+  selectedPendingChunks: number;
+  selectedQueuedChunks: number;
   selectedNodes: number;
   selectedSplats: number;
+  fallbackChunks: number;
+  loadedActiveChunks: number;
+  loadedInactiveChunks: number;
   requestedChunks: number;
   requestedSplats: number;
   cacheChunkLimit: number;
@@ -381,6 +388,8 @@ class StreamingSsogRenderPass {
   getStats(): StreamingSsogRenderStats {
     const mergedKeys = this.getMergedKeys();
     const packedMetadata = this.getActivePackedMetadataStats();
+    const selectedKeys = Array.from(this.selectedKeys);
+    const loadedActiveChunks = Array.from(this.loaded.values()).filter((runtime) => runtime.active).length;
     const activeStats = [
       ...(this.expandedRuntime ? [this.expandedRuntime.pass.getStats()] : []),
       ...(this.packedGlobalRuntime ? [this.packedGlobalRuntime.getStats()] : []),
@@ -677,8 +686,15 @@ class StreamingSsogRenderPass {
         : 0,
       cacheSplatPressure: this.cacheSplats / Math.max(1, this.cacheSplatLimit),
       selectedCacheRatio: this.cacheSplats / Math.max(1, this.selectedSplats),
+      selectedChunks: this.selectedKeys.size,
+      selectedLoadedChunks: selectedKeys.filter((key) => this.loaded.has(key)).length,
+      selectedPendingChunks: selectedKeys.filter((key) => this.pending.has(key)).length,
+      selectedQueuedChunks: selectedKeys.filter((key) => this.queued.has(key)).length,
       selectedNodes: this.selectedNodes,
       selectedSplats: this.selectedSplats,
+      fallbackChunks: this.fallbackKeys.size,
+      loadedActiveChunks,
+      loadedInactiveChunks: this.loaded.size - loadedActiveChunks,
       requestedChunks: this.requestedChunks,
       requestedSplats: this.requestedSplats,
       cacheChunkLimit: Number.isFinite(this.cacheChunkLimit) ? this.cacheChunkLimit : -1,

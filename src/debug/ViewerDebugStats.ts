@@ -9,6 +9,64 @@ const formatRange = (min: number, max: number): string => `${min.toFixed(3)} .. 
 const formatVec = (value: readonly [number, number, number]): string =>
   value.map((item) => item.toFixed(2)).join(", ");
 
+type DebugGroupKey = "overview" | "streaming" | "compute" | "gpu" | "frame" | "bounds";
+
+type DebugGroup = {
+  key: DebugGroupKey;
+  title: string;
+  lines: string[];
+};
+
+const DEBUG_GROUPS: Array<Omit<DebugGroup, "lines">> = [
+  { key: "overview", title: "Overview" },
+  { key: "streaming", title: "SSOG Streaming" },
+  { key: "compute", title: "Compute Pipeline" },
+  { key: "gpu", title: "GPU Sorting" },
+  { key: "frame", title: "Frame Work" },
+  { key: "bounds", title: "Bounds" },
+];
+
+const getDebugGroupKey = (line: string): DebugGroupKey => {
+  if (
+    line.startsWith("Frustum:") ||
+    line.startsWith("Streaming chunks:") ||
+    line.startsWith("Selected residency:") ||
+    line.startsWith("Selected nodes:") ||
+    line.startsWith("Requested chunks:") ||
+    line.startsWith("Loaded chunks:") ||
+    line.startsWith("Pending chunks:") ||
+    line.startsWith("Queued chunks:") ||
+    line.startsWith("Prefetched chunks:") ||
+    line.startsWith("Evicted chunks:") ||
+    line.startsWith("Cache splats:") ||
+    line.startsWith("SSOG ")
+  ) {
+    return "streaming";
+  }
+  if (line.startsWith("Compute ")) {
+    return "compute";
+  }
+  if (line.startsWith("GPU ")) {
+    return "gpu";
+  }
+  if (
+    line.startsWith("Sort:") ||
+    line.startsWith("Upload:") ||
+    line.startsWith("LOD build:") ||
+    line.startsWith("Sort pending:")
+  ) {
+    return "frame";
+  }
+  if (
+    line.startsWith("Bounds ") ||
+    line.startsWith("Scale ") ||
+    line.startsWith("Opacity:")
+  ) {
+    return "bounds";
+  }
+  return "overview";
+};
+
 class ViewerDebugStats {
   private readonly root: HTMLDivElement;
   private readonly tileOverlay?: HTMLCanvasElement;
@@ -158,8 +216,15 @@ class ViewerDebugStats {
       cacheChunkPressure?: number;
       cacheSplatPressure?: number;
       selectedCacheRatio?: number;
+      selectedChunks?: number;
+      selectedLoadedChunks?: number;
+      selectedPendingChunks?: number;
+      selectedQueuedChunks?: number;
       selectedNodes?: number;
       selectedSplats?: number;
+      fallbackChunks?: number;
+      loadedActiveChunks?: number;
+      loadedInactiveChunks?: number;
       requestedChunks?: number;
       requestedSplats?: number;
       cacheChunkLimit?: number;
@@ -309,6 +374,12 @@ class ViewerDebugStats {
       streamingStats.candidateChunks !== undefined
         ? `Frustum: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.frustumCulledChunks ?? 0)} culled / ${formatCount(streamingStats.candidateChunks)} candidates / margin ${(streamingStats.frustumMargin ?? 1).toFixed(2)}`
         : "",
+      streamingStats.selectedChunks !== undefined
+        ? `Streaming chunks: selected ${formatCount(streamingStats.selectedChunks)} / loaded ${formatCount(streamingStats.loadedChunks ?? 0)} (${formatCount(streamingStats.loadedActiveChunks ?? 0)} active, ${formatCount(streamingStats.loadedInactiveChunks ?? 0)} inactive) / pending ${formatCount(streamingStats.pendingChunks ?? 0)} / queued ${formatCount(streamingStats.queuedChunks ?? 0)} / evicted ${formatCount(streamingStats.evictedChunks ?? 0)}`
+        : "",
+      streamingStats.selectedChunks !== undefined
+        ? `Selected residency: loaded ${formatCount(streamingStats.selectedLoadedChunks ?? 0)} / pending ${formatCount(streamingStats.selectedPendingChunks ?? 0)} / queued ${formatCount(streamingStats.selectedQueuedChunks ?? 0)} / fallback ${formatCount(streamingStats.fallbackChunks ?? 0)}`
+        : "",
       streamingStats.selectedNodes !== undefined
         ? `Selected nodes: ${formatCount(streamingStats.selectedNodes)} / splats ${formatCount(streamingStats.selectedSplats ?? 0)}`
         : "",
@@ -430,7 +501,57 @@ class ViewerDebugStats {
         ? `Opacity: ${formatRange((bufferStats as unknown as { opacityMin: number }).opacityMin, bufferStats.opacityMax as number)}`
         : "",
     ];
-    this.root.textContent = lines.filter((line) => line.trim().length > 0).join("\n");
+    this.renderGroupedLines(lines);
+  }
+
+  private renderGroupedLines(lines: string[]): void {
+    const groups = new Map<DebugGroupKey, DebugGroup>(
+      DEBUG_GROUPS.map((group) => [group.key, { ...group, lines: [] }]),
+    );
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      groups.get(getDebugGroupKey(trimmed))?.lines.push(trimmed);
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const group of groups.values()) {
+      if (group.lines.length === 0) {
+        continue;
+      }
+      const section = document.createElement("section");
+      section.className = "debug-stats-section";
+
+      const title = document.createElement("div");
+      title.className = "debug-stats-section__title";
+      title.textContent = group.title;
+      section.appendChild(title);
+
+      for (const line of group.lines) {
+        const row = document.createElement("div");
+        row.className = "debug-stats-row";
+        const separator = line.indexOf(": ");
+        if (separator > 0) {
+          const label = document.createElement("span");
+          label.className = "debug-stats-row__label";
+          label.textContent = line.slice(0, separator);
+          const value = document.createElement("span");
+          value.className = "debug-stats-row__value";
+          value.textContent = line.slice(separator + 2);
+          row.append(label, value);
+        } else {
+          row.classList.add("debug-stats-row--plain");
+          row.textContent = line;
+        }
+        section.appendChild(row);
+      }
+
+      fragment.appendChild(section);
+    }
+
+    this.root.replaceChildren(fragment);
   }
 }
 

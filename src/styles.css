@@ -125,13 +125,65 @@ body {
 }
 
 #debug-stats {
-  padding: 4px;
+  display: grid;
+  gap: 8px;
+  padding: 2px;
   color: #dbe7ea;
   font-family:
     "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 10px;
   line-height: 1.25;
-  white-space: pre;
+}
+
+.debug-stats-section {
+  display: grid;
+  gap: 3px;
+  padding: 6px 0;
+  border-top: 1px solid rgb(255 255 255 / 0.08);
+}
+
+.debug-stats-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.debug-stats-section__title {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  padding: 3px 0 4px;
+  color: rgb(154 204 255);
+  background: rgb(8 12 16 / 0.92);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.debug-stats-row {
+  display: grid;
+  grid-template-columns: minmax(58px, 0.78fr) minmax(0, 1.22fr);
+  gap: 6px;
+  align-items: start;
+  min-width: 0;
+}
+
+.debug-stats-row__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgb(152 169 184);
+}
+
+.debug-stats-row__value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgb(230 239 244);
+}
+
+.debug-stats-row--plain {
+  display: block;
+  color: rgb(230 239 244);
+  overflow-wrap: anywhere;
 }
 
 #compute-tile-overlay {
@@ -563,4 +615,3 @@ body {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-
