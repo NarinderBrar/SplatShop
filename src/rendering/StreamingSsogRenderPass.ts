@@ -5,7 +5,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
 import { SogBuffers } from "../splat/SogBuffers";
 import { SplatBuffers, type PackedSplatArrays } from "../splat/SplatBuffers";
-import { selectSsogLod, type SsogSelectableItem } from "../splat/SsogLodSelector";
+import { selectSsogLod, SsogLodSelectorScratch, type SsogSelectableItem } from "../splat/SsogLodSelector";
 import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { isAabbInFrustum } from "../splat/SsogFrustumCulling";
 import { SsogDebugBounds } from "../debug/SsogDebugBounds";
@@ -400,6 +400,8 @@ class StreamingSsogRenderPass {
   private prefetchEntryMark = 1;
   private readonly visibleSelectItems: SelectableSsogEntry[] = [];
   private readonly prefetchSelectItems: SelectableSsogEntry[] = [];
+  private readonly visibleLodScratch = new SsogLodSelectorScratch<SsogChunkEntry>();
+  private readonly prefetchLodScratch = new SsogLodSelectorScratch<SsogChunkEntry>();
   private readonly stableSelectedByNode = new Map<number, SelectedSsogItem>();
   private readonly missingSelectedNodeIds = new Set<number>();
   private readonly coarseFallbackNodeIds = new Set<number>();
@@ -950,6 +952,7 @@ class StreamingSsogRenderPass {
         forceFineScreenRatio: this.forceFineScreenRatio,
         forceFineViewDot: this.forceFineViewDot,
       },
+      this.visibleLodScratch,
     );
     const prefetchBudgetMultiplier =
       this.prefetchEntryIndices.length > this.visibleEntryIndices.length
@@ -970,6 +973,7 @@ class StreamingSsogRenderPass {
               forceFineScreenRatio: this.forceFineScreenRatio,
               forceFineViewDot: this.forceFineViewDot,
             },
+            this.prefetchLodScratch,
           )
         : selection;
 

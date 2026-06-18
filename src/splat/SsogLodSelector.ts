@@ -37,24 +37,89 @@ type SsogLodSelection<T> = {
   selectedSplats: number;
 };
 
-type RankedItem<T> = {
-  item: SsogSelectableItem<T>;
+type RankValues = {
   score: number;
   screenRadius: number;
   viewDot: number;
-  index: number;
 };
 
-type NodeSelection<T> = {
-  ranked: RankedItem<T>;
+type NodeSelection = {
+  rankedIndex: number;
   lodIndex: number;
-  lods: RankedItem<T>[];
+  lods: number[];
 };
+
+type ForcedFineUpgrade = {
+  selection: NodeSelection;
+  finestIndex: number;
+  addedSplats: number;
+  priority: number;
+};
+
+type IncrementalUpgrade = {
+  selection: NodeSelection;
+  nextIndex: number;
+  nextLodIndex: number;
+  addedSplats: number;
+  score: number;
+};
+
+class SsogLodSelectorScratch<T> {
+  scores = new Float64Array(0);
+  screenRadii = new Float64Array(0);
+  viewDots = new Float64Array(0);
+  selected: SsogSelectableItem<T>[] = [];
+  rankedCoverage: number[] = [];
+  forcedFineUpgrades: ForcedFineUpgrade[] = [];
+  incrementalUpgrades: IncrementalUpgrade[] = [];
+  selectedLodValues = new Set<number>();
+  selectedByNode = new Map<number, NodeSelection>();
+  groupsByNode = new Map<number, number[]>();
+  private groupPool: number[][] = [];
+  private groupPoolUsed = 0;
+
+  reset(itemCount: number): void {
+    this.ensureCapacity(itemCount);
+    this.selected.length = 0;
+    this.rankedCoverage.length = 0;
+    this.forcedFineUpgrades.length = 0;
+    this.incrementalUpgrades.length = 0;
+    this.selectedLodValues.clear();
+    this.selectedByNode.clear();
+    this.groupsByNode.clear();
+    this.groupPoolUsed = 0;
+  }
+
+  getGroup(): number[] {
+    let group = this.groupPool[this.groupPoolUsed];
+    if (!group) {
+      group = [];
+      this.groupPool[this.groupPoolUsed] = group;
+    }
+    this.groupPoolUsed++;
+    group.length = 0;
+    return group;
+  }
+
+  private ensureCapacity(itemCount: number): void {
+    if (this.scores.length >= itemCount) {
+      return;
+    }
+
+    let capacity = Math.max(16, this.scores.length);
+    while (capacity < itemCount) {
+      capacity *= 2;
+    }
+    this.scores = new Float64Array(capacity);
+    this.screenRadii = new Float64Array(capacity);
+    this.viewDots = new Float64Array(capacity);
+  }
+}
 
 const getBoundsRank = <T>(
   item: SsogSelectableItem<T>,
   options: SsogLodSelectOptions,
-): Pick<RankedItem<T>, "score" | "screenRadius" | "viewDot"> => {
+): RankValues => {
   const centerX = (item.bound.min[0] + item.bound.max[0]) * 0.5;
   const centerY = (item.bound.min[1] + item.bound.max[1]) * 0.5;
   const centerZ = (item.bound.min[2] + item.bound.max[2]) * 0.5;
@@ -92,28 +157,41 @@ const getBoundsRank = <T>(
 const selectSsogLod = <T>(
   items: SsogSelectableItem<T>[],
   options: SsogLodSelectOptions,
+  scratch = new SsogLodSelectorScratch<T>(),
 ): SsogLodSelection<T> => {
-  const groups = new Map<number, RankedItem<T>[]>();
+  scratch.reset(items.length);
   items.forEach((item, index) => {
-    const group = groups.get(item.nodeId) ?? [];
-    group.push({ item, index, ...getBoundsRank(item, options) });
-    groups.set(item.nodeId, group);
+    const rank = getBoundsRank(item, options);
+    scratch.scores[index] = rank.score;
+    scratch.screenRadii[index] = rank.screenRadius;
+    scratch.viewDots[index] = rank.viewDot;
+
+    let group = scratch.groupsByNode.get(item.nodeId);
+    if (!group) {
+      group = scratch.getGroup();
+      scratch.groupsByNode.set(item.nodeId, group);
+    }
+    group.push(index);
   });
 
   const budget = Math.max(0, Math.floor(options.budget));
-  const selectedByNode = new Map<number, NodeSelection<T>>();
+  const selectedByNode = scratch.selectedByNode;
   let selectedSplats = 0;
 
-  for (const group of groups.values()) {
-    group.sort((a, b) => a.item.lod - b.item.lod || a.index - b.index);
+  for (const group of scratch.groupsByNode.values()) {
+    group.sort((a, b) => items[a].lod - items[b].lod || a - b);
     const coarsestIndex = group.length - 1;
-    const coarsest = group[coarsestIndex];
-    if (!coarsest) {
+    const coarsestItemIndex = group[coarsestIndex];
+    if (coarsestItemIndex === undefined) {
       continue;
     }
 
-    selectedByNode.set(coarsest.item.nodeId, { ranked: coarsest, lodIndex: coarsestIndex, lods: group });
-    selectedSplats += coarsest.item.count;
+    selectedByNode.set(items[coarsestItemIndex].nodeId, {
+      rankedIndex: coarsestItemIndex,
+      lodIndex: coarsestIndex,
+      lods: group,
+    });
+    selectedSplats += items[coarsestItemIndex].count;
   }
 
   if (selectedByNode.size === 0) {
@@ -126,35 +204,38 @@ const selectSsogLod = <T>(
   }
 
   if (selectedSplats <= budget || budget <= 0) {
-    const forcedFineUpgrades = Array.from(selectedByNode.values())
-      .map((selection) => {
-        const finest = selection.lods[0];
-        if (!finest || finest === selection.ranked) {
-          return undefined;
-        }
+    const forcedFineUpgrades = scratch.forcedFineUpgrades;
+    for (const selection of selectedByNode.values()) {
+      const finestIndex = selection.lods[0];
+      if (finestIndex === undefined || finestIndex === selection.rankedIndex) {
+        continue;
+      }
 
-        const isScreenDominant = finest.screenRadius >= options.lodRangeMax * (options.forceFineScreenRatio ?? 0.9);
-        const isStronglyVisible = finest.viewDot >= (options.forceFineViewDot ?? 0.2);
-        if (!isScreenDominant || !isStronglyVisible) {
-          return undefined;
-        }
+      const isScreenDominant =
+        scratch.screenRadii[finestIndex] >= options.lodRangeMax * (options.forceFineScreenRatio ?? 0.9);
+      const isStronglyVisible = scratch.viewDots[finestIndex] >= (options.forceFineViewDot ?? 0.2);
+      if (!isScreenDominant || !isStronglyVisible) {
+        continue;
+      }
 
-        return {
-          selection,
-          finest,
-          addedSplats: finest.item.count - selection.ranked.item.count,
-          priority: finest.screenRadius * (0.5 + finest.viewDot * 0.5),
-        };
-      })
-      .filter((upgrade): upgrade is NonNullable<typeof upgrade> => !!upgrade && upgrade.addedSplats >= 0)
-      .sort((a, b) => b.priority - a.priority || a.addedSplats - b.addedSplats);
+      forcedFineUpgrades.push({
+        selection,
+        finestIndex,
+        addedSplats: items[finestIndex].count - items[selection.rankedIndex].count,
+        priority: scratch.screenRadii[finestIndex] * (0.5 + scratch.viewDots[finestIndex] * 0.5),
+      });
+    }
+    forcedFineUpgrades.sort((a, b) => b.priority - a.priority || a.addedSplats - b.addedSplats);
 
     for (const upgrade of forcedFineUpgrades) {
+      if (upgrade.addedSplats < 0) {
+        continue;
+      }
       if (selectedSplats + upgrade.addedSplats > budget) {
         continue;
       }
 
-      upgrade.selection.ranked = upgrade.finest;
+      upgrade.selection.rankedIndex = upgrade.finestIndex;
       upgrade.selection.lodIndex = 0;
       selectedSplats += upgrade.addedSplats;
     }
@@ -162,75 +243,88 @@ const selectSsogLod = <T>(
     let upgraded = true;
     while (upgraded) {
       upgraded = false;
-      const upgrades = Array.from(selectedByNode.values())
-        .map((selection) => {
-          const nextIndex = selection.lodIndex - 1;
-          const next = selection.lods[nextIndex];
-          if (!next) {
-            return undefined;
-          }
+      const upgrades = scratch.incrementalUpgrades;
+      upgrades.length = 0;
+      for (const selection of selectedByNode.values()) {
+        const nextLodIndex = selection.lodIndex - 1;
+        const nextIndex = selection.lods[nextLodIndex];
+        if (nextIndex === undefined) {
+          continue;
+        }
 
-          const addedSplats = next.item.count - selection.ranked.item.count;
-          const fineDetailBias = 1 + 0.65 / Math.max(1, next.item.lod + 1);
-          const closeDetailBias = next.screenRadius > options.lodRangeMax ? 1.8 : 1;
-          const viewDetailBias = 0.6 + next.viewDot * 0.4;
-          const cost = Math.pow(Math.max(1, addedSplats), 0.55);
-          return {
-            selection,
-            next,
-            nextIndex,
-            addedSplats,
-            score: (next.score * fineDetailBias * closeDetailBias * viewDetailBias) / cost,
-          };
-        })
-        .filter((upgrade): upgrade is NonNullable<typeof upgrade> => !!upgrade && upgrade.addedSplats >= 0)
-        .sort(
-          (a, b) =>
-            b.score - a.score ||
-            b.next.item.depth - a.next.item.depth ||
-            a.next.item.lod - b.next.item.lod,
-        );
+        const next = items[nextIndex];
+        const addedSplats = next.count - items[selection.rankedIndex].count;
+        if (addedSplats < 0) {
+          continue;
+        }
+
+        const fineDetailBias = 1 + 0.65 / Math.max(1, next.lod + 1);
+        const closeDetailBias = scratch.screenRadii[nextIndex] > options.lodRangeMax ? 1.8 : 1;
+        const viewDetailBias = 0.6 + scratch.viewDots[nextIndex] * 0.4;
+        const cost = Math.pow(Math.max(1, addedSplats), 0.55);
+        upgrades.push({
+          selection,
+          nextIndex,
+          nextLodIndex,
+          addedSplats,
+          score: (scratch.scores[nextIndex] * fineDetailBias * closeDetailBias * viewDetailBias) / cost,
+        });
+      }
+      upgrades.sort(
+        (a, b) =>
+          b.score - a.score ||
+          items[b.nextIndex].depth - items[a.nextIndex].depth ||
+          items[a.nextIndex].lod - items[b.nextIndex].lod,
+      );
 
       for (const upgrade of upgrades) {
         if (selectedSplats + upgrade.addedSplats > budget) {
           continue;
         }
 
-        upgrade.selection.ranked = upgrade.next;
-        upgrade.selection.lodIndex = upgrade.nextIndex;
+        upgrade.selection.rankedIndex = upgrade.nextIndex;
+        upgrade.selection.lodIndex = upgrade.nextLodIndex;
         selectedSplats += upgrade.addedSplats;
         upgraded = true;
         break;
       }
     }
   } else {
-    const rankedCoverage = Array.from(selectedByNode.values())
-      .map((selection) => selection.ranked)
-      .sort(
-        (a, b) =>
-          b.score - a.score ||
-          b.item.depth - a.item.depth ||
-          a.item.lod - b.item.lod ||
-          a.index - b.index,
-      );
+    const rankedCoverage = scratch.rankedCoverage;
+    for (const selection of selectedByNode.values()) {
+      rankedCoverage.push(selection.rankedIndex);
+    }
+    rankedCoverage.sort(
+      (a, b) =>
+        scratch.scores[b] - scratch.scores[a] ||
+        items[b].depth - items[a].depth ||
+        items[a].lod - items[b].lod ||
+        a - b,
+    );
     selectedByNode.clear();
     selectedSplats = 0;
-    for (const ranked of rankedCoverage) {
-      if (selectedSplats > 0 && selectedSplats + ranked.item.count > budget) {
+    for (const rankedIndex of rankedCoverage) {
+      if (selectedSplats > 0 && selectedSplats + items[rankedIndex].count > budget) {
         continue;
       }
-      selectedByNode.set(ranked.item.nodeId, { ranked, lodIndex: 0, lods: [ranked] });
-      selectedSplats += ranked.item.count;
+      const group = scratch.getGroup();
+      group.push(rankedIndex);
+      selectedByNode.set(items[rankedIndex].nodeId, { rankedIndex, lodIndex: 0, lods: group });
+      selectedSplats += items[rankedIndex].count;
       if (selectedSplats >= budget) {
         break;
       }
     }
   }
 
-  const selected = Array.from(selectedByNode.values())
-    .map((selection) => selection.ranked.item)
-    .sort((a, b) => a.nodeId - b.nodeId || a.lod - b.lod);
-  const selectedLodValues = new Set(selected.map((item) => item.lod));
+  const selected = scratch.selected;
+  const selectedLodValues = scratch.selectedLodValues;
+  for (const selection of selectedByNode.values()) {
+    const item = items[selection.rankedIndex];
+    selected.push(item);
+    selectedLodValues.add(item.lod);
+  }
+  selected.sort((a, b) => a.nodeId - b.nodeId || a.lod - b.lod);
 
   return {
     selected,
@@ -240,5 +334,5 @@ const selectSsogLod = <T>(
   };
 };
 
-export { selectSsogLod };
+export { selectSsogLod, SsogLodSelectorScratch };
 export type { SsogSelectableItem, SsogLodSelection, SsogLodSelectOptions };
