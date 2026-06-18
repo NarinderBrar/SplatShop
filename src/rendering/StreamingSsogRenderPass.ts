@@ -1,10 +1,11 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { Plane } from "@babylonjs/core/Maths/math.plane";
 import type { Scene } from "@babylonjs/core/scene";
 
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
 import { SogBuffers } from "../splat/SogBuffers";
 import { SplatBuffers, type PackedSplatArrays } from "../splat/SplatBuffers";
-import { selectSsogLod } from "../splat/SsogLodSelector";
+import { selectSsogLod, type SsogSelectableItem } from "../splat/SsogLodSelector";
 import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { isAabbInFrustum } from "../splat/SsogFrustumCulling";
 import { SsogDebugBounds } from "../debug/SsogDebugBounds";
@@ -87,6 +88,8 @@ type DecodedChunk = {
   bytes: number;
 };
 
+type SelectableSsogEntry = SsogSelectableItem<SsogChunkEntry>;
+
 type SelectedSsogItem = {
   value: SsogChunkEntry;
   key: string;
@@ -122,6 +125,24 @@ type SsogStreamingPreset = {
   lodAngleDegrees: number;
   selectionStableFrames: number;
 };
+
+class ChunkIndexBuffer {
+  data = new Uint32Array(0);
+  length = 0;
+
+  reset(): void {
+    this.length = 0;
+  }
+
+  push(value: number): void {
+    if (this.length >= this.data.length) {
+      const next = new Uint32Array(Math.max(16, this.data.length * 2));
+      next.set(this.data);
+      this.data = next;
+    }
+    this.data[this.length++] = value;
+  }
+}
 
 const LOD_SELECT_INTERVAL_FRAMES = 15;
 
@@ -366,10 +387,26 @@ class StreamingSsogRenderPass {
   private readonly decodedUploadQueue = new Map<string, DecodedChunk>();
   private readonly queued = new Map<string, SsogChunkEntry>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
+  private readonly entryKeys: string[];
   private readonly selectedKeys = new Set<string>();
   private readonly desiredKeys = new Set<string>();
   private readonly prefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
+  private readonly visibleEntryIndices = new ChunkIndexBuffer();
+  private readonly prefetchFrustumEntryIndices = new ChunkIndexBuffer();
+  private readonly nearPrefetchEntryIndices = new ChunkIndexBuffer();
+  private readonly prefetchEntryIndices = new ChunkIndexBuffer();
+  private readonly prefetchEntryMarks: Uint32Array;
+  private prefetchEntryMark = 1;
+  private readonly visibleSelectItems: SelectableSsogEntry[] = [];
+  private readonly prefetchSelectItems: SelectableSsogEntry[] = [];
+  private readonly stableSelectedByNode = new Map<number, SelectedSsogItem>();
+  private readonly missingSelectedNodeIds = new Set<number>();
+  private readonly coarseFallbackNodeIds = new Set<number>();
+  private readonly renderSelectedNodeIds = new Set<number>();
+  private readonly finestSelectedNodeIds = new Set<number>();
+  private readonly selectedLodValues = new Set<number>();
+  private readonly activeLodValues = new Set<number>();
   private readonly updateObserver: () => void;
   private readonly qualityPreset = getSsogQualityPreset();
   private readonly sourceSplats: number;
@@ -443,7 +480,9 @@ class StreamingSsogRenderPass {
     private readonly loadChunk: SsogChunkLoader,
   ) {
     this.debugBounds = new SsogDebugBounds(scene);
-    entries.forEach((entry) => this.entriesByKey.set(chunkKey(entry), entry));
+    this.entryKeys = entries.map((entry) => chunkKey(entry));
+    this.prefetchEntryMarks = new Uint32Array(entries.length);
+    entries.forEach((entry, index) => this.entriesByKey.set(this.entryKeys[index], entry));
     const finestEntries = entries.filter((entry) => entry.lod === 0);
     this.sourceSplats = (finestEntries.length > 0 ? finestEntries : entries).reduce(
       (sum, entry) => sum + entry.count,
@@ -886,43 +925,20 @@ class StreamingSsogRenderPass {
     const prefetchFrustumMargin = Math.max(frustumMargin, getSsogPrefetchFrustumMargin());
     const nearPrefetchDistance = getSsogNearPrefetchDistance();
     const frustumPlanes = frustumCullingEnabled ? Frustum.GetPlanes(camera.getTransformationMatrix()) : undefined;
-    const visibleEntries = frustumPlanes
-      ? this.entries.filter((entry) => isAabbInFrustum(entry.bound, frustumPlanes, frustumMargin))
-      : this.entries;
-    const prefetchFrustumEntries = frustumPlanes
-      ? this.entries.filter((entry) => isAabbInFrustum(entry.bound, frustumPlanes, prefetchFrustumMargin))
-      : this.entries;
-    const nearPrefetchEntries =
-      nearPrefetchDistance > 0
-        ? this.entries.filter((entry) => getChunkCenterDistance(entry, cameraPosition) <= nearPrefetchDistance)
-        : [];
-    const prefetchEntriesByKey = new Map<string, SsogChunkEntry>();
-    prefetchFrustumEntries.forEach((entry) => prefetchEntriesByKey.set(chunkKey(entry), entry));
-    nearPrefetchEntries.forEach((entry) => prefetchEntriesByKey.set(chunkKey(entry), entry));
-    const prefetchEntries = Array.from(prefetchEntriesByKey.values());
+    this.buildLodCandidateBuffers(frustumPlanes, frustumMargin, prefetchFrustumMargin, nearPrefetchDistance, cameraPosition);
     this.candidateChunks = this.entries.length;
-    this.frustumVisibleChunks = visibleEntries.length;
-    this.frustumCulledChunks = this.entries.length - visibleEntries.length;
-    this.prefetchFrustumChunks = prefetchFrustumEntries.length;
-    this.nearPrefetchChunks = nearPrefetchEntries.length;
-    this.prefetchCandidateChunks = prefetchEntries.length;
+    this.frustumVisibleChunks = this.visibleEntryIndices.length;
+    this.frustumCulledChunks = this.entries.length - this.visibleEntryIndices.length;
+    this.prefetchFrustumChunks = this.prefetchFrustumEntryIndices.length;
+    this.nearPrefetchChunks = this.nearPrefetchEntryIndices.length;
+    this.prefetchCandidateChunks = this.prefetchEntryIndices.length;
 
     const fov = "fov" in camera && typeof camera.fov === "number" ? camera.fov : Math.PI / 3;
     const viewportHeight = this.scene.getEngine().getRenderHeight(true);
     const focalPixels = viewportHeight / Math.max(0.001, 2 * Math.tan(fov * 0.5));
-    const mapEntry = (entry: SsogChunkEntry, wasSelected: boolean) => ({
-      value: entry,
-      key: chunkKey(entry),
-      nodeId: entry.nodeId,
-      parentNodeId: entry.parentNodeId,
-      depth: entry.depth,
-      lod: entry.lod,
-      count: entry.count,
-      bound: entry.bound,
-      wasSelected,
-    });
+    const visibleItems = this.fillSelectableItems(this.visibleSelectItems, this.visibleEntryIndices, false);
     const selection = selectSsogLod(
-      visibleEntries.map((entry) => mapEntry(entry, this.selectedKeys.has(chunkKey(entry)))),
+      visibleItems,
       {
         budget: this.splatBudget,
         cameraPosition,
@@ -936,14 +952,13 @@ class StreamingSsogRenderPass {
       },
     );
     const prefetchBudgetMultiplier =
-      prefetchEntries.length > visibleEntries.length ? Math.max(this.prefetchMultiplier, 1.25) : this.prefetchMultiplier;
+      this.prefetchEntryIndices.length > this.visibleEntryIndices.length
+        ? Math.max(this.prefetchMultiplier, 1.25)
+        : this.prefetchMultiplier;
     const prefetchSelection =
-      prefetchEntries.length > visibleEntries.length || this.prefetchMultiplier > 1
+      this.prefetchEntryIndices.length > this.visibleEntryIndices.length || this.prefetchMultiplier > 1
         ? selectSsogLod(
-            prefetchEntries.map((entry) => {
-              const key = chunkKey(entry);
-              return mapEntry(entry, this.selectedKeys.has(key) || this.prefetchKeys.has(key));
-            }),
+            this.fillSelectableItems(this.prefetchSelectItems, this.prefetchEntryIndices, true),
             {
               budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * prefetchBudgetMultiplier)),
               cameraPosition,
@@ -960,16 +975,23 @@ class StreamingSsogRenderPass {
 
     const stableSelected = this.stabilizeSelection(selection.selected);
     const renderSelected = this.resolveResidentSelection(stableSelected);
-    const renderSelectedSplats = renderSelected.reduce((sum, item) => sum + item.count, 0);
-    const stableSelectedByNode = new Map(stableSelected.map((item) => [item.nodeId, item]));
+    const stableSelectedByNode = this.stableSelectedByNode;
+    stableSelectedByNode.clear();
+    for (const item of stableSelected) {
+      stableSelectedByNode.set(item.nodeId, item);
+    }
     this.selectedKeys.clear();
     renderSelected.forEach((item) => this.selectedKeys.add(item.key));
     this.desiredKeys.clear();
     stableSelected.forEach((item) => this.desiredKeys.add(item.key));
     this.fallbackKeys.clear();
-    const missingSelectedNodeIds = new Set(
-      stableSelected.filter((item) => !this.loaded.has(item.key)).map((item) => item.nodeId),
-    );
+    const missingSelectedNodeIds = this.missingSelectedNodeIds;
+    missingSelectedNodeIds.clear();
+    for (const item of stableSelected) {
+      if (!this.loaded.has(item.key)) {
+        missingSelectedNodeIds.add(item.nodeId);
+      }
+    }
     for (const nodeId of missingSelectedNodeIds) {
       const fallback = this.getCoarsestEntryForNode(nodeId);
       if (fallback) {
@@ -986,11 +1008,14 @@ class StreamingSsogRenderPass {
         this.fallbackKeys.add(item.key);
       }
     });
-    this.coarseFallbackNodes = new Set(
-      Array.from(this.fallbackKeys)
-        .map((key) => this.entriesByKey.get(key)?.nodeId)
-        .filter((nodeId): nodeId is number => nodeId !== undefined),
-    ).size;
+    this.coarseFallbackNodeIds.clear();
+    for (const key of this.fallbackKeys) {
+      const nodeId = this.entriesByKey.get(key)?.nodeId;
+      if (nodeId !== undefined) {
+        this.coarseFallbackNodeIds.add(nodeId);
+      }
+    }
+    this.coarseFallbackNodes = this.coarseFallbackNodeIds.size;
     this.prefetchKeys.clear();
     prefetchSelection.selected.forEach((item) => {
       if (!this.selectedKeys.has(item.key)) {
@@ -998,12 +1023,25 @@ class StreamingSsogRenderPass {
         this.desiredKeys.add(item.key);
       }
     });
-    this.selectedNodes = new Set(renderSelected.map((item) => item.nodeId)).size;
+    this.renderSelectedNodeIds.clear();
+    this.finestSelectedNodeIds.clear();
+    this.selectedLodValues.clear();
+    let renderSelectedSplats = 0;
+    for (const item of renderSelected) {
+      this.renderSelectedNodeIds.add(item.nodeId);
+      this.selectedLodValues.add(item.lod);
+      renderSelectedSplats += item.count;
+      if (item.lod === 0) {
+        this.finestSelectedNodeIds.add(item.nodeId);
+      }
+    }
+    this.selectedNodes = this.renderSelectedNodeIds.size;
     this.selectedSplats = renderSelectedSplats;
-    this.finestSelectedNodes = new Set(renderSelected.filter((item) => item.lod === 0).map((item) => item.nodeId)).size;
+    this.finestSelectedNodes = this.finestSelectedNodeIds.size;
     this.requestedChunks = prefetchSelection.selected.length;
     this.requestedSplats = prefetchSelection.selectedSplats;
-    const activeLods = new Set<number>();
+    const activeLods = this.activeLodValues;
+    activeLods.clear();
     let activeChunks = 0;
     this.loaded.forEach((runtime, key) => {
       const selected = this.selectedKeys.has(key);
@@ -1021,7 +1059,7 @@ class StreamingSsogRenderPass {
     });
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.activeChunks = Math.max(renderSelected.length, activeChunks);
-    this.selectedLods = Math.max(new Set(renderSelected.map((item) => item.lod)).size, activeLods.size);
+    this.selectedLods = Math.max(this.selectedLodValues.size, activeLods.size);
     stableSelected.forEach((item) => this.requestChunk(item.value));
     selection.selected.forEach((item) => this.requestChunk(item.value));
     prefetchSelection.selected.forEach((item) => this.requestChunk(item.value));
@@ -1040,6 +1078,90 @@ class StreamingSsogRenderPass {
     }
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.lastLodBuildMs = performance.now() - start;
+  }
+
+  private buildLodCandidateBuffers(
+    frustumPlanes: Plane[] | undefined,
+    frustumMargin: number,
+    prefetchFrustumMargin: number,
+    nearPrefetchDistance: number,
+    cameraPosition: Vector3,
+  ): void {
+    this.visibleEntryIndices.reset();
+    this.prefetchFrustumEntryIndices.reset();
+    this.nearPrefetchEntryIndices.reset();
+    this.prefetchEntryIndices.reset();
+
+    this.prefetchEntryMark++;
+    if (this.prefetchEntryMark >= 0xffffffff) {
+      this.prefetchEntryMarks.fill(0);
+      this.prefetchEntryMark = 1;
+    }
+    const mark = this.prefetchEntryMark;
+
+    const addPrefetchIndex = (index: number): void => {
+      if (this.prefetchEntryMarks[index] === mark) {
+        return;
+      }
+      this.prefetchEntryMarks[index] = mark;
+      this.prefetchEntryIndices.push(index);
+    };
+
+    for (let index = 0; index < this.entries.length; index++) {
+      const entry = this.entries[index];
+      if (!frustumPlanes || isAabbInFrustum(entry.bound, frustumPlanes, frustumMargin)) {
+        this.visibleEntryIndices.push(index);
+      }
+
+      if (!frustumPlanes || isAabbInFrustum(entry.bound, frustumPlanes, prefetchFrustumMargin)) {
+        this.prefetchFrustumEntryIndices.push(index);
+        addPrefetchIndex(index);
+      }
+
+      if (nearPrefetchDistance > 0 && getChunkCenterDistance(entry, cameraPosition) <= nearPrefetchDistance) {
+        this.nearPrefetchEntryIndices.push(index);
+        addPrefetchIndex(index);
+      }
+    }
+  }
+
+  private fillSelectableItems(
+    target: SelectableSsogEntry[],
+    indices: ChunkIndexBuffer,
+    includePrefetchKeys: boolean,
+  ): SelectableSsogEntry[] {
+    target.length = indices.length;
+    for (let itemIndex = 0; itemIndex < indices.length; itemIndex++) {
+      const entryIndex = indices.data[itemIndex];
+      const entry = this.entries[entryIndex];
+      const key = this.entryKeys[entryIndex];
+      const wasSelected = this.selectedKeys.has(key) || (includePrefetchKeys && this.prefetchKeys.has(key));
+      const item = target[itemIndex];
+      if (item) {
+        item.value = entry;
+        item.key = key;
+        item.nodeId = entry.nodeId;
+        item.parentNodeId = entry.parentNodeId;
+        item.depth = entry.depth;
+        item.lod = entry.lod;
+        item.count = entry.count;
+        item.bound = entry.bound;
+        item.wasSelected = wasSelected;
+      } else {
+        target[itemIndex] = {
+          value: entry,
+          key,
+          nodeId: entry.nodeId,
+          parentNodeId: entry.parentNodeId,
+          depth: entry.depth,
+          lod: entry.lod,
+          count: entry.count,
+          bound: entry.bound,
+          wasSelected,
+        };
+      }
+    }
+    return target;
   }
 
   private requestChunk(entry: SsogChunkEntry): void {
