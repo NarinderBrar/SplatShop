@@ -337,6 +337,7 @@ class GpuRadixSortPass {
     private readonly outputIndices: StorageBuffer,
     private readonly splatCount: number,
     private readonly sortBits = DEFAULT_SORT_BITS,
+    private readonly validationEnabled = true,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     const elementBytes = splatCount * 4;
@@ -482,7 +483,7 @@ class GpuRadixSortPass {
       lastDispatchSplats: this.lastDispatchSplats,
       sortBits: this.sortBits,
       passes: this.getPassCount(),
-      validationEnabled: true,
+      validationEnabled: this.validationEnabled,
       validationPending: this.validationPending,
       validationSamples: this.validationSamples,
       ascendingViolations: this.ascendingViolations,
@@ -502,7 +503,7 @@ class GpuRadixSortPass {
   }
 
   private dispatchValidation(): void {
-    if (this.validationPending) {
+    if (!this.validationEnabled || this.validationPending) {
       return;
     }
 

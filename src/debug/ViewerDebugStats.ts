@@ -4,6 +4,15 @@ const formatCount = (value: number): string => value.toLocaleString("en-US");
 
 const formatMs = (value: number): string => (Number.isFinite(value) ? value.toFixed(1) : "0.0");
 
+const formatBytes = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  const unit = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / 1024 ** unit).toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+};
+
 const formatRange = (min: number, max: number): string => `${min.toFixed(3)} .. ${max.toFixed(3)}`;
 
 const formatVec = (value: readonly [number, number, number]): string =>
@@ -36,6 +45,7 @@ const getDebugGroupKey = (line: string): DebugGroupKey => {
     line.startsWith("Requested chunks:") ||
     line.startsWith("Loaded chunks:") ||
     line.startsWith("Pending chunks:") ||
+    line.startsWith("Pending uploads:") ||
     line.startsWith("Queued chunks:") ||
     line.startsWith("Prefetched chunks:") ||
     line.startsWith("Evicted chunks:") ||
@@ -209,6 +219,7 @@ class ViewerDebugStats {
     const streamingStats = renderStats as typeof renderStats & {
       loadedChunks?: number;
       pendingChunks?: number;
+      pendingUploadChunks?: number;
       queuedChunks?: number;
       prefetchedChunks?: number;
       evictedChunks?: number;
@@ -244,6 +255,11 @@ class ViewerDebugStats {
       packedMergeCompatible?: boolean;
       lastGlobalSortBuildMs?: number;
       lastChunkLoadMs?: number;
+      lastChunkUploadMs?: number;
+      uploadBudgetBytes?: number;
+      uploadedBytesThisFrame?: number;
+      uploadedChunksThisFrame?: number;
+      deferredUploadChunks?: number;
       lodTransitionCount?: number;
       pendingReplacementNodes?: number;
       finestSelectedNodes?: number;
@@ -384,7 +400,7 @@ class ViewerDebugStats {
         ? `Prefetch candidates: ${formatCount(streamingStats.prefetchCandidateChunks)} total / ${formatCount(streamingStats.prefetchFrustumChunks ?? 0)} expanded-frustum / ${formatCount(streamingStats.nearPrefetchChunks ?? 0)} near-camera / margin ${(streamingStats.prefetchFrustumMargin ?? 0).toFixed(2)} / near ${(streamingStats.nearPrefetchDistance ?? 0).toFixed(1)}`
         : "",
       streamingStats.selectedChunks !== undefined
-        ? `Streaming chunks: selected ${formatCount(streamingStats.selectedChunks)} / loaded ${formatCount(streamingStats.loadedChunks ?? 0)} (${formatCount(streamingStats.loadedActiveChunks ?? 0)} active, ${formatCount(streamingStats.loadedInactiveChunks ?? 0)} inactive) / pending ${formatCount(streamingStats.pendingChunks ?? 0)} / queued ${formatCount(streamingStats.queuedChunks ?? 0)} / evicted ${formatCount(streamingStats.evictedChunks ?? 0)}`
+        ? `Streaming chunks: selected ${formatCount(streamingStats.selectedChunks)} / loaded ${formatCount(streamingStats.loadedChunks ?? 0)} (${formatCount(streamingStats.loadedActiveChunks ?? 0)} active, ${formatCount(streamingStats.loadedInactiveChunks ?? 0)} inactive) / pending ${formatCount(streamingStats.pendingChunks ?? 0)} / upload ${formatCount(streamingStats.pendingUploadChunks ?? 0)} / queued ${formatCount(streamingStats.queuedChunks ?? 0)} / evicted ${formatCount(streamingStats.evictedChunks ?? 0)}`
         : "",
       streamingStats.selectedChunks !== undefined
         ? `Selected residency: loaded ${formatCount(streamingStats.selectedLoadedChunks ?? 0)} / pending ${formatCount(streamingStats.selectedPendingChunks ?? 0)} / queued ${formatCount(streamingStats.selectedQueuedChunks ?? 0)} / fallback ${formatCount(streamingStats.fallbackChunks ?? 0)}`
@@ -400,6 +416,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.pendingChunks !== undefined
         ? `Pending chunks: ${formatCount(streamingStats.pendingChunks)}`
+        : "",
+      streamingStats.pendingUploadChunks !== undefined
+        ? `Pending uploads: ${formatCount(streamingStats.pendingUploadChunks)}`
         : "",
       streamingStats.queuedChunks !== undefined
         ? `Queued chunks: ${formatCount(streamingStats.queuedChunks)}`
@@ -423,6 +442,9 @@ class ViewerDebugStats {
       streamingStats.maxPendingLoads !== undefined
         ? `SSOG loading: max pending ${formatCount(streamingStats.maxPendingLoads)} / prefetch ${streamingStats.prefetchMultiplier?.toFixed(2) ?? "0.00"}x`
         : "",
+      streamingStats.uploadBudgetBytes !== undefined
+        ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)}`
+        : "",
       streamingStats.chunkSortMode !== undefined
         ? `SSOG chunk sort: ${streamingStats.chunkSortMode} / scale ${formatCount(streamingStats.chunkSortScale ?? 0)} / hysteresis ${formatCount(streamingStats.chunkSortHysteresis ?? 0)}`
         : "",
@@ -437,6 +459,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.lastChunkLoadMs !== undefined
         ? `SSOG chunk load: ${formatMs(streamingStats.lastChunkLoadMs)} ms`
+        : "",
+      streamingStats.lastChunkUploadMs !== undefined
+        ? `SSOG chunk upload: ${formatMs(streamingStats.lastChunkUploadMs)} ms`
         : "",
       streamingStats.lodTransitionCount !== undefined
         ? `SSOG LOD transitions: ${formatCount(streamingStats.lodTransitionCount)} / pending ${formatCount(streamingStats.pendingReplacementNodes ?? 0)}`

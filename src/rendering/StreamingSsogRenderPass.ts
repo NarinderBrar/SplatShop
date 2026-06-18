@@ -16,6 +16,7 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   qualityPreset: SsogQualityPreset;
   loadedChunks: number;
   pendingChunks: number;
+  pendingUploadChunks: number;
   queuedChunks: number;
   prefetchedChunks: number;
   evictedChunks: number;
@@ -50,6 +51,11 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   packedMergeCompatible: boolean;
   lastGlobalSortBuildMs: number;
   lastChunkLoadMs: number;
+  lastChunkUploadMs: number;
+  uploadBudgetBytes: number;
+  uploadedBytesThisFrame: number;
+  uploadedChunksThisFrame: number;
+  deferredUploadChunks: number;
   lodTransitionCount: number;
   pendingReplacementNodes: number;
   finestSelectedNodes: number;
@@ -72,6 +78,13 @@ type LoadedChunk = {
   pass: PackedSogRenderPass;
   active: boolean;
   lastUsedFrame: number;
+};
+
+type DecodedChunk = {
+  key: string;
+  entry: SsogChunkEntry;
+  chunk: SsogPackedChunk;
+  bytes: number;
 };
 
 type SelectedSsogItem = {
@@ -296,6 +309,39 @@ const getSsogSelectionStableFrames = (): number => {
 const isSsogProgressiveGlobalBuildEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("ssogProgressiveGlobalBuild") === "true";
 
+const getSsogUploadBudgetBytes = (): number => {
+  const raw = new URLSearchParams(window.location.search).get("ssogUploadBudgetBytes");
+  if (raw === "all") {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const preset = getSsogQualityPreset();
+  const fallback =
+    preset === "fast"
+      ? 12 * 1024 * 1024
+      : preset === "balanced"
+        ? 24 * 1024 * 1024
+        : 48 * 1024 * 1024;
+  return Math.floor(getPositiveNumberParam("ssogUploadBudgetBytes", fallback));
+};
+
+const getSogPackedDataByteLength = (data: SogPackedData): number => {
+  const shNBytes = data.shN
+    ? data.shN.centroids.byteLength + data.shN.labels.byteLength + data.shN.codebook.byteLength
+    : 0;
+  return (
+    data.meansL.byteLength +
+    data.meansU.byteLength +
+    data.quats.byteLength +
+    data.scales.byteLength +
+    data.sh0.byteLength +
+    data.scaleCodebook.byteLength +
+    data.sh0Codebook.byteLength +
+    data.centers.byteLength +
+    shNBytes
+  );
+};
+
 const getChunkCenterDistance = (entry: SsogChunkEntry, cameraPosition: Vector3): number => {
   const min = entry.bound.min;
   const max = entry.bound.max;
@@ -317,9 +363,11 @@ class StreamingSsogRenderPass {
   private readonly loaded = new Map<string, LoadedChunk>();
   private readonly pending = new Map<string, Promise<void>>();
   private readonly pendingEntries = new Map<string, SsogChunkEntry>();
+  private readonly decodedUploadQueue = new Map<string, DecodedChunk>();
   private readonly queued = new Map<string, SsogChunkEntry>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
   private readonly selectedKeys = new Set<string>();
+  private readonly desiredKeys = new Set<string>();
   private readonly prefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
   private readonly updateObserver: () => void;
@@ -346,6 +394,7 @@ class StreamingSsogRenderPass {
   private readonly forceFineViewDot = getSsogForceFineViewDot();
   private readonly selectionStableFrames = getSsogSelectionStableFrames();
   private readonly progressiveGlobalBuild = isSsogProgressiveGlobalBuildEnabled();
+  private readonly uploadBudgetBytes = getSsogUploadBudgetBytes();
   private readonly mergedRuntimes = new Map<string, MergedRuntime>();
   private readonly pendingSelections = new Map<number, { key: string; frames: number }>();
   private readonly transitionLocks = new Map<number, number>();
@@ -371,6 +420,10 @@ class StreamingSsogRenderPass {
   private readonly packedMetadataFingerprints = new WeakMap<SogPackedData, string>();
   private lastGlobalSortBuildMs = 0;
   private lastChunkLoadMs = 0;
+  private lastChunkUploadMs = 0;
+  private uploadedBytesThisFrame = 0;
+  private uploadedChunksThisFrame = 0;
+  private deferredUploadChunks = 0;
   private lodTransitionCount = 0;
   private pendingReplacementNodes = 0;
   private finestSelectedNodes = 0;
@@ -419,7 +472,12 @@ class StreamingSsogRenderPass {
     this.loaded.clear();
     this.pending.clear();
     this.pendingEntries.clear();
+    this.decodedUploadQueue.clear();
     this.queued.clear();
+    this.selectedKeys.clear();
+    this.desiredKeys.clear();
+    this.prefetchKeys.clear();
+    this.fallbackKeys.clear();
   }
 
   setDebugChunkBoundsVisible(visible: boolean): void {
@@ -740,6 +798,7 @@ class StreamingSsogRenderPass {
       qualityPreset: this.qualityPreset,
       loadedChunks: this.loaded.size,
       pendingChunks: this.pending.size,
+      pendingUploadChunks: this.decodedUploadQueue.size,
       queuedChunks: this.queued.size,
       prefetchedChunks: Array.from(this.loaded.entries()).filter(
         ([key, runtime]) => !runtime.active && this.prefetchKeys.has(key),
@@ -778,6 +837,11 @@ class StreamingSsogRenderPass {
       packedMergeCompatible: packedMetadata.mergeCompatible,
       lastGlobalSortBuildMs: this.lastGlobalSortBuildMs,
       lastChunkLoadMs: this.lastChunkLoadMs,
+      lastChunkUploadMs: this.lastChunkUploadMs,
+      uploadBudgetBytes: Number.isFinite(this.uploadBudgetBytes) ? this.uploadBudgetBytes : -1,
+      uploadedBytesThisFrame: this.uploadedBytesThisFrame,
+      uploadedChunksThisFrame: this.uploadedChunksThisFrame,
+      deferredUploadChunks: this.deferredUploadChunks,
       lodTransitionCount: this.lodTransitionCount,
       pendingReplacementNodes: this.pendingReplacementNodes,
       finestSelectedNodes: this.finestSelectedNodes,
@@ -796,6 +860,10 @@ class StreamingSsogRenderPass {
 
   private updateLodSelection(force = false): void {
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
+    this.uploadedBytesThisFrame = 0;
+    this.uploadedChunksThisFrame = 0;
+    this.deferredUploadChunks = this.decodedUploadQueue.size;
+    force = this.processDecodedUploadQueue() > 0 || force;
 
     const camera = this.scene.activeCamera;
     if (!camera) {
@@ -891,21 +959,33 @@ class StreamingSsogRenderPass {
         : selection;
 
     const stableSelected = this.stabilizeSelection(selection.selected);
-    const stableSelectedSplats = stableSelected.reduce((sum, item) => sum + item.count, 0);
+    const renderSelected = this.resolveResidentSelection(stableSelected);
+    const renderSelectedSplats = renderSelected.reduce((sum, item) => sum + item.count, 0);
+    const stableSelectedByNode = new Map(stableSelected.map((item) => [item.nodeId, item]));
     this.selectedKeys.clear();
-    stableSelected.forEach((item) => this.selectedKeys.add(item.key));
+    renderSelected.forEach((item) => this.selectedKeys.add(item.key));
+    this.desiredKeys.clear();
+    stableSelected.forEach((item) => this.desiredKeys.add(item.key));
     this.fallbackKeys.clear();
-    const selectedNodeIds = new Set(stableSelected.map((item) => item.nodeId));
     const missingSelectedNodeIds = new Set(
       stableSelected.filter((item) => !this.loaded.has(item.key)).map((item) => item.nodeId),
     );
     for (const nodeId of missingSelectedNodeIds) {
       const fallback = this.getCoarsestEntryForNode(nodeId);
       if (fallback) {
-        this.fallbackKeys.add(chunkKey(fallback));
+        const fallbackKey = chunkKey(fallback);
+        if (this.loaded.has(fallbackKey)) {
+          this.fallbackKeys.add(fallbackKey);
+        }
         this.requestChunk(fallback);
       }
     }
+    renderSelected.forEach((item) => {
+      const requested = stableSelectedByNode.get(item.nodeId);
+      if (requested && requested.key !== item.key) {
+        this.fallbackKeys.add(item.key);
+      }
+    });
     this.coarseFallbackNodes = new Set(
       Array.from(this.fallbackKeys)
         .map((key) => this.entriesByKey.get(key)?.nodeId)
@@ -915,21 +995,20 @@ class StreamingSsogRenderPass {
     prefetchSelection.selected.forEach((item) => {
       if (!this.selectedKeys.has(item.key)) {
         this.prefetchKeys.add(item.key);
+        this.desiredKeys.add(item.key);
       }
     });
-    this.selectedNodes = new Set(stableSelected.map((item) => item.nodeId)).size;
-    this.selectedSplats = stableSelectedSplats;
-    this.finestSelectedNodes = new Set(stableSelected.filter((item) => item.lod === 0).map((item) => item.nodeId)).size;
+    this.selectedNodes = new Set(renderSelected.map((item) => item.nodeId)).size;
+    this.selectedSplats = renderSelectedSplats;
+    this.finestSelectedNodes = new Set(renderSelected.filter((item) => item.lod === 0).map((item) => item.nodeId)).size;
     this.requestedChunks = prefetchSelection.selected.length;
     this.requestedSplats = prefetchSelection.selectedSplats;
     const activeLods = new Set<number>();
     let activeChunks = 0;
     this.loaded.forEach((runtime, key) => {
       const selected = this.selectedKeys.has(key);
-      const fallback = this.fallbackKeys.has(key) && missingSelectedNodeIds.has(runtime.entry.nodeId);
-      const keepPreviousActive =
-        missingSelectedNodeIds.size > 0 && runtime.active && selectedNodeIds.has(runtime.entry.nodeId);
-      runtime.active = selected || fallback || keepPreviousActive;
+      const fallback = this.fallbackKeys.has(key);
+      runtime.active = selected || fallback;
       runtime.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && runtime.active);
       if (runtime.active && this.isChunkRepresentedByReadyRenderPath(key)) {
         this.debugBounds.dispose(key);
@@ -941,8 +1020,8 @@ class StreamingSsogRenderPass {
       }
     });
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
-    this.activeChunks = Math.max(stableSelected.length, activeChunks);
-    this.selectedLods = Math.max(new Set(stableSelected.map((item) => item.lod)).size, activeLods.size);
+    this.activeChunks = Math.max(renderSelected.length, activeChunks);
+    this.selectedLods = Math.max(new Set(renderSelected.map((item) => item.lod)).size, activeLods.size);
     stableSelected.forEach((item) => this.requestChunk(item.value));
     selection.selected.forEach((item) => this.requestChunk(item.value));
     prefetchSelection.selected.forEach((item) => this.requestChunk(item.value));
@@ -965,7 +1044,7 @@ class StreamingSsogRenderPass {
 
   private requestChunk(entry: SsogChunkEntry): void {
     const key = chunkKey(entry);
-    if (this.loaded.has(key) || this.pending.has(key) || this.queued.has(key)) {
+    if (this.loaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
       return;
     }
 
@@ -1019,7 +1098,7 @@ class StreamingSsogRenderPass {
 
   private startChunkLoad(entry: SsogChunkEntry): void {
     const key = chunkKey(entry);
-    if (this.loaded.has(key) || this.pending.has(key)) {
+    if (this.loaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key)) {
       return;
     }
 
@@ -1035,38 +1114,99 @@ class StreamingSsogRenderPass {
         }
 
         this.lastChunkLoadMs = performance.now() - loadStart;
-        const buffers = new SogBuffers(this.scene.getEngine(), chunk.data);
-        const pass = new PackedSogRenderPass(this.scene, buffers);
-        pass.setVizMode(this.activeVizMode);
-        const active = this.selectedKeys.has(key);
-        pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && active);
-        this.loaded.set(key, {
+        this.decodedUploadQueue.set(key, {
+          key,
           entry,
           chunk,
-          buffers,
-          pass,
-          active,
-          lastUsedFrame: this.generation,
+          bytes: getSogPackedDataByteLength(chunk.data),
         });
-        this.cacheSplats += chunk.data.numSplats;
-        if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
-          this.debugBounds.dispose(key);
-        } else if (this.debugChunkBoundsVisible) {
-          this.debugBounds.ensure(key, entry, "loaded-waiting");
-        }
-        this.updateLodSelection(true);
-        this.evictInactiveChunks();
       })
       .finally(() => {
         this.pending.delete(key);
         this.pendingEntries.delete(key);
-        if (!this.loaded.has(key)) {
+        if (!this.loaded.has(key) && !this.decodedUploadQueue.has(key)) {
           this.debugBounds.dispose(key);
         }
         this.pumpChunkQueue();
       });
 
     this.pending.set(key, promise);
+  }
+
+  private processDecodedUploadQueue(): number {
+    if (this.disposed || this.decodedUploadQueue.size === 0) {
+      return 0;
+    }
+
+    const uploadStart = performance.now();
+    const queued = Array.from(this.decodedUploadQueue.values()).sort(
+      (a, b) => this.getUploadPriority(a.key) - this.getUploadPriority(b.key) || a.bytes - b.bytes,
+    );
+    let uploaded = 0;
+    let uploadedBytes = 0;
+
+    for (const decoded of queued) {
+      if (this.loaded.has(decoded.key)) {
+        this.decodedUploadQueue.delete(decoded.key);
+        continue;
+      }
+
+      const wouldExceedBudget =
+        Number.isFinite(this.uploadBudgetBytes) && uploadedBytes + decoded.bytes > this.uploadBudgetBytes;
+      if (wouldExceedBudget && uploaded > 0) {
+        continue;
+      }
+
+      this.uploadDecodedChunk(decoded);
+      this.decodedUploadQueue.delete(decoded.key);
+      uploaded++;
+      uploadedBytes += decoded.bytes;
+    }
+
+    this.uploadedChunksThisFrame = uploaded;
+    this.uploadedBytesThisFrame = uploadedBytes;
+    this.deferredUploadChunks = this.decodedUploadQueue.size;
+    this.lastChunkUploadMs = uploaded > 0 ? performance.now() - uploadStart : 0;
+    return uploaded;
+  }
+
+  private getUploadPriority(key: string): number {
+    if (this.fallbackKeys.has(key)) {
+      return 0;
+    }
+    if (this.selectedKeys.has(key)) {
+      return 1;
+    }
+    if (this.desiredKeys.has(key)) {
+      return 2;
+    }
+    if (this.prefetchKeys.has(key)) {
+      return 3;
+    }
+    return 4;
+  }
+
+  private uploadDecodedChunk(decoded: DecodedChunk): void {
+    const { key, entry, chunk } = decoded;
+    const buffers = new SogBuffers(this.scene.getEngine(), chunk.data);
+    const pass = new PackedSogRenderPass(this.scene, buffers);
+    pass.setVizMode(this.activeVizMode);
+    const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
+    pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && active);
+    this.loaded.set(key, {
+      entry,
+      chunk,
+      buffers,
+      pass,
+      active,
+      lastUsedFrame: this.generation,
+    });
+    this.cacheSplats += chunk.data.numSplats;
+    if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
+      this.debugBounds.dispose(key);
+    } else if (this.debugChunkBoundsVisible) {
+      this.debugBounds.ensure(key, entry, "loaded-waiting");
+    }
   }
 
   private evictInactiveChunks(): void {
@@ -1112,6 +1252,47 @@ class StreamingSsogRenderPass {
     return this.entries
       .filter((entry) => entry.nodeId === nodeId)
       .sort((a, b) => b.lod - a.lod || a.count - b.count)[0];
+  }
+
+  private getBestResidentEntryForNode(nodeId: number, targetLod: number): SsogChunkEntry | undefined {
+    const loadedEntries = Array.from(this.loaded.values())
+      .map((runtime) => runtime.entry)
+      .filter((entry) => entry.nodeId === nodeId);
+    if (loadedEntries.length === 0) {
+      return undefined;
+    }
+
+    return loadedEntries.sort((a, b) => {
+      const aCoarser = a.lod >= targetLod ? 0 : 1;
+      const bCoarser = b.lod >= targetLod ? 0 : 1;
+      return aCoarser - bCoarser || a.lod - b.lod || a.count - b.count;
+    })[0];
+  }
+
+  private resolveResidentSelection(selected: SelectedSsogItem[]): SelectedSsogItem[] {
+    const fallbackNodes = new Set<number>();
+    const resident = selected.map((item): SelectedSsogItem => {
+      if (this.loaded.has(item.key)) {
+        return item;
+      }
+
+      const fallback = this.getBestResidentEntryForNode(item.nodeId, item.lod);
+      if (!fallback) {
+        return item;
+      }
+
+      fallbackNodes.add(item.nodeId);
+      return {
+        ...item,
+        value: fallback,
+        key: chunkKey(fallback),
+        lod: fallback.lod,
+        count: fallback.count,
+      };
+    });
+
+    this.pendingReplacementNodes = Math.max(this.pendingReplacementNodes, fallbackNodes.size);
+    return resident;
   }
 
   private stabilizeSelection(selected: SelectedSsogItem[]): SelectedSsogItem[] {

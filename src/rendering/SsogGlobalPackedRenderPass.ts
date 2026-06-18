@@ -603,6 +603,7 @@ class SsogGlobalPackedRenderPass {
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuRadixSortPass?: GpuRadixSortPass;
   private readonly gpuIndexGatherPass?: SsogGlobalPackedIndexGatherPass;
+  private readonly cpuSortWorkerEnabled: boolean;
   private readonly colorSegmentationPass?: ColorSegmentationPass;
   private readonly computeTileStatsPass?: ComputeTileStatsPass;
   private readonly computeTileDepthRangePass?: ComputeTileDepthRangePass;
@@ -632,6 +633,7 @@ class SsogGlobalPackedRenderPass {
     this.numSplats = chunks.reduce((sum, chunk) => sum + chunk.data.numSplats, 0);
     this.rendererBackend = resolveSsogGlobalPackedRendererBackend();
     this.gpuSortVisibleMode = getSsogGpuSortVisibleMode(this.rendererBackend.requested, this.numSplats);
+    this.cpuSortWorkerEnabled = this.gpuSortVisibleMode !== "radix" || !isSsogGpuSortForceVisible();
 
     const packed = buildGlobalPackedArrays(chunks, initialSortView);
     this.colorData = packed.color;
@@ -683,6 +685,8 @@ class SsogGlobalPackedRenderPass {
         this.buffers.depthKeys,
         this.buffers.gpuSortIndices,
         this.numSplats,
+        undefined,
+        !isSsogGpuSortForceVisible(),
       );
       if (this.gpuSortVisibleMode !== "cpu" && this.buffers.ordinalToPacked) {
         this.gpuIndexGatherPass = new SsogGlobalPackedIndexGatherPass(
@@ -753,7 +757,7 @@ class SsogGlobalPackedRenderPass {
     this.bindStorageBuffers();
     this.setRenderCount(this.numSplats);
     this.mesh.setEnabled(!(this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass));
-    if (!(this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass)) {
+    if (!(this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass) && this.cpuSortWorkerEnabled) {
       this.initializeSortWorker(packed.centers, packed.globalIndices);
     }
 
@@ -1460,7 +1464,7 @@ class SsogGlobalPackedRenderPass {
     ) {
       return;
     }
-    if (!this.enabled || this.disposed || !this.sortWorker) {
+    if (!this.enabled || this.disposed) {
       return;
     }
 
@@ -1495,6 +1499,9 @@ class SsogGlobalPackedRenderPass {
       this.sortPending = false;
       this.lastSortMs = 0;
       this.lastUploadMs = 0;
+      return;
+    }
+    if (!this.sortWorker) {
       return;
     }
 

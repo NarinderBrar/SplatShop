@@ -5,6 +5,7 @@ type StreamingProgressStats = {
   selectedSplats?: number;
   requestedSplats?: number;
   pendingChunks?: number;
+  pendingUploadChunks?: number;
   queuedChunks?: number;
 };
 
@@ -76,17 +77,19 @@ class LoadingProgress {
     this.lastProgress = progress;
 
     const pendingChunks = stats.pendingChunks ?? 0;
+    const pendingUploadChunks = stats.pendingUploadChunks ?? 0;
     const queuedChunks = stats.queuedChunks ?? 0;
+    const waitingChunks = pendingChunks + pendingUploadChunks + queuedChunks;
     const percent = Math.round(progress * 100);
     this.title.textContent = `Loading ${splatCloud.filename}`;
     this.detail.textContent =
-      progress >= 1 && pendingChunks === 0 && queuedChunks === 0
+      progress >= 1 && waitingChunks === 0
         ? "Splats ready"
         : `${percent}% splats ready`;
     this.fill.style.width = `${Math.max(2, percent)}%`;
     this.root.classList.add("is-visible");
 
-    if (progress >= 1 && pendingChunks === 0 && queuedChunks === 0) {
+    if (progress >= 1 && waitingChunks === 0) {
       window.setTimeout(() => this.hide(), 450);
     }
   }
