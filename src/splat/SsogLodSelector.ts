@@ -1,6 +1,10 @@
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-
 import type { SsogBound } from "./SplatAsset";
+
+type Vec3Like = {
+  x: number;
+  y: number;
+  z: number;
+};
 
 type SsogSelectableItem<T> = {
   value: T;
@@ -16,8 +20,8 @@ type SsogSelectableItem<T> = {
 
 type SsogLodSelectOptions = {
   budget: number;
-  cameraPosition: Vector3;
-  cameraForward?: Vector3;
+  cameraPosition: Vec3Like;
+  cameraForward?: Vec3Like;
   focalPixels: number;
   lodRangeMin: number;
   lodRangeMax: number;
@@ -51,19 +55,29 @@ const getBoundsRank = <T>(
   item: SsogSelectableItem<T>,
   options: SsogLodSelectOptions,
 ): Pick<RankedItem<T>, "score" | "screenRadius" | "viewDot"> => {
-  const min = Vector3.FromArray(item.bound.min);
-  const max = Vector3.FromArray(item.bound.max);
-  const center = min.add(max).scaleInPlace(0.5);
-  const radius = Math.max(0.001, Vector3.Distance(center, max));
-  const toCenter = center.subtract(options.cameraPosition);
-  const distanceToCenter = Math.max(0.001, toCenter.length());
+  const centerX = (item.bound.min[0] + item.bound.max[0]) * 0.5;
+  const centerY = (item.bound.min[1] + item.bound.max[1]) * 0.5;
+  const centerZ = (item.bound.min[2] + item.bound.max[2]) * 0.5;
+  const radiusX = item.bound.max[0] - centerX;
+  const radiusY = item.bound.max[1] - centerY;
+  const radiusZ = item.bound.max[2] - centerZ;
+  const radius = Math.max(0.001, Math.hypot(radiusX, radiusY, radiusZ));
+  const toCenterX = centerX - options.cameraPosition.x;
+  const toCenterY = centerY - options.cameraPosition.y;
+  const toCenterZ = centerZ - options.cameraPosition.z;
+  const distanceToCenter = Math.max(0.001, Math.hypot(toCenterX, toCenterY, toCenterZ));
   const distance = Math.max(0.001, distanceToCenter - radius);
   const screenRadius = (radius / distance) * options.focalPixels;
   const range = Math.max(0.000001, options.lodRangeMax - options.lodRangeMin);
   const normalized = Math.max(0, (screenRadius - options.lodRangeMin) / range);
   const screenBias = Math.min(4, normalized <= 1 ? normalized : 1 + Math.log2(normalized));
   const forward = options.cameraForward;
-  const viewDot = forward ? Math.max(0, Vector3.Dot(toCenter.normalize(), forward)) : 0.5;
+  const viewDot = forward
+    ? Math.max(
+        0,
+        (toCenterX * forward.x + toCenterY * forward.y + toCenterZ * forward.z) / distanceToCenter,
+      )
+    : 0.5;
   const viewBias = 0.35 + viewDot * 0.65;
   const distanceBias = 1 / Math.sqrt(distanceToCenter);
   const hysteresis = item.wasSelected ? 1.15 : 1;
