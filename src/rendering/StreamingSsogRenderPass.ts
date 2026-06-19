@@ -132,16 +132,27 @@ type ExpandedRuntime = {
 type SsogGlobalSortMode = "off" | "packed" | "expanded";
 type SsogChunkSortMode = "near" | "center" | "far";
 type SsogQualityPreset = "full" | "balanced" | "fast";
+type SsogDeviceTier = "low" | "standard" | "high";
 
-type SsogStreamingPreset = {
+type SsogQualityProfile = {
+  preset: SsogQualityPreset;
+  deviceTier: SsogDeviceTier;
+  splatBudget: number;
+  expandedSortBudgetRatio: number;
   cacheChunks: number;
   maxPendingLoads: number;
   prefetchMultiplier: number;
+  prefetchFrustumMargin: number;
+  nearPrefetchDistance: number;
   evictAfterFrames: number;
   cacheSplatMultiplier: number;
   lodMoveEpsilon: number;
   lodAngleDegrees: number;
   selectionStableFrames: number;
+  uploadBudgetBytes: number;
+  chunkSortScale: number;
+  chunkSortHysteresis: number;
+  globalRuntimeRebuildIntervalFrames: number;
 };
 
 class ChunkIndexBuffer {
@@ -186,46 +197,142 @@ const getSsogQualityPreset = (): SsogQualityPreset => {
   return params.get("ssogReference") === "true" ? "full" : "balanced";
 };
 
-const getSsogStreamingPreset = (): SsogStreamingPreset => {
-  switch (getSsogQualityPreset()) {
+const getSsogDeviceTier = (): SsogDeviceTier => {
+  const params = new URLSearchParams(window.location.search);
+  const explicit = params.get("ssogDeviceTier");
+  if (explicit === "low" || explicit === "standard" || explicit === "high") {
+    return explicit;
+  }
+
+  const nav = navigator as Navigator & { deviceMemory?: number; userAgentData?: { mobile?: boolean } };
+  const memoryGb = nav.deviceMemory ?? 8;
+  const cores = navigator.hardwareConcurrency ?? 4;
+  const isMobile =
+    nav.userAgentData?.mobile ??
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+  if (isMobile || memoryGb <= 4 || cores <= 4) {
+    return "low";
+  }
+  if (memoryGb >= 12 && cores >= 8) {
+    return "high";
+  }
+  return "standard";
+};
+
+const scaleSsogQualityProfileForDevice = (profile: SsogQualityProfile): SsogQualityProfile => {
+  if (profile.preset === "fast") {
+    return profile;
+  }
+
+  if (profile.deviceTier === "low") {
+    return {
+      ...profile,
+      splatBudget: profile.preset === "balanced" ? Math.min(profile.splatBudget, 1_200_000) : profile.splatBudget,
+      cacheChunks: Math.min(profile.cacheChunks, 64),
+      maxPendingLoads: Math.min(profile.maxPendingLoads, 4),
+      prefetchMultiplier: Math.min(profile.prefetchMultiplier, 1.03),
+      prefetchFrustumMargin: Math.min(profile.prefetchFrustumMargin, 8),
+      nearPrefetchDistance: Math.min(profile.nearPrefetchDistance, 12),
+      cacheSplatMultiplier: Math.min(profile.cacheSplatMultiplier, 1.15),
+      uploadBudgetBytes: Math.min(profile.uploadBudgetBytes, 12 * 1024 * 1024),
+      chunkSortScale: Math.min(profile.chunkSortScale, 48),
+      chunkSortHysteresis: Math.max(profile.chunkSortHysteresis, 3),
+      globalRuntimeRebuildIntervalFrames: Math.max(profile.globalRuntimeRebuildIntervalFrames, 6),
+    };
+  }
+
+  if (profile.deviceTier === "high" && profile.preset === "full") {
+    return {
+      ...profile,
+      cacheChunks: Math.max(profile.cacheChunks, 192),
+      maxPendingLoads: Math.max(profile.maxPendingLoads, 8),
+      uploadBudgetBytes: Math.max(profile.uploadBudgetBytes, 64 * 1024 * 1024),
+      prefetchFrustumMargin: Math.max(profile.prefetchFrustumMargin, 8),
+      globalRuntimeRebuildIntervalFrames: Math.min(profile.globalRuntimeRebuildIntervalFrames, 1),
+    };
+  }
+
+  return profile;
+};
+
+const getSsogQualityProfile = (): SsogQualityProfile => {
+  const preset = getSsogQualityPreset();
+  const deviceTier = getSsogDeviceTier();
+  const base = (() => {
+    switch (preset) {
     case "fast":
       return {
+        preset,
+        deviceTier,
+        splatBudget: 900_000,
+        expandedSortBudgetRatio: 0.55,
         cacheChunks: 48,
         maxPendingLoads: 3,
         prefetchMultiplier: 1,
+        prefetchFrustumMargin: 8,
+        nearPrefetchDistance: 12,
         evictAfterFrames: 4,
         cacheSplatMultiplier: 1.1,
         lodMoveEpsilon: 0.8,
         lodAngleDegrees: 18,
         selectionStableFrames: 6,
+        uploadBudgetBytes: 12 * 1024 * 1024,
+        chunkSortScale: 48,
+        chunkSortHysteresis: 3,
+        globalRuntimeRebuildIntervalFrames: 6,
       };
     case "balanced":
       return {
+        preset,
+        deviceTier,
+        splatBudget: 2_000_000,
+        expandedSortBudgetRatio: 1,
         cacheChunks: 96,
         maxPendingLoads: 6,
         prefetchMultiplier: 1.08,
+        prefetchFrustumMargin: 12,
+        nearPrefetchDistance: 20,
         evictAfterFrames: 8,
         cacheSplatMultiplier: 1.35,
         lodMoveEpsilon: 0.65,
         lodAngleDegrees: 14,
         selectionStableFrames: 12,
+        uploadBudgetBytes: 24 * 1024 * 1024,
+        chunkSortScale: 64,
+        chunkSortHysteresis: 2,
+        globalRuntimeRebuildIntervalFrames: 3,
       };
     default:
       return {
+        preset,
+        deviceTier,
+        splatBudget: Number.POSITIVE_INFINITY,
+        expandedSortBudgetRatio: 1,
         cacheChunks: 128,
         maxPendingLoads: 6,
         prefetchMultiplier: 1.05,
+        prefetchFrustumMargin: 6,
+        nearPrefetchDistance: 16,
         evictAfterFrames: 8,
         cacheSplatMultiplier: 1.35,
         lodMoveEpsilon: 0.08,
         lodAngleDegrees: 1,
         selectionStableFrames: 2,
+        uploadBudgetBytes: 48 * 1024 * 1024,
+        chunkSortScale: 64,
+        chunkSortHysteresis: 2,
+        globalRuntimeRebuildIntervalFrames: 1,
       };
-  }
+    }
+  })();
+
+  return scaleSsogQualityProfileForDevice(base);
 };
 
 const getSplatBudget = (sourceSplats: number): number => {
   const params = new URLSearchParams(window.location.search);
+  const profile = getSsogQualityProfile();
   const explicit = Number(params.get("splatBudget"));
   if (Number.isFinite(explicit) && explicit > 0) {
     return Math.floor(explicit);
@@ -235,18 +342,14 @@ const getSplatBudget = (sourceSplats: number): number => {
     return sourceSplats;
   }
 
-  const quality = getSsogQualityPreset();
   const expandedGlobalSort = params.get("ssogGlobalSort") === "expanded";
-  if (expandedGlobalSort && quality !== "fast") {
+  if (expandedGlobalSort && profile.preset !== "fast") {
     return sourceSplats;
   }
-  if (quality === "fast") {
-    return Math.min(sourceSplats, expandedGlobalSort ? Math.ceil(sourceSplats * 0.55) : 900_000);
+  if (expandedGlobalSort && profile.expandedSortBudgetRatio < 1) {
+    return Math.min(sourceSplats, Math.ceil(sourceSplats * profile.expandedSortBudgetRatio));
   }
-  if (quality === "balanced") {
-    return Math.min(sourceSplats, 2_000_000);
-  }
-  return sourceSplats;
+  return Math.min(sourceSplats, profile.splatBudget);
 };
 
 const getSsogCacheChunkLimit = (): number => {
@@ -254,40 +357,34 @@ const getSsogCacheChunkLimit = (): number => {
   if (raw === "all") {
     return Number.POSITIVE_INFINITY;
   }
-  return Math.floor(getPositiveNumberParam("ssogCacheChunks", getSsogStreamingPreset().cacheChunks));
+  return Math.floor(getPositiveNumberParam("ssogCacheChunks", getSsogQualityProfile().cacheChunks));
 };
 
 const getSsogMaxPendingLoads = (): number =>
-  Math.max(1, Math.floor(getPositiveNumberParam("ssogMaxPending", getSsogStreamingPreset().maxPendingLoads)));
+  Math.max(1, Math.floor(getPositiveNumberParam("ssogMaxPending", getSsogQualityProfile().maxPendingLoads)));
 
 const getSsogPrefetchMultiplier = (): number =>
-  Math.max(1, getPositiveNumberParam("ssogPrefetchMultiplier", getSsogStreamingPreset().prefetchMultiplier));
+  Math.max(1, getPositiveNumberParam("ssogPrefetchMultiplier", getSsogQualityProfile().prefetchMultiplier));
 
-const getSsogPrefetchFrustumMargin = (): number => {
-  const preset = getSsogQualityPreset();
-  const fallback = preset === "fast" ? 8 : preset === "balanced" ? 12 : 6;
-  return getNonNegativeNumberParam("ssogPrefetchFrustumMargin", fallback);
-};
+const getSsogPrefetchFrustumMargin = (): number =>
+  getNonNegativeNumberParam("ssogPrefetchFrustumMargin", getSsogQualityProfile().prefetchFrustumMargin);
 
-const getSsogNearPrefetchDistance = (): number => {
-  const preset = getSsogQualityPreset();
-  const fallback = preset === "fast" ? 12 : preset === "balanced" ? 20 : 16;
-  return getNonNegativeNumberParam("ssogNearPrefetchDistance", fallback);
-};
+const getSsogNearPrefetchDistance = (): number =>
+  getNonNegativeNumberParam("ssogNearPrefetchDistance", getSsogQualityProfile().nearPrefetchDistance);
 
 const getSsogEvictAfterFrames = (): number =>
-  Math.max(0, Math.floor(getPositiveNumberParam("ssogEvictAfterFrames", getSsogStreamingPreset().evictAfterFrames)));
+  Math.max(0, Math.floor(getPositiveNumberParam("ssogEvictAfterFrames", getSsogQualityProfile().evictAfterFrames)));
 
 const getSsogCacheSplatMultiplier = (): number =>
-  Math.max(1, getPositiveNumberParam("ssogCacheSplatMultiplier", getSsogStreamingPreset().cacheSplatMultiplier));
+  Math.max(1, getPositiveNumberParam("ssogCacheSplatMultiplier", getSsogQualityProfile().cacheSplatMultiplier));
 
 const getLodMoveEpsilonSq = (): number => {
-  const epsilon = getPositiveNumberParam("lodMoveEpsilon", getSsogStreamingPreset().lodMoveEpsilon);
+  const epsilon = getPositiveNumberParam("lodMoveEpsilon", getSsogQualityProfile().lodMoveEpsilon);
   return epsilon * epsilon;
 };
 
 const getLodForwardDotThreshold = (): number => {
-  const degrees = getPositiveNumberParam("lodAngleDegrees", getSsogStreamingPreset().lodAngleDegrees);
+  const degrees = getPositiveNumberParam("lodAngleDegrees", getSsogQualityProfile().lodAngleDegrees);
   return Math.cos((degrees * Math.PI) / 180);
 };
 
@@ -296,10 +393,22 @@ const getSsogChunkSortMode = (): SsogChunkSortMode => {
   return value === "center" || value === "far" ? value : "near";
 };
 
-const getSsogChunkSortScale = (): number => getPositiveNumberParam("ssogChunkSortScale", 64);
+const getSsogChunkSortScale = (): number =>
+  getPositiveNumberParam("ssogChunkSortScale", getSsogQualityProfile().chunkSortScale);
 
 const getSsogChunkSortHysteresis = (): number =>
-  Math.max(0, getPositiveNumberParam("ssogChunkSortHysteresis", 2));
+  Math.max(0, getPositiveNumberParam("ssogChunkSortHysteresis", getSsogQualityProfile().chunkSortHysteresis));
+
+const getSsogGlobalRuntimeRebuildIntervalFrames = (): number =>
+  Math.max(
+    0,
+    Math.floor(
+      getNonNegativeNumberParam(
+        "ssogGlobalRuntimeRebuildIntervalFrames",
+        getSsogQualityProfile().globalRuntimeRebuildIntervalFrames,
+      ),
+    ),
+  );
 
 const isSsogMergedRenderingEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("ssogMerge") !== "false";
@@ -317,7 +426,7 @@ const getSsogGlobalSortMode = (): SsogGlobalSortMode => {
   if (value === "packed") {
     return "packed";
   }
-  if (params.get("ssogPackedFallback") === "expanded" || getSsogQualityPreset() === "full") {
+  if (params.get("ssogPackedFallback") === "expanded" || getSsogQualityProfile().preset === "full") {
     return "expanded";
   }
   return "packed";
@@ -342,7 +451,7 @@ const getSsogSelectionStableFrames = (): number => {
     return Math.floor(explicit);
   }
 
-  return getSsogStreamingPreset().selectionStableFrames;
+  return getSsogQualityProfile().selectionStableFrames;
 };
 
 const isSsogProgressiveGlobalBuildEnabled = (): boolean =>
@@ -354,14 +463,7 @@ const getSsogUploadBudgetBytes = (): number => {
     return Number.POSITIVE_INFINITY;
   }
 
-  const preset = getSsogQualityPreset();
-  const fallback =
-    preset === "fast"
-      ? 12 * 1024 * 1024
-      : preset === "balanced"
-        ? 24 * 1024 * 1024
-        : 48 * 1024 * 1024;
-  return Math.floor(getPositiveNumberParam("ssogUploadBudgetBytes", fallback));
+  return Math.floor(getPositiveNumberParam("ssogUploadBudgetBytes", getSsogQualityProfile().uploadBudgetBytes));
 };
 
 const getSogPackedDataByteLength = (data: SogPackedData): number => {
@@ -447,6 +549,7 @@ class StreamingSsogRenderPass {
   private readonly chunkSortMode = getSsogChunkSortMode();
   private readonly chunkSortScale = getSsogChunkSortScale();
   private readonly chunkSortHysteresis = getSsogChunkSortHysteresis();
+  private readonly globalRuntimeRebuildIntervalFrames = getSsogGlobalRuntimeRebuildIntervalFrames();
   private readonly mergedRendering = isSsogMergedRenderingEnabled();
   private readonly globalSortMode = getSsogGlobalSortMode();
   private readonly forceFineScreenRatio = getSsogForceFineScreenRatio();
@@ -478,6 +581,7 @@ class StreamingSsogRenderPass {
   private globalSortBuildPending = false;
   private readonly packedMetadataFingerprints = new WeakMap<SogPackedData, string>();
   private lastGlobalSortBuildMs = 0;
+  private lastGlobalRuntimeRebuildFrame = Number.NEGATIVE_INFINITY;
   private lastChunkLoadMs = 0;
   private lastChunkUploadMs = 0;
   private uploadedBytesThisFrame = 0;
@@ -1645,6 +1749,24 @@ class StreamingSsogRenderPass {
     return this.chunkSortMode === "far" ? maxDepth : minDepth;
   }
 
+  private canRebuildGlobalRuntime(hasRuntime: boolean, force = false): boolean {
+    if (force || !hasRuntime || this.globalRuntimeRebuildIntervalFrames <= 0) {
+      return true;
+    }
+
+    const framesSinceRebuild = this.generation - this.lastGlobalRuntimeRebuildFrame;
+    if (framesSinceRebuild >= this.globalRuntimeRebuildIntervalFrames) {
+      return true;
+    }
+
+    this.globalSortBuildPending = true;
+    return false;
+  }
+
+  private markGlobalRuntimeRebuilt(): void {
+    this.lastGlobalRuntimeRebuildFrame = this.generation;
+  }
+
   private updatePackedGlobalRuntime(): void {
     if (this.globalSortMode !== "packed") {
       this.disposePackedGlobalRuntime();
@@ -1668,7 +1790,6 @@ class StreamingSsogRenderPass {
       return;
     }
 
-    const buildStart = performance.now();
     const signature = activeEntries.map(([key]) => key).sort().join("|");
     if (this.packedGlobalRuntime?.signature === signature) {
       this.packedGlobalRuntime.setEnabled(true);
@@ -1679,6 +1800,11 @@ class StreamingSsogRenderPass {
       return;
     }
 
+    if (!this.canRebuildGlobalRuntime(!!this.packedGlobalRuntime)) {
+      return;
+    }
+
+    const buildStart = performance.now();
     this.disposeMergedRuntimes();
     this.disposePackedGlobalRuntime();
     this.disposeExpandedRuntime();
@@ -1699,6 +1825,7 @@ class StreamingSsogRenderPass {
     this.packedGlobalRuntime.setEnabled(true);
     this.globalSortFallbackReason = "";
     this.lastGlobalSortBuildMs = performance.now() - buildStart;
+    this.markGlobalRuntimeRebuilt();
   }
 
   private updateExpandedRuntime(force = false): void {
@@ -1725,7 +1852,6 @@ class StreamingSsogRenderPass {
       return;
     }
 
-    const buildStart = performance.now();
     const signature = activeEntries.map(([key]) => key).sort().join("|");
     if (this.expandedRuntime?.signature === signature) {
       this.expandedRuntime.pass.setEnabled(true);
@@ -1733,6 +1859,11 @@ class StreamingSsogRenderPass {
       return;
     }
 
+    if (!this.canRebuildGlobalRuntime(!!this.expandedRuntime, force)) {
+      return;
+    }
+
+    const buildStart = performance.now();
     this.disposeExpandedRuntime();
     const packed = expandSogChunks(activeEntries.map(([, runtime]) => runtime.chunk.data));
     const buffers = new SplatBuffers(this.scene.getEngine(), packed);
@@ -1741,6 +1872,7 @@ class StreamingSsogRenderPass {
     pass.setEnabled(true);
     this.expandedRuntime = { signature, buffers, pass };
     this.lastGlobalSortBuildMs = performance.now() - buildStart;
+    this.markGlobalRuntimeRebuilt();
   }
 
   private disposeExpandedRuntime(): void {
