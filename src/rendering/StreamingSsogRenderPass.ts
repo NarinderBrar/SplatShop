@@ -88,6 +88,24 @@ type DecodedChunk = {
   bytes: number;
 };
 
+type RendererCommand =
+  | {
+      type: "chunkLoaded";
+      key: string;
+      entry: SsogChunkEntry;
+      chunk: SsogPackedChunk;
+      loadMs: number;
+    }
+  | {
+      type: "chunkLoadFailed";
+      key: string;
+      error: unknown;
+    }
+  | {
+      type: "chunkLoadSettled";
+      key: string;
+    };
+
 type SelectableSsogEntry = SsogSelectableItem<SsogChunkEntry>;
 
 type SelectedSsogItem = {
@@ -385,6 +403,8 @@ class StreamingSsogRenderPass {
   private readonly pending = new Map<string, Promise<void>>();
   private readonly pendingEntries = new Map<string, SsogChunkEntry>();
   private readonly decodedUploadQueue = new Map<string, DecodedChunk>();
+  private readonly rendererCommands: RendererCommand[] = [];
+  private readonly rendererCommandIndices = new Map<string, number>();
   private readonly queued = new Map<string, SsogChunkEntry>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
   private readonly entryKeys: string[];
@@ -514,6 +534,8 @@ class StreamingSsogRenderPass {
     this.pending.clear();
     this.pendingEntries.clear();
     this.decodedUploadQueue.clear();
+    this.rendererCommands.length = 0;
+    this.rendererCommandIndices.clear();
     this.queued.clear();
     this.selectedKeys.clear();
     this.desiredKeys.clear();
@@ -901,6 +923,7 @@ class StreamingSsogRenderPass {
 
   private updateLodSelection(force = false): void {
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
+    force = this.processRendererCommandQueue() > 0 || force;
     this.uploadedBytesThisFrame = 0;
     this.uploadedChunksThisFrame = 0;
     this.deferredUploadChunks = this.decodedUploadQueue.size;
@@ -1168,6 +1191,62 @@ class StreamingSsogRenderPass {
     return target;
   }
 
+  private enqueueRendererCommand(command: RendererCommand): void {
+    const dedupeKey = `${command.type}:${command.key}`;
+    const existingIndex = this.rendererCommandIndices.get(dedupeKey);
+    if (existingIndex !== undefined) {
+      this.rendererCommands[existingIndex] = command;
+      return;
+    }
+
+    this.rendererCommandIndices.set(dedupeKey, this.rendererCommands.length);
+    this.rendererCommands.push(command);
+  }
+
+  private processRendererCommandQueue(): number {
+    if (this.disposed || this.rendererCommands.length === 0) {
+      return 0;
+    }
+
+    const commands = this.rendererCommands.splice(0);
+    this.rendererCommandIndices.clear();
+    let processed = 0;
+    for (const command of commands) {
+      if (this.processRendererCommand(command)) {
+        processed++;
+      }
+    }
+    return processed;
+  }
+
+  private processRendererCommand(command: RendererCommand): boolean {
+    switch (command.type) {
+      case "chunkLoaded":
+        if (this.loaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
+          return false;
+        }
+        this.lastChunkLoadMs = command.loadMs;
+        this.decodedUploadQueue.set(command.key, {
+          key: command.key,
+          entry: command.entry,
+          chunk: command.chunk,
+          bytes: getSogPackedDataByteLength(command.chunk.data),
+        });
+        return true;
+      case "chunkLoadFailed":
+        console.warn(`Failed to load SSOG chunk ${command.key}.`, command.error);
+        return true;
+      case "chunkLoadSettled":
+        this.pending.delete(command.key);
+        this.pendingEntries.delete(command.key);
+        if (!this.loaded.has(command.key) && !this.decodedUploadQueue.has(command.key)) {
+          this.debugBounds.dispose(command.key);
+        }
+        this.pumpChunkQueue();
+        return true;
+    }
+  }
+
   private requestChunk(entry: SsogChunkEntry): void {
     const key = chunkKey(entry);
     if (this.loaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
@@ -1239,21 +1318,34 @@ class StreamingSsogRenderPass {
           return;
         }
 
-        this.lastChunkLoadMs = performance.now() - loadStart;
-        this.decodedUploadQueue.set(key, {
+        this.enqueueRendererCommand({
+          type: "chunkLoaded",
           key,
           entry,
           chunk,
-          bytes: getSogPackedDataByteLength(chunk.data),
+          loadMs: performance.now() - loadStart,
+        });
+      })
+      .catch((error) => {
+        if (this.disposed) {
+          return;
+        }
+
+        this.enqueueRendererCommand({
+          type: "chunkLoadFailed",
+          key,
+          error,
         });
       })
       .finally(() => {
-        this.pending.delete(key);
-        this.pendingEntries.delete(key);
-        if (!this.loaded.has(key) && !this.decodedUploadQueue.has(key)) {
-          this.debugBounds.dispose(key);
+        if (this.disposed) {
+          return;
         }
-        this.pumpChunkQueue();
+
+        this.enqueueRendererCommand({
+          type: "chunkLoadSettled",
+          key,
+        });
       });
 
     this.pending.set(key, promise);
