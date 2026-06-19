@@ -50,6 +50,13 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuPagePoolPressure: number;
   gpuPageEvictedChunks: number;
   gpuPageEvictedPages: number;
+  decodedCacheChunks: number;
+  decodedCacheBytes: number;
+  decodedCachePressure: number;
+  gpuResidentChunks: number;
+  gpuResidentSplats: number;
+  cpuEvictedChunks: number;
+  reuploadedChunks: number;
   maxPendingLoads: number;
   prefetchMultiplier: number;
   chunkSortMode: SsogChunkSortMode;
@@ -87,14 +94,19 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   nearPrefetchDistance: number;
 };
 
-type LoadedChunk = {
-  entry: SsogChunkEntry;
-  chunk: SsogPackedChunk;
+type GpuResidentChunk = {
   buffers: SogBuffers;
   pass: PackedSogRenderPass;
+  pageAllocation: SsogGpuPageAllocation;
   active: boolean;
   lastUsedFrame: number;
-  pageAllocation: SsogGpuPageAllocation;
+};
+
+type CachedDecodedChunk = {
+  entry: SsogChunkEntry;
+  chunk: SsogPackedChunk;
+  bytes: number;
+  lastUsedFrame: number;
 };
 
 type DecodedChunk = {
@@ -536,7 +548,13 @@ const getChunkCenterDistance = (entry: SsogChunkEntry, cameraPosition: Vector3):
 };
 
 class StreamingSsogRenderPass {
-  private readonly loaded = new Map<string, LoadedChunk>();
+  private readonly gpuLoaded = new Map<string, GpuResidentChunk>();
+  private readonly decodedCache = new Map<string, CachedDecodedChunk>();
+  private decodedCacheBytes = 0;
+  private decodedCacheSplats = 0;
+  private decodedCacheBudget = Number.POSITIVE_INFINITY;
+  private cpuEvictedChunks = 0;
+  private reuploadedChunks = 0;
   private readonly pending = new Map<string, Promise<void>>();
   private readonly pendingEntries = new Map<string, SsogChunkEntry>();
   private readonly decodedUploadQueue = new Map<string, DecodedChunk>();
@@ -612,7 +630,6 @@ class StreamingSsogRenderPass {
   private selectedSplats = 0;
   private requestedChunks = 0;
   private requestedSplats = 0;
-  private cacheSplats = 0;
   private evictedChunks = 0;
   private lastLodBuildMs = 0;
   private globalSortFallbackReason = "";
@@ -661,6 +678,9 @@ class StreamingSsogRenderPass {
     this.cacheSplatLimit = Math.floor(
       getPositiveNumberParam("ssogCacheSplats", Math.max(this.splatBudget * this.cacheSplatMultiplier, 1)),
     );
+    this.decodedCacheBudget = Math.floor(
+      getPositiveNumberParam("ssogDecodedCacheBytes", Math.max(this.cacheSplatLimit * 256, 64 * 1024 * 1024)),
+    );
     const gpuPageCapacitySplats = getSsogGpuPageCapacitySplats();
     this.gpuPagePool = new SsogGpuPagePool(
       gpuPageCapacitySplats,
@@ -674,16 +694,17 @@ class StreamingSsogRenderPass {
   dispose(): void {
     this.disposed = true;
     this.scene.unregisterBeforeRender(this.updateObserver);
-    this.loaded.forEach((runtime) => {
-      runtime.pass.dispose();
-      runtime.buffers.dispose();
-      this.gpuPagePool.freeChunk(chunkKey(runtime.entry));
+    this.gpuLoaded.forEach((gpu) => {
+      gpu.pass.dispose();
+      gpu.buffers.dispose();
     });
+    this.gpuPagePool.clear();
     this.disposeMergedRuntimes();
     this.disposePackedGlobalRuntime();
     this.disposeExpandedRuntime();
     this.debugBounds.disposeAll();
-    this.loaded.clear();
+    this.gpuLoaded.clear();
+    this.decodedCache.clear();
     this.pending.clear();
     this.pendingEntries.clear();
     this.decodedUploadQueue.clear();
@@ -696,7 +717,8 @@ class StreamingSsogRenderPass {
     this.desiredKeys.clear();
     this.prefetchKeys.clear();
     this.fallbackKeys.clear();
-    this.gpuPagePool.clear();
+    this.decodedCacheBytes = 0;
+    this.decodedCacheSplats = 0;
   }
 
   setDebugChunkBoundsVisible(visible: boolean): void {
@@ -704,11 +726,14 @@ class StreamingSsogRenderPass {
     if (visible) {
       this.queued.forEach((entry, key) => this.debugBounds.ensure(key, entry, "unloaded"));
       this.pendingEntries.forEach((entry, key) => this.debugBounds.ensure(key, entry, "unloaded"));
-      this.loaded.forEach((runtime, key) => {
-        if (runtime.active && this.isChunkRepresentedByReadyRenderPath(key)) {
+      this.gpuLoaded.forEach((gpu, key) => {
+        if (gpu.active && this.isChunkRepresentedByReadyRenderPath(key)) {
           this.debugBounds.dispose(key);
         } else {
-          this.debugBounds.ensure(key, runtime.entry, "loaded-waiting");
+          const cached = this.decodedCache.get(key);
+          if (cached) {
+            this.debugBounds.ensure(key, cached.entry, "loaded-waiting");
+          }
         }
       });
     }
@@ -717,7 +742,7 @@ class StreamingSsogRenderPass {
 
   setVizMode(mode: number): void {
     this.activeVizMode = mode;
-    this.loaded.forEach((runtime) => runtime.pass.setVizMode(mode));
+    this.gpuLoaded.forEach((gpu) => gpu.pass.setVizMode(mode));
     this.mergedRuntimes.forEach((runtime) => runtime.pass.setVizMode(mode));
     if (this.packedGlobalRuntime) {
       this.packedGlobalRuntime.setVizMode(mode);
@@ -732,17 +757,17 @@ class StreamingSsogRenderPass {
     const packedMetadata = this.getActivePackedMetadataStats();
     const gpuPagePoolStats = this.gpuPagePool.getStats();
     const selectedKeys = Array.from(this.selectedKeys);
-    const loadedActiveChunks = Array.from(this.loaded.values()).filter((runtime) => runtime.active).length;
+    const gpuActiveChunks = Array.from(this.gpuLoaded.values()).filter((gpu) => gpu.active).length;
     const activeStats = [
       ...(this.expandedRuntime ? [this.expandedRuntime.pass.getStats()] : []),
       ...(this.packedGlobalRuntime ? [this.packedGlobalRuntime.getStats()] : []),
       ...Array.from(this.mergedRuntimes.values()).map((runtime) => runtime.pass.getStats()),
-      ...Array.from(this.loaded.entries())
+      ...Array.from(this.gpuLoaded.entries())
         .filter(
-          ([key, runtime]) =>
-            !this.expandedRuntime && !this.packedGlobalRuntime && runtime.active && !mergedKeys.has(key),
+          ([key, gpu]) =>
+            !this.expandedRuntime && !this.packedGlobalRuntime && gpu.active && !mergedKeys.has(key),
         )
-        .map(([, runtime]) => runtime.pass.getStats()),
+        .map(([, gpu]) => gpu.pass.getStats()),
     ];
     const first = activeStats[0];
     const firstPreviewStats = first as
@@ -1022,29 +1047,29 @@ class StreamingSsogRenderPass {
       gpuBufferArenaReuses: activeStats.reduce((sum, item) => sum + item.gpuBufferArenaReuses, 0),
       gpuBufferArenaGrows: activeStats.reduce((sum, item) => sum + item.gpuBufferArenaGrows, 0),
       qualityPreset: this.qualityPreset,
-      loadedChunks: this.loaded.size,
+      loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,
       pendingUploadChunks: this.decodedUploadQueue.size,
       queuedChunks: this.queued.size,
-      prefetchedChunks: Array.from(this.loaded.entries()).filter(
-        ([key, runtime]) => !runtime.active && this.prefetchKeys.has(key),
+      prefetchedChunks: Array.from(this.gpuLoaded.entries()).filter(
+        ([key, gpu]) => !gpu.active && this.prefetchKeys.has(key),
       ).length,
       evictedChunks: this.evictedChunks,
-      cacheSplats: this.cacheSplats,
+      cacheSplats: this.decodedCacheSplats,
       cacheChunkPressure: Number.isFinite(this.cacheChunkLimit)
-        ? this.loaded.size / Math.max(1, this.cacheChunkLimit)
+        ? this.gpuLoaded.size / Math.max(1, this.cacheChunkLimit)
         : 0,
-      cacheSplatPressure: this.cacheSplats / Math.max(1, this.cacheSplatLimit),
-      selectedCacheRatio: this.cacheSplats / Math.max(1, this.selectedSplats),
+      cacheSplatPressure: this.decodedCacheSplats / Math.max(1, this.cacheSplatLimit),
+      selectedCacheRatio: this.decodedCacheSplats / Math.max(1, this.selectedSplats),
       selectedChunks: this.selectedKeys.size,
-      selectedLoadedChunks: selectedKeys.filter((key) => this.loaded.has(key)).length,
+      selectedLoadedChunks: selectedKeys.filter((key) => this.gpuLoaded.has(key)).length,
       selectedPendingChunks: selectedKeys.filter((key) => this.pending.has(key)).length,
       selectedQueuedChunks: selectedKeys.filter((key) => this.queued.has(key)).length,
       selectedNodes: this.selectedNodes,
       selectedSplats: this.selectedSplats,
       fallbackChunks: this.fallbackKeys.size,
-      loadedActiveChunks,
-      loadedInactiveChunks: this.loaded.size - loadedActiveChunks,
+      loadedActiveChunks: gpuActiveChunks,
+      loadedInactiveChunks: this.gpuLoaded.size - gpuActiveChunks,
       requestedChunks: this.requestedChunks,
       requestedSplats: this.requestedSplats,
       cacheChunkLimit: Number.isFinite(this.cacheChunkLimit) ? this.cacheChunkLimit : -1,
@@ -1060,6 +1085,13 @@ class StreamingSsogRenderPass {
       gpuPagePoolPressure: gpuPagePoolStats.pressure,
       gpuPageEvictedChunks: this.gpuPageEvictedChunks,
       gpuPageEvictedPages: this.gpuPageEvictedPages,
+      decodedCacheChunks: this.decodedCache.size,
+      decodedCacheBytes: this.decodedCacheBytes,
+      decodedCachePressure: this.decodedCacheBytes / Math.max(1, this.decodedCacheBudget) || this.decodedCacheSplats / Math.max(1, this.cacheSplatLimit * 4),
+      gpuResidentChunks: this.gpuLoaded.size,
+      gpuResidentSplats: gpuPagePoolStats.residentSplats,
+      cpuEvictedChunks: this.cpuEvictedChunks,
+      reuploadedChunks: this.reuploadedChunks,
       maxPendingLoads: this.maxPendingLoads,
       prefetchMultiplier: this.prefetchMultiplier,
       chunkSortMode: this.chunkSortMode,
@@ -1195,7 +1227,7 @@ class StreamingSsogRenderPass {
     const missingSelectedNodeIds = this.missingSelectedNodeIds;
     missingSelectedNodeIds.clear();
     for (const item of stableSelected) {
-      if (!this.loaded.has(item.key)) {
+      if (!this.gpuLoaded.has(item.key)) {
         missingSelectedNodeIds.add(item.nodeId);
       }
     }
@@ -1203,7 +1235,7 @@ class StreamingSsogRenderPass {
       const fallback = this.getCoarsestEntryForNode(nodeId);
       if (fallback) {
         const fallbackKey = chunkKey(fallback);
-        if (this.loaded.has(fallbackKey)) {
+        if (this.gpuLoaded.has(fallbackKey)) {
           this.fallbackKeys.add(fallbackKey);
         }
         this.requestChunk(fallback);
@@ -1250,18 +1282,25 @@ class StreamingSsogRenderPass {
     const activeLods = this.activeLodValues;
     activeLods.clear();
     let activeChunks = 0;
-    this.loaded.forEach((runtime, key) => {
+    this.gpuLoaded.forEach((gpu, key) => {
       const selected = this.selectedKeys.has(key);
       const fallback = this.fallbackKeys.has(key);
-      runtime.active = selected || fallback;
-      runtime.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && runtime.active);
-      if (runtime.active && this.isChunkRepresentedByReadyRenderPath(key)) {
+      gpu.active = selected || fallback;
+      gpu.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && gpu.active);
+      if (gpu.active && this.isChunkRepresentedByReadyRenderPath(key)) {
         this.debugBounds.dispose(key);
         activeChunks++;
-        activeLods.add(runtime.entry.lod);
-        runtime.lastUsedFrame = this.generation;
+        const cached = this.decodedCache.get(key);
+        if (cached) {
+          activeLods.add(cached.entry.lod);
+          this.touchDecodedCache(key);
+        }
+        gpu.lastUsedFrame = this.generation;
       } else if (this.debugChunkBoundsVisible) {
-        this.debugBounds.ensure(key, runtime.entry, "loaded-waiting");
+        const cached = this.decodedCache.get(key);
+        if (cached) {
+          this.debugBounds.ensure(key, cached.entry, "loaded-waiting");
+        }
       }
     });
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
@@ -1402,7 +1441,7 @@ class StreamingSsogRenderPass {
   private processRendererCommand(command: RendererCommand): boolean {
     switch (command.type) {
       case "chunkLoaded":
-        if (this.loaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
+        if (this.gpuLoaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
           return false;
         }
         this.chunkLoadAttempts.delete(command.key);
@@ -1422,7 +1461,7 @@ class StreamingSsogRenderPass {
       case "chunkLoadSettled":
         this.pending.delete(command.key);
         this.pendingEntries.delete(command.key);
-        if (!this.loaded.has(command.key) && !this.decodedUploadQueue.has(command.key) && !this.queued.has(command.key)) {
+        if (!this.gpuLoaded.has(command.key) && !this.decodedUploadQueue.has(command.key) && !this.queued.has(command.key)) {
           this.debugBounds.dispose(command.key);
         }
         this.pumpChunkQueue();
@@ -1432,7 +1471,7 @@ class StreamingSsogRenderPass {
 
   private requestChunk(entry: SsogChunkEntry): void {
     const key = chunkKey(entry);
-    if (this.loaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
+    if (this.gpuLoaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
       return;
     }
 
@@ -1463,7 +1502,7 @@ class StreamingSsogRenderPass {
   }
 
   private scheduleChunkRetry(key: string, entry: SsogChunkEntry): void {
-    if (this.loaded.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
+    if (this.gpuLoaded.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
       return;
     }
 
@@ -1536,7 +1575,21 @@ class StreamingSsogRenderPass {
 
   private startChunkLoad(entry: SsogChunkEntry): void {
     const key = chunkKey(entry);
-    if (this.loaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key)) {
+    if (this.gpuLoaded.has(key) || this.pending.has(key) || this.decodedUploadQueue.has(key)) {
+      return;
+    }
+
+    const cachedDecoded = this.decodedCache.get(key);
+    if (cachedDecoded) {
+      this.touchDecodedCache(key);
+      this.reuploadedChunks++;
+      this.enqueueRendererCommand({
+        type: "chunkLoaded",
+        key,
+        entry: cachedDecoded.entry,
+        chunk: cachedDecoded.chunk,
+        loadMs: 0,
+      });
       return;
     }
 
@@ -1628,7 +1681,7 @@ class StreamingSsogRenderPass {
   ): void {
     diagnostics.attemptedChunks++;
 
-    if (this.loaded.has(decoded.key)) {
+    if (this.gpuLoaded.has(decoded.key)) {
       this.decodedUploadQueue.delete(decoded.key);
       diagnostics.skippedLoadedChunks++;
       return;
@@ -1682,36 +1735,51 @@ class StreamingSsogRenderPass {
 
   private writeDecodedChunkToGpu(decoded: DecodedChunk): void {
     const { key, entry, chunk } = decoded;
+
+    if (!this.decodedCache.has(key)) {
+      this.decodedCache.set(key, {
+        entry,
+        chunk,
+        bytes: decoded.bytes,
+        lastUsedFrame: this.generation,
+      });
+      this.decodedCacheBytes += decoded.bytes;
+      this.decodedCacheSplats += chunk.data.numSplats;
+    }
+
+    if (this.gpuLoaded.has(key)) {
+      return;
+    }
+
     const buffers = new SogBuffers(this.scene.getEngine(), chunk.data);
     const pass = new PackedSogRenderPass(this.scene, buffers);
     pass.setVizMode(this.activeVizMode);
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
     pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && active);
     const pageAllocation = this.gpuPagePool.allocateChunk(key, chunk.data.numSplats);
-    this.loaded.set(key, {
-      entry,
-      chunk,
+    this.gpuLoaded.set(key, {
       buffers,
       pass,
       active,
       lastUsedFrame: this.generation,
       pageAllocation,
     });
-    this.cacheSplats += chunk.data.numSplats;
     if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
       this.debugBounds.dispose(key);
     } else if (this.debugChunkBoundsVisible) {
       this.debugBounds.ensure(key, entry, "loaded-waiting");
     }
+
+    this.evictDecodedCache();
   }
 
   private evictInactiveChunks(): void {
     const initialPageStats = this.gpuPagePool.getStats();
-    const pagePressure = initialPageStats.pressure >= 1 || initialPageStats.overflowPages > 0;
-    const inactive = Array.from(this.loaded.entries())
-      .filter(([key, runtime]) => {
-        const protectedChunk = runtime.active || this.selectedKeys.has(key) || this.fallbackKeys.has(key);
-        const oldEnough = this.generation - runtime.lastUsedFrame >= this.evictAfterFrames;
+    const pagePressure = initialPageStats.pressure > 0.98 || initialPageStats.overflowPages > 0;
+    const inactive = Array.from(this.gpuLoaded.entries())
+      .filter(([key, gpu]) => {
+        const protectedChunk = gpu.active || this.selectedKeys.has(key) || this.fallbackKeys.has(key);
+        const oldEnough = this.generation - gpu.lastUsedFrame >= this.evictAfterFrames;
         return !protectedChunk && (oldEnough || pagePressure);
       })
       .sort((a, b) => {
@@ -1722,20 +1790,19 @@ class StreamingSsogRenderPass {
 
     let evictedChunks = 0;
     let evictedPages = 0;
-    for (const [key, runtime] of inactive) {
+    for (const [key, gpu] of inactive) {
       const pageStats = this.gpuPagePool.getStats();
-      const overCache = this.loaded.size > this.cacheChunkLimit || this.cacheSplats > this.cacheSplatLimit;
-      const overPages = pageStats.pressure >= 1 || pageStats.overflowPages > 0;
+      const overCache = this.gpuLoaded.size > this.cacheChunkLimit;
+      const overPages = pageStats.pressure > 0.98 || pageStats.overflowPages > 0;
       if (!overCache && !overPages) {
         break;
       }
 
-      evictedPages += runtime.pageAllocation.pages.length + runtime.pageAllocation.overflowPages;
-      runtime.pass.dispose();
-      runtime.buffers.dispose();
+      evictedPages += gpu.pageAllocation.pages.length + gpu.pageAllocation.overflowPages;
+      gpu.pass.dispose();
+      gpu.buffers.dispose();
       this.gpuPagePool.freeChunk(key);
-      this.cacheSplats -= runtime.chunk.data.numSplats;
-      this.loaded.delete(key);
+      this.gpuLoaded.delete(key);
       this.debugBounds.dispose(key);
       this.evictedChunks++;
       evictedChunks++;
@@ -1745,6 +1812,7 @@ class StreamingSsogRenderPass {
       this.gpuPageEvictedChunks += evictedChunks;
       this.gpuPageEvictedPages += evictedPages;
       this.repackGpuPagePool();
+      this.evictDecodedCache();
     }
 
     if (this.globalSortMode === "packed") {
@@ -1753,6 +1821,34 @@ class StreamingSsogRenderPass {
       this.updateExpandedRuntime();
     } else {
       this.updateMergedRuntime();
+    }
+  }
+
+  private evictDecodedCache(): void {
+    if (this.decodedCacheBytes <= this.decodedCacheBudget) {
+      return;
+    }
+
+    const evictable = Array.from(this.decodedCache.entries())
+      .filter(([key]) => !this.gpuLoaded.has(key))
+      .sort((a, b) => a[1].lastUsedFrame - b[1].lastUsedFrame);
+
+    for (const [key, cached] of evictable) {
+      if (this.decodedCacheBytes <= this.decodedCacheBudget) {
+        break;
+      }
+
+      this.decodedCacheBytes -= cached.bytes;
+      this.decodedCacheSplats -= cached.chunk.data.numSplats;
+      this.decodedCache.delete(key);
+      this.cpuEvictedChunks++;
+    }
+  }
+
+  private touchDecodedCache(key: string): void {
+    const cached = this.decodedCache.get(key);
+    if (cached) {
+      cached.lastUsedFrame = this.generation;
     }
   }
 
@@ -1767,15 +1863,22 @@ class StreamingSsogRenderPass {
   }
 
   private repackGpuPagePool(): void {
-    const residents = Array.from(this.loaded.entries()).sort((a, b) => {
+    const residents = Array.from(this.gpuLoaded.entries()).sort((a, b) => {
       const priorityA = this.getGpuPageRepackPriority(a[0]);
       const priorityB = this.getGpuPageRepackPriority(b[0]);
       return priorityA - priorityB || b[1].lastUsedFrame - a[1].lastUsedFrame;
     });
 
     this.gpuPagePool.clear();
-    for (const [key, runtime] of residents) {
-      runtime.pageAllocation = this.gpuPagePool.allocateChunk(key, runtime.chunk.data.numSplats);
+    for (const [key, gpu] of residents) {
+      const cached = this.decodedCache.get(key);
+      if (!cached) {
+        this.gpuLoaded.delete(key);
+        gpu.pass.dispose();
+        gpu.buffers.dispose();
+        continue;
+      }
+      gpu.pageAllocation = this.gpuPagePool.allocateChunk(key, cached.chunk.data.numSplats);
     }
   }
 
@@ -1802,9 +1905,9 @@ class StreamingSsogRenderPass {
   }
 
   private getBestResidentEntryForNode(nodeId: number, targetLod: number): SsogChunkEntry | undefined {
-    const loadedEntries = Array.from(this.loaded.values())
-      .map((runtime) => runtime.entry)
-      .filter((entry) => entry.nodeId === nodeId);
+    const loadedEntries = Array.from(this.gpuLoaded.keys())
+      .map((key) => this.decodedCache.get(key)?.entry)
+      .filter((entry): entry is SsogChunkEntry => !!entry && entry.nodeId === nodeId);
     if (loadedEntries.length === 0) {
       return undefined;
     }
@@ -1819,7 +1922,7 @@ class StreamingSsogRenderPass {
   private resolveResidentSelection(selected: SelectedSsogItem[]): SelectedSsogItem[] {
     const fallbackNodes = new Set<number>();
     const resident = selected.map((item): SelectedSsogItem => {
-      if (this.loaded.has(item.key)) {
+      if (this.gpuLoaded.has(item.key)) {
         return item;
       }
 
@@ -1872,7 +1975,7 @@ class StreamingSsogRenderPass {
     const stable = selected.map((item): SelectedSsogItem => {
       const previous = previousByNode.get(item.nodeId);
       const previousKey = previous ? chunkKey(previous) : undefined;
-      if (!previous || !previousKey || previousKey === item.key || !this.loaded.has(previousKey)) {
+      if (!previous || !previousKey || previousKey === item.key || !this.gpuLoaded.has(previousKey)) {
         this.pendingSelections.delete(item.nodeId);
         return item;
       }
@@ -1889,7 +1992,7 @@ class StreamingSsogRenderPass {
         };
       }
 
-      if (!this.loaded.has(item.key)) {
+      if (!this.gpuLoaded.has(item.key)) {
         pendingReplacementNodes.add(item.nodeId);
         return {
           ...item,
@@ -1941,9 +2044,13 @@ class StreamingSsogRenderPass {
       runtime.pass.setTransparentSortDepth(0, this.chunkSortScale, this.chunkSortHysteresis),
     );
 
-    this.loaded.forEach((runtime) => {
-      runtime.pass.setTransparentSortDepth(
-        this.getChunkViewDepth(runtime.entry, cameraPosition, cameraForward),
+    this.gpuLoaded.forEach((gpu, key) => {
+      const cached = this.decodedCache.get(key);
+      if (!cached) {
+        return;
+      }
+      gpu.pass.setTransparentSortDepth(
+        this.getChunkViewDepth(cached.entry, cameraPosition, cameraForward),
         this.chunkSortScale,
         this.chunkSortHysteresis,
       );
@@ -1998,8 +2105,8 @@ class StreamingSsogRenderPass {
       return;
     }
 
-    const activeEntries = Array.from(this.loaded.entries()).filter(([, runtime]) => runtime.active);
-    activeEntries.forEach(([, runtime]) => runtime.pass.setEnabled(false));
+    const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
+    activeEntries.forEach(([, gpu]) => gpu.pass.setEnabled(false));
 
     if (!this.canBuildGlobalRuntime(activeEntries)) {
       this.globalSortBuildPending = true;
@@ -2036,14 +2143,17 @@ class StreamingSsogRenderPass {
     const camera = this.scene.activeCamera;
     const cameraPosition = camera?.globalPosition ?? new Vector3(0, 0, 0);
     const cameraForward = camera?.getDirection(Vector3.Forward()) ?? Vector3.Forward();
-    const depthSortedEntries = activeEntries.sort(
-      (a, b) =>
-        this.getChunkViewDepth(b[1].entry, cameraPosition, cameraForward) -
-        this.getChunkViewDepth(a[1].entry, cameraPosition, cameraForward),
-    );
+    const depthSortedEntries = activeEntries
+      .map(([key]): [string, CachedDecodedChunk | undefined] => [key, this.decodedCache.get(key)])
+      .filter((entry): entry is [string, CachedDecodedChunk] => !!entry[1])
+      .sort(
+        (a, b) =>
+          this.getChunkViewDepth(b[1].entry, cameraPosition, cameraForward) -
+          this.getChunkViewDepth(a[1].entry, cameraPosition, cameraForward),
+      );
     this.packedGlobalRuntime = new SsogGlobalPackedRenderPass(
       this.scene,
-      depthSortedEntries.map(([key, runtime]) => ({ key, data: runtime.chunk.data })),
+      depthSortedEntries.map(([key, cached]) => ({ key, data: cached.chunk.data })),
       { cameraPosition, cameraForward },
     );
     this.packedGlobalRuntime.setVizMode(this.activeVizMode);
@@ -2063,8 +2173,8 @@ class StreamingSsogRenderPass {
     }
 
     this.disposeMergedRuntimes();
-    const activeEntries = Array.from(this.loaded.entries()).filter(([, runtime]) => runtime.active);
-    activeEntries.forEach(([, runtime]) => runtime.pass.setEnabled(false));
+    const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
+    activeEntries.forEach(([, gpu]) => gpu.pass.setEnabled(false));
 
     if (!this.canBuildGlobalRuntime(activeEntries)) {
       this.globalSortBuildPending = true;
@@ -2090,7 +2200,13 @@ class StreamingSsogRenderPass {
 
     const buildStart = performance.now();
     this.disposeExpandedRuntime();
-    const packed = expandSogChunks(activeEntries.map(([, runtime]) => runtime.chunk.data));
+    const activeDecoded = activeEntries
+      .map(([key]): [string, CachedDecodedChunk] | undefined => {
+        const cached = this.decodedCache.get(key);
+        return cached ? [key, cached] : undefined;
+      })
+      .filter((e): e is [string, CachedDecodedChunk] => !!e);
+    const packed = expandSogChunks(activeDecoded.map(([, cached]) => cached.chunk.data));
     const buffers = new SplatBuffers(this.scene.getEngine(), packed);
     const pass = new SplatRenderPass(this.scene, buffers, { renderBudget: packed.indices.length });
     pass.setVizMode(this.activeVizMode);
@@ -2127,17 +2243,19 @@ class StreamingSsogRenderPass {
       this.globalSortFallbackReason = "";
     }
 
-    const activeEntries = Array.from(this.loaded.entries()).filter(([, runtime]) => runtime.active);
-    if (activeEntries.length === 0) {
+    const actives = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
+    if (actives.length === 0) {
       this.disposeMergedRuntimes();
       return;
     }
 
-    const groups = new Map<string, Array<[string, LoadedChunk]>>();
-    activeEntries.forEach(([key, runtime]) => {
-      const groupKey = String(runtime.entry.fileIndex);
+    const groups = new Map<string, Array<[string, GpuResidentChunk]>>();
+    actives.forEach(([key, gpu]) => {
+      const cached = this.decodedCache.get(key);
+      if (!cached) return;
+      const groupKey = String(cached.entry.fileIndex);
       const group = groups.get(groupKey) ?? [];
-      group.push([key, runtime]);
+      group.push([key, gpu]);
       groups.set(groupKey, group);
     });
 
@@ -2157,7 +2275,15 @@ class StreamingSsogRenderPass {
         continue;
       }
 
-      const merged = this.mergePackedChunks(group.map(([, runtime]) => runtime.chunk.data));
+      const chunkData = group
+        .map(([key]) => this.decodedCache.get(key)?.chunk.data)
+        .filter((d): d is SogPackedData => !!d);
+      if (chunkData.length !== group.length) {
+        this.disposeMergedRuntime(groupKey);
+        continue;
+      }
+
+      const merged = this.mergePackedChunks(chunkData);
       if (!merged) {
         if (this.globalSortMode === "off" && !preserveFallbackReason) {
           this.globalSortFallbackReason =
@@ -2183,10 +2309,10 @@ class StreamingSsogRenderPass {
       }
     });
 
-    activeEntries.forEach(([key, runtime]) => runtime.pass.setEnabled(!mergedKeys.has(key)));
+    actives.forEach(([key, gpu]) => gpu.pass.setEnabled(!mergedKeys.has(key)));
   }
 
-  private canBuildGlobalRuntime(activeEntries: Array<[string, LoadedChunk]>): boolean {
+  private canBuildGlobalRuntime(activeEntries: Array<[string, GpuResidentChunk]>): boolean {
     if (this.progressiveGlobalBuild || this.selectedKeys.size === 0) {
       return true;
     }
@@ -2224,9 +2350,10 @@ class StreamingSsogRenderPass {
     groups: number;
     mergeCompatible: boolean;
   } {
-    const chunks = Array.from(this.loaded.values())
-      .filter((runtime) => runtime.active)
-      .map((runtime) => runtime.chunk.data);
+    const chunks = Array.from(this.gpuLoaded.keys())
+      .filter((key) => this.gpuLoaded.get(key)?.active)
+      .map((key) => this.decodedCache.get(key)?.chunk.data)
+      .filter((d): d is SogPackedData => !!d);
 
     if (chunks.length === 0) {
       return { mode: "none", groups: 0, mergeCompatible: true };
@@ -2283,8 +2410,8 @@ class StreamingSsogRenderPass {
   }
 
   private isChunkRepresentedByReadyRenderPath(key: string): boolean {
-    const runtime = this.loaded.get(key);
-    if (!runtime?.active) {
+    const gpu = this.gpuLoaded.get(key);
+    if (!gpu?.active) {
       return false;
     }
 
@@ -2303,8 +2430,9 @@ class StreamingSsogRenderPass {
   }
 
   private hasReadyRenderedNode(nodeId: number): boolean {
-    for (const [key, runtime] of this.loaded) {
-      if (runtime.entry.nodeId === nodeId && this.isChunkRepresentedByReadyRenderPath(key)) {
+    for (const [key] of this.gpuLoaded) {
+      const cached = this.decodedCache.get(key);
+      if (cached && cached.entry.nodeId === nodeId && this.isChunkRepresentedByReadyRenderPath(key)) {
         return true;
       }
     }
