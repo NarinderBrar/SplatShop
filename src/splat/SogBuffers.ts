@@ -2,6 +2,7 @@ import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Nullable } from "@babylonjs/core/types";
 
+import { BufferVersionTracker } from "../rendering/BufferVersionTracker";
 import type { GpuBufferWriter } from "../rendering/GpuBufferWriter";
 import type { SogPackedData } from "./SplatAsset";
 
@@ -42,6 +43,7 @@ class SogBuffers {
   readonly indices: Uint32Array;
   readonly stats: SogBufferStats;
   readonly storage: Nullable<SogStorageBuffers>;
+  readonly bufferVersions = new BufferVersionTracker();
   private readonly dcColorData: Float32Array;
   private readonly colorData: Float32Array;
 
@@ -134,6 +136,7 @@ class SogBuffers {
       buffers.shNCodebook = make("SogShNCodebook", this.packed.shN.codebook);
     }
 
+    this.bufferVersions.trackAll(buffers as unknown as Record<string, StorageBuffer | undefined>);
     return buffers;
   }
 
@@ -182,6 +185,7 @@ class SogBuffers {
     }
 
     this.storage.color.update(colors, 0, colors.byteLength);
+    this.bufferVersions.bump(this.storage.color);
     this.stats.shRenderMode = "cpu";
     return performance.now() - start;
   }

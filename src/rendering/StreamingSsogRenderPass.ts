@@ -1064,6 +1064,7 @@ class StreamingSsogRenderPass {
       gpuBufferArenaAllocations: activeStats.reduce((sum, item) => sum + item.gpuBufferArenaAllocations, 0),
       gpuBufferArenaReuses: activeStats.reduce((sum, item) => sum + item.gpuBufferArenaReuses, 0),
       gpuBufferArenaGrows: activeStats.reduce((sum, item) => sum + item.gpuBufferArenaGrows, 0),
+      bindGroupGeneration: activeStats.reduce((sum, item) => sum + item.bindGroupGeneration, 0),
       qualityPreset: this.qualityPreset,
       loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,

@@ -337,6 +337,7 @@ class CompositeSplatRenderPass {
       gpuBufferArenaAllocations: stats.reduce((sum, item) => sum + item.gpuBufferArenaAllocations, 0),
       gpuBufferArenaReuses: stats.reduce((sum, item) => sum + item.gpuBufferArenaReuses, 0),
       gpuBufferArenaGrows: stats.reduce((sum, item) => sum + item.gpuBufferArenaGrows, 0),
+      bindGroupGeneration: stats.reduce((sum, item) => sum + item.bindGroupGeneration, 0),
     };
   }
 

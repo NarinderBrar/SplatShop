@@ -19,6 +19,7 @@ import { ComputeTileWorkQueuePass, type ComputeTileWorkQueueStats } from "./Comp
 import { canCreateComputeShader, GpuDepthKeyPass, type GpuDepthKeyStats } from "./GpuDepthKeyPass";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
 import { getRequestedRendererMode, type EffectiveRendererMode, type RequestedRendererMode } from "./renderControls";
+import { BufferVersionTracker } from "./BufferVersionTracker";
 
 type SsogGlobalPackedChunk = {
   key: string;
@@ -214,6 +215,7 @@ type SsogGlobalPackedStats = {
   gpuBufferArenaAllocations: number;
   gpuBufferArenaReuses: number;
   gpuBufferArenaGrows: number;
+  bindGroupGeneration: number;
 };
 
 const SPLATS_PER_INSTANCE = 128;
@@ -554,6 +556,8 @@ class SsogGlobalPackedRenderPass {
   private readonly shStats: GlobalPackedShStats;
   private readonly updateViewport: () => void;
   private readonly viewport = new Vector2(1, 1);
+  private lastViewportWidth = 0;
+  private lastViewportHeight = 0;
   private sortWorker?: Worker;
   private sortPending = false;
   private sortFrame = 0;
@@ -626,6 +630,7 @@ class SsogGlobalPackedRenderPass {
   readonly keys: Set<string>;
   readonly numSplats: number;
   readonly chunkCount: number;
+  readonly bufferVersions = new BufferVersionTracker();
 
   constructor(private readonly scene: Scene, chunks: SsogGlobalPackedChunk[], initialSortView?: InitialSortView) {
     const engine = scene.getEngine();
@@ -677,6 +682,7 @@ class SsogGlobalPackedRenderPass {
           }
         : {}),
     };
+    this.bufferVersions.trackAll(this.buffers as unknown as Record<string, StorageBuffer | undefined>);
     if (this.buffers.centers && this.buffers.depthKeys && this.buffers.gpuSortIndices) {
       this.gpuDepthKeyPass = new GpuDepthKeyPass(
         scene,
@@ -769,8 +775,14 @@ class SsogGlobalPackedRenderPass {
 
     this.updateViewport = () => {
       const renderEngine = scene.getEngine();
-      this.viewport.set(renderEngine.getRenderWidth(true), renderEngine.getRenderHeight(true));
-      this.material.setVector2("viewport", this.viewport);
+      const w = renderEngine.getRenderWidth(true);
+      const h = renderEngine.getRenderHeight(true);
+      if (w !== this.lastViewportWidth || h !== this.lastViewportHeight) {
+        this.viewport.set(w, h);
+        this.material.setVector2("viewport", this.viewport);
+        this.lastViewportWidth = w;
+        this.lastViewportHeight = h;
+      }
       this.updateComputeTilePipeline();
       this.updateSort();
     };
@@ -867,6 +879,7 @@ class SsogGlobalPackedRenderPass {
       ...this.getGpuRadixSortStats(),
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.gpuVisibleActive ? "radix" : "cpu",
+      bindGroupGeneration: this.bufferVersions.bindGroupGeneration,
     };
   }
 
@@ -1409,22 +1422,28 @@ class SsogGlobalPackedRenderPass {
     return material;
   }
 
+  private lastVizMode = 0;
+
   setVizMode(mode: number): void {
+    if (this.lastVizMode === mode) {
+      return;
+    }
+    this.lastVizMode = mode;
     this.material.setFloat("vizMode", mode);
   }
 
   private bindStorageBuffers(): void {
-    this.material.setStorageBuffer("meansLBuffer", this.buffers.meansL);
-    this.material.setStorageBuffer("meansUBuffer", this.buffers.meansU);
-    this.material.setStorageBuffer("quatsBuffer", this.buffers.quats);
-    this.material.setStorageBuffer("scalesBuffer", this.buffers.scales);
-    this.material.setStorageBuffer("colorBuffer", this.buffers.color);
+    this.bufferVersions.rebindStorageBuffer(this.material, "meansLBuffer", this.buffers.meansL);
+    this.bufferVersions.rebindStorageBuffer(this.material, "meansUBuffer", this.buffers.meansU);
+    this.bufferVersions.rebindStorageBuffer(this.material, "quatsBuffer", this.buffers.quats);
+    this.bufferVersions.rebindStorageBuffer(this.material, "scalesBuffer", this.buffers.scales);
+    this.bufferVersions.rebindStorageBuffer(this.material, "colorBuffer", this.buffers.color);
     if (this.colorSegmentationPass) {
-      this.material.setStorageBuffer("colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
+      this.bufferVersions.rebindStorageBuffer(this.material, "colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
     }
-    this.material.setStorageBuffer("scaleCodebookBuffer", this.buffers.scaleCodebook);
-    this.material.setStorageBuffer("chunkInfoBuffer", this.buffers.chunkInfo);
-    this.material.setStorageBuffer("indexBuffer", this.buffers.indices);
+    this.bufferVersions.rebindStorageBuffer(this.material, "scaleCodebookBuffer", this.buffers.scaleCodebook);
+    this.bufferVersions.rebindStorageBuffer(this.material, "chunkInfoBuffer", this.buffers.chunkInfo);
+    this.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", this.buffers.indices);
   }
 
   private buildGeometry(): void {
@@ -1610,6 +1629,7 @@ class SsogGlobalPackedRenderPass {
       const sortedIndices = new Uint32Array(event.data.indices);
       const uploadStart = performance.now();
       this.buffers.indices.update(sortedIndices, 0, sortedIndices.byteLength);
+      this.bufferVersions.bump(this.buffers.indices);
       this.lastUploadMs = performance.now() - uploadStart;
     };
     this.sortWorker.postMessage({ type: "init", centers: centers.buffer, indices: indices.buffer }, [
@@ -1634,6 +1654,7 @@ class SsogGlobalPackedRenderPass {
       bakePackedShColors(chunk.data, chunk.splatOffset, cameraPosition, this.colorData);
     }
     this.buffers.color.update(this.colorData, 0, this.colorData.byteLength);
+    this.bufferVersions.bump(this.buffers.color);
     this.shStats.shRenderMode = "cpu";
     this.lastCpuShMs = performance.now() - start;
   }

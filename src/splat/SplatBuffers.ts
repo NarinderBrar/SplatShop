@@ -2,6 +2,7 @@ import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Nullable } from "@babylonjs/core/types";
 
+import { BufferVersionTracker } from "../rendering/BufferVersionTracker";
 import type { SplatData } from "./SplatData";
 
 type PackedSplatArrays = {
@@ -48,6 +49,7 @@ class SplatBuffers {
   readonly packed: PackedSplatArrays;
   readonly stats: SplatBufferStats;
   readonly storage: Nullable<SplatStorageBuffers>;
+  readonly bufferVersions = new BufferVersionTracker();
 
   constructor(engine: unknown, splatData: SplatData | PackedSplatArrays) {
     this.packed = isPackedSplatArrays(splatData) ? splatData : SplatBuffers.pack(splatData);
@@ -119,7 +121,7 @@ class SplatBuffers {
     const indices = new StorageBuffer(engine, this.packed.indices.byteLength, undefined, "SplatIndices");
     indices.update(this.packed.indices);
 
-    return {
+    const buffers: SplatStorageBuffers = {
       centerScale,
       scale,
       rotationOpacity,
@@ -130,6 +132,8 @@ class SplatBuffers {
       sortScratchIndices,
       indices,
     };
+    this.bufferVersions.trackAll(buffers as unknown as Record<string, StorageBuffer | undefined>);
+    return buffers;
   }
 
   private static pack(splatData: SplatData): PackedSplatArrays {

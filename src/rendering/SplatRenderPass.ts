@@ -532,6 +532,7 @@ type SplatRenderStats = {
   gpuBufferArenaAllocations: number;
   gpuBufferArenaReuses: number;
   gpuBufferArenaGrows: number;
+  bindGroupGeneration: number;
 };
 
 type SplatRenderPassOptions = {
@@ -569,6 +570,8 @@ class SplatRenderPass {
   private readonly sortMoveEpsilonSq = getSortMoveEpsilonSq();
   private readonly sortForwardDotThreshold = getSortForwardDotThreshold();
   private readonly viewport = new Vector2(1, 1);
+  private lastViewportWidth = 0;
+  private lastViewportHeight = 0;
   private readonly updateViewport: () => void;
   private sortWorker?: Worker;
   private sortPending = false;
@@ -590,8 +593,10 @@ class SplatRenderPass {
   private lastUploadMs = 0;
   private lastLodBuildMs = 0;
   private radixVisibleActive = false;
+  private readonly splatBuffers: SplatBuffers;
 
   constructor(scene: Scene, splatBuffers: SplatBuffers, options: SplatRenderPassOptions = {}) {
+    this.splatBuffers = splatBuffers;
     this.mesh = new Mesh("SplatRenderPassQuads", scene);
     this.renderBudget = options.renderBudget ?? getRenderSplatBudget();
     this.rendererBackend = resolveRendererBackend(scene);
@@ -616,22 +621,21 @@ class SplatRenderPass {
       this.computeTileRasterPreviewPass = this.createComputeTileRasterPreviewPass(scene, splatBuffers);
       this.computeTileDensityOverlayPass = this.createComputeTileDensityOverlayPass(scene);
       this.buildStorageBufferGeometry(scene, splatBuffers);
-      this.material.setStorageBuffer("centerScaleBuffer", splatBuffers.storage.centerScale);
-      this.material.setStorageBuffer("scaleBuffer", splatBuffers.storage.scale);
-      this.material.setStorageBuffer("rotationBuffer", splatBuffers.storage.rotationOpacity);
-      this.material.setStorageBuffer("colorBuffer", splatBuffers.storage.color);
-      if (this.colorSegmentationPass) {
-        this.material.setStorageBuffer("colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
-      }
-      this.material.setStorageBuffer("indexBuffer", splatBuffers.storage.indices);
+      this.bindStorageBuffers();
     } else {
       this.buildExpandedQuadGeometry(splatBuffers);
     }
 
     this.updateViewport = () => {
       const engine = scene.getEngine();
-      this.viewport.set(engine.getRenderWidth(true), engine.getRenderHeight(true));
-      this.material.setVector2("viewport", this.viewport);
+      const w = engine.getRenderWidth(true);
+      const h = engine.getRenderHeight(true);
+      if (w !== this.lastViewportWidth || h !== this.lastViewportHeight) {
+        this.viewport.set(w, h);
+        this.material.setVector2("viewport", this.viewport);
+        this.lastViewportWidth = w;
+        this.lastViewportHeight = h;
+      }
       this.updateComputeTilePipeline(scene);
       this.computeTilePreviewPass?.update();
       this.computeTileSplatPreviewPass?.update(this.viewport.x, this.viewport.y);
@@ -644,7 +648,22 @@ class SplatRenderPass {
   }
 
   setSelectionBuffer(buffer: StorageBuffer): void {
-    this.material.setStorageBuffer("selectionBuffer", buffer);
+    this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "selectionBuffer", buffer);
+  }
+
+  private bindStorageBuffers(): void {
+    const storage = this.splatBuffers.storage;
+    if (!storage) {
+      return;
+    }
+    this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "centerScaleBuffer", storage.centerScale);
+    this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "scaleBuffer", storage.scale);
+    this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "rotationBuffer", storage.rotationOpacity);
+    this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "colorBuffer", storage.color);
+    if (this.colorSegmentationPass) {
+      this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
+    }
+    this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", storage.indices);
   }
 
   dispose(): void {
@@ -683,7 +702,13 @@ class SplatRenderPass {
     this.mesh.setEnabled(enabled);
   }
 
+  private lastVizMode = 0;
+
   setVizMode(mode: number): void {
+    if (this.lastVizMode === mode) {
+      return;
+    }
+    this.lastVizMode = mode;
     this.material.setFloat("vizMode", mode);
   }
 
@@ -729,6 +754,7 @@ class SplatRenderPass {
       ...this.getGpuRadixSortStats(),
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.getGpuSortVisibleEffective(),
+      bindGroupGeneration: this.splatBuffers.bufferVersions.bindGroupGeneration,
     };
   }
 
@@ -1336,7 +1362,7 @@ class SplatRenderPass {
     if (!this.radixVisibleActive || !splatBuffers.storage) {
       return;
     }
-    this.material.setStorageBuffer("indexBuffer", splatBuffers.storage.indices);
+    splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", splatBuffers.storage.indices);
     this.radixVisibleActive = false;
   }
 
@@ -1359,7 +1385,7 @@ class SplatRenderPass {
     if (!isValidAscending) {
       return;
     }
-    this.material.setStorageBuffer("indexBuffer", splatBuffers.storage.sortScratchIndices);
+    splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", splatBuffers.storage.sortScratchIndices);
     this.radixVisibleActive = true;
   }
 
@@ -1515,6 +1541,9 @@ class SplatRenderPass {
     this.selectedLods = selectedLods;
     splatBuffers.storage?.indices.update(indices, 0, indices.byteLength);
     this.lastLodBuildMs = performance.now() - lodStart;
+    if (splatBuffers.storage) {
+      splatBuffers.bufferVersions.bump(splatBuffers.storage.indices);
+    }
     this.initializeSortWorker(splatBuffers, centers, indices);
 
     this.setRenderCount(renderCount);
@@ -1548,6 +1577,9 @@ class SplatRenderPass {
   }
 
   private setRenderCount(renderCount: number): void {
+    if (this.renderSplats === renderCount) {
+      return;
+    }
     this.renderSplats = renderCount;
     this.mesh.forcedInstanceCount = Math.ceil(renderCount / SPLATS_PER_INSTANCE);
     this.material.setFloat("renderSplatCount", renderCount);
@@ -1573,7 +1605,10 @@ class SplatRenderPass {
         this.lastSortMs = this.lastSortStart > 0 ? performance.now() - this.lastSortStart : 0;
         const sortedIndices = new Uint32Array(event.data.indices);
         const uploadStart = performance.now();
-        splatBuffers.storage?.indices.update(sortedIndices, 0, sortedIndices.byteLength);
+        if (splatBuffers.storage) {
+          splatBuffers.storage.indices.update(sortedIndices, 0, sortedIndices.byteLength);
+          splatBuffers.bufferVersions.bump(splatBuffers.storage.indices);
+        }
         this.lastUploadMs = performance.now() - uploadStart;
       };
     }
@@ -1683,7 +1718,10 @@ class SplatRenderPass {
     this.activeChunks = activeChunks;
     this.selectedLods = selectedLods;
     this.setRenderCount(indices.length);
-    splatBuffers.storage?.indices.update(indices, 0, indices.byteLength);
+    if (splatBuffers.storage) {
+      splatBuffers.storage.indices.update(indices, 0, indices.byteLength);
+      splatBuffers.bufferVersions.bump(splatBuffers.storage.indices);
+    }
     this.initializeSortWorker(splatBuffers, centers, indices);
   }
 

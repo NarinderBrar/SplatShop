@@ -488,6 +488,7 @@ type PackedSogRenderStats = {
   gpuBufferArenaAllocations: number;
   gpuBufferArenaReuses: number;
   gpuBufferArenaGrows: number;
+  bindGroupGeneration: number;
 };
 
 class PackedSogRenderPass {
@@ -523,6 +524,8 @@ class PackedSogRenderPass {
   private readonly sortMoveEpsilonSq = getSortMoveEpsilonSq();
   private readonly sortForwardDotThreshold = getSortForwardDotThreshold();
   private readonly viewport = new Vector2(1, 1);
+  private lastViewportWidth = 0;
+  private lastViewportHeight = 0;
   private readonly updateViewport: () => void;
   private readonly lodManager: SogLodManager;
   private sortWorker?: Worker;
@@ -581,8 +584,14 @@ class PackedSogRenderPass {
 
     this.updateViewport = () => {
       const engine = scene.getEngine();
-      this.viewport.set(engine.getRenderWidth(true), engine.getRenderHeight(true));
-      this.material.setVector2("viewport", this.viewport);
+      const w = engine.getRenderWidth(true);
+      const h = engine.getRenderHeight(true);
+      if (w !== this.lastViewportWidth || h !== this.lastViewportHeight) {
+        this.viewport.set(w, h);
+        this.material.setVector2("viewport", this.viewport);
+        this.lastViewportWidth = w;
+        this.lastViewportHeight = h;
+      }
       this.updateComputeTilePipeline(scene);
       this.computeTilePreviewPass?.update();
       this.computeTileSplatPreviewPass?.update(this.viewport.x, this.viewport.y);
@@ -595,7 +604,7 @@ class PackedSogRenderPass {
   }
 
   setSelectionBuffer(buffer: StorageBuffer): void {
-    this.material.setStorageBuffer("selectionBuffer", buffer);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "selectionBuffer", buffer);
   }
 
   dispose(): void {
@@ -649,7 +658,13 @@ class PackedSogRenderPass {
     this.mesh.alphaIndex = nextIndex;
   }
 
+  private lastVizMode = 0;
+
   setVizMode(mode: number): void {
+    if (this.lastVizMode === mode) {
+      return;
+    }
+    this.lastVizMode = mode;
     this.material.setFloat("vizMode", mode);
   }
 
@@ -695,6 +710,7 @@ class PackedSogRenderPass {
       ...this.getGpuRadixSortStats(),
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.getGpuSortVisibleEffective(),
+      bindGroupGeneration: this.sogBuffers.bufferVersions.bindGroupGeneration,
     };
   }
 
@@ -1298,7 +1314,7 @@ class PackedSogRenderPass {
     if (!storage) {
       return;
     }
-    this.material.setStorageBuffer("indexBuffer", storage.indices);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", storage.indices);
     this.radixVisibleActive = false;
   }
 
@@ -1325,7 +1341,7 @@ class PackedSogRenderPass {
     if (!storage) {
       return;
     }
-    this.material.setStorageBuffer("indexBuffer", storage.sortScratchIndices);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", storage.sortScratchIndices);
     this.radixVisibleActive = true;
   }
 
@@ -1473,16 +1489,16 @@ class PackedSogRenderPass {
     if (!storage) {
       return;
     }
-    this.material.setStorageBuffer("meansLBuffer", storage.meansL);
-    this.material.setStorageBuffer("meansUBuffer", storage.meansU);
-    this.material.setStorageBuffer("quatsBuffer", storage.quats);
-    this.material.setStorageBuffer("scalesBuffer", storage.scales);
-    this.material.setStorageBuffer("colorBuffer", storage.color);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "meansLBuffer", storage.meansL);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "meansUBuffer", storage.meansU);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "quatsBuffer", storage.quats);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "scalesBuffer", storage.scales);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "colorBuffer", storage.color);
     if (this.colorSegmentationPass) {
-      this.material.setStorageBuffer("colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
+      this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
     }
-    this.material.setStorageBuffer("scaleCodebookBuffer", storage.scaleCodebook);
-    this.material.setStorageBuffer("indexBuffer", storage.indices);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "scaleCodebookBuffer", storage.scaleCodebook);
+    this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", storage.indices);
   }
 
   private buildGeometry(): void {
@@ -1525,11 +1541,17 @@ class PackedSogRenderPass {
     this.activeChunks = activeChunks;
     this.selectedLods = selectedLods;
     this.setRenderCount(indices.length);
-    this.sogBuffers.storage?.indices.update(indices, 0, indices.byteLength);
+    if (this.sogBuffers.storage) {
+      this.sogBuffers.storage.indices.update(indices, 0, indices.byteLength);
+      this.sogBuffers.bufferVersions.bump(this.sogBuffers.storage.indices);
+    }
     this.initializeSortWorker(centers, indices);
   }
 
   private setRenderCount(renderCount: number): void {
+    if (this.renderSplats === renderCount) {
+      return;
+    }
     this.renderSplats = renderCount;
     this.mesh.forcedInstanceCount = Math.ceil(renderCount / SPLATS_PER_INSTANCE);
     this.material.setFloat("renderSplatCount", renderCount);
@@ -1549,7 +1571,10 @@ class PackedSogRenderPass {
         this.lastSortMs = this.lastSortStart > 0 ? performance.now() - this.lastSortStart : 0;
         const sortedIndices = new Uint32Array(event.data.indices);
         const uploadStart = performance.now();
-        this.sogBuffers.storage?.indices.update(sortedIndices, 0, sortedIndices.byteLength);
+        if (this.sogBuffers.storage) {
+          this.sogBuffers.storage.indices.update(sortedIndices, 0, sortedIndices.byteLength);
+          this.sogBuffers.bufferVersions.bump(this.sogBuffers.storage.indices);
+        }
         this.lastUploadMs = performance.now() - uploadStart;
       };
     }
@@ -1665,7 +1690,10 @@ class PackedSogRenderPass {
     this.activeChunks = activeChunks;
     this.selectedLods = selectedLods;
     this.setRenderCount(indices.length);
-    this.sogBuffers.storage?.indices.update(indices, 0, indices.byteLength);
+    if (this.sogBuffers.storage) {
+      this.sogBuffers.storage.indices.update(indices, 0, indices.byteLength);
+      this.sogBuffers.bufferVersions.bump(this.sogBuffers.storage.indices);
+    }
     this.initializeSortWorker(centers, indices);
   }
 }
