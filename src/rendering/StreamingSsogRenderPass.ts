@@ -96,6 +96,12 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   pendingReplacementNodes: number;
   finestSelectedNodes: number;
   coarseFallbackNodes: number;
+  fallbackReasonChildMissing: number;
+  fallbackReasonUploadBudgetExceeded: number;
+  fallbackReasonGpuPageUnavailable: number;
+  fallbackReasonMemoryPressure: number;
+  fallbackReasonBudgetThrottled: number;
+  fallbackReasonBreakdown: string;
   candidateChunks: number;
   frustumVisibleChunks: number;
   frustumCulledChunks: number;
@@ -231,6 +237,7 @@ class ChunkIndexBuffer {
 }
 
 const LOD_SELECT_INTERVAL_FRAMES = 15;
+const FALLBACK_EVICTION_REASON_TTL_FRAMES = 120;
 
 const chunkKey = (entry: SsogChunkEntry): string =>
   `${entry.fileIndex}:${entry.offset}:${entry.count}:${entry.lod}:${entry.nodeId}`;
@@ -577,11 +584,13 @@ class StreamingSsogRenderPass {
   private readonly chunkLoadAttempts = new Map<string, number>();
   private readonly chunkRetryReadyFrame = new Map<string, number>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
+  private readonly finestLodByNode = new Map<number, number>();
   private readonly entryKeys: string[];
   private readonly selectedKeys = new Set<string>();
   private readonly desiredKeys = new Set<string>();
   private readonly prefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
+  private readonly recentlyEvictedKeyFrames = new Map<string, number>();
   private readonly visibleEntryIndices = new ChunkIndexBuffer();
   private readonly prefetchFrustumEntryIndices = new ChunkIndexBuffer();
   private readonly nearPrefetchEntryIndices = new ChunkIndexBuffer();
@@ -663,6 +672,11 @@ class StreamingSsogRenderPass {
   private pendingReplacementNodes = 0;
   private finestSelectedNodes = 0;
   private coarseFallbackNodes = 0;
+  private fallbackReasonChildMissing = 0;
+  private fallbackReasonUploadBudgetExceeded = 0;
+  private fallbackReasonGpuPageUnavailable = 0;
+  private fallbackReasonMemoryPressure = 0;
+  private fallbackReasonBudgetThrottled = 0;
   private candidateChunks = 0;
   private frustumVisibleChunks = 0;
   private frustumCulledChunks = 0;
@@ -682,7 +696,13 @@ class StreamingSsogRenderPass {
     this.debugBounds = new SsogDebugBounds(scene);
     this.entryKeys = entries.map((entry) => chunkKey(entry));
     this.prefetchEntryMarks = new Uint32Array(entries.length);
-    entries.forEach((entry, index) => this.entriesByKey.set(this.entryKeys[index], entry));
+    entries.forEach((entry, index) => {
+      this.entriesByKey.set(this.entryKeys[index], entry);
+      const finestLod = this.finestLodByNode.get(entry.nodeId);
+      if (finestLod === undefined || entry.lod < finestLod) {
+        this.finestLodByNode.set(entry.nodeId, entry.lod);
+      }
+    });
     const finestEntries = entries.filter((entry) => entry.lod === 0);
     this.sourceSplats = (finestEntries.length > 0 ? finestEntries : entries).reduce(
       (sum, entry) => sum + entry.count,
@@ -1148,6 +1168,18 @@ class StreamingSsogRenderPass {
       pendingReplacementNodes: this.pendingReplacementNodes,
       finestSelectedNodes: this.finestSelectedNodes,
       coarseFallbackNodes: this.coarseFallbackNodes,
+      fallbackReasonChildMissing: this.fallbackReasonChildMissing,
+      fallbackReasonUploadBudgetExceeded: this.fallbackReasonUploadBudgetExceeded,
+      fallbackReasonGpuPageUnavailable: this.fallbackReasonGpuPageUnavailable,
+      fallbackReasonMemoryPressure: this.fallbackReasonMemoryPressure,
+      fallbackReasonBudgetThrottled: this.fallbackReasonBudgetThrottled,
+      fallbackReasonBreakdown: [
+        this.fallbackReasonChildMissing > 0 ? `child_missing:${this.fallbackReasonChildMissing}` : "",
+        this.fallbackReasonUploadBudgetExceeded > 0 ? `upload_budget:${this.fallbackReasonUploadBudgetExceeded}` : "",
+        this.fallbackReasonGpuPageUnavailable > 0 ? `gpu_page:${this.fallbackReasonGpuPageUnavailable}` : "",
+        this.fallbackReasonMemoryPressure > 0 ? `memory_pressure:${this.fallbackReasonMemoryPressure}` : "",
+        this.fallbackReasonBudgetThrottled > 0 ? `budget_throttled:${this.fallbackReasonBudgetThrottled}` : "",
+      ].filter(Boolean).join(", "),
       candidateChunks: this.candidateChunks,
       frustumVisibleChunks: this.frustumVisibleChunks,
       frustumCulledChunks: this.frustumCulledChunks,
@@ -1286,6 +1318,9 @@ class StreamingSsogRenderPass {
       }
     }
     this.coarseFallbackNodes = this.coarseFallbackNodeIds.size;
+
+    this.updateFallbackReasonStats(stableSelected, selection.selectedSplats);
+
     this.prefetchKeys.clear();
     prefetchSelection.selected.forEach((item) => {
       if (!this.selectedKeys.has(item.key)) {
@@ -1835,6 +1870,7 @@ class StreamingSsogRenderPass {
       this.gpuPagePool.freeChunk(key);
       this.gpuLoaded.delete(key);
       this.debugBounds.dispose(key);
+      this.recentlyEvictedKeyFrames.set(key, this.generation);
       this.evictedChunks++;
       evictedChunks++;
     }
@@ -1927,6 +1963,52 @@ class StreamingSsogRenderPass {
       return 3;
     }
     return 4;
+  }
+
+  private updateFallbackReasonStats(stableSelected: SelectedSsogItem[], selectedSplats: number): void {
+    this.fallbackReasonChildMissing = 0;
+    this.fallbackReasonUploadBudgetExceeded = 0;
+    this.fallbackReasonGpuPageUnavailable = 0;
+    this.fallbackReasonMemoryPressure = 0;
+    this.fallbackReasonBudgetThrottled = 0;
+
+    const evictionReasonCutoff = this.generation - FALLBACK_EVICTION_REASON_TTL_FRAMES;
+    for (const [key, frame] of this.recentlyEvictedKeyFrames) {
+      if (frame < evictionReasonCutoff) {
+        this.recentlyEvictedKeyFrames.delete(key);
+      }
+    }
+
+    for (const nodeId of this.coarseFallbackNodeIds) {
+      const desiredItem = this.stableSelectedByNode.get(nodeId);
+      if (!desiredItem || this.gpuLoaded.has(desiredItem.key)) {
+        continue;
+      }
+
+      const desiredKey = desiredItem.key;
+      if (this.decodedUploadQueue.has(desiredKey)) {
+        this.fallbackReasonUploadBudgetExceeded++;
+      } else if (this.recentlyEvictedKeyFrames.has(desiredKey)) {
+        this.fallbackReasonMemoryPressure++;
+      } else if (this.decodedCache.has(desiredKey)) {
+        this.fallbackReasonGpuPageUnavailable++;
+      } else {
+        this.fallbackReasonChildMissing++;
+      }
+    }
+
+    const budgetBound =
+      Number.isFinite(this.splatBudget) && selectedSplats >= Math.max(1, this.splatBudget * this.lodUnderfillLimit);
+    if (!budgetBound) {
+      return;
+    }
+
+    for (const item of stableSelected) {
+      const finestLod = this.finestLodByNode.get(item.nodeId);
+      if (finestLod !== undefined && item.lod > finestLod) {
+        this.fallbackReasonBudgetThrottled++;
+      }
+    }
   }
 
   private getCoarsestEntryForNode(nodeId: number): SsogChunkEntry | undefined {
