@@ -2,6 +2,7 @@ import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Nullable } from "@babylonjs/core/types";
 
+import type { GpuBufferWriter } from "../rendering/GpuBufferWriter";
 import type { SogPackedData } from "./SplatAsset";
 
 type SogStorageBuffers = {
@@ -44,7 +45,10 @@ class SogBuffers {
   private readonly dcColorData: Float32Array;
   private readonly colorData: Float32Array;
 
-  constructor(engine: unknown, readonly packed: SogPackedData) {
+  private readonly writer: GpuBufferWriter | undefined;
+
+  constructor(engine: unknown, readonly packed: SogPackedData, writer?: GpuBufferWriter) {
+    this.writer = writer;
     this.indices = new Uint32Array(packed.numSplats);
     for (let i = 0; i < this.indices.length; i++) {
       this.indices[i] = i;
@@ -89,6 +93,9 @@ class SogBuffers {
 
   private createStorageBuffers(engine: WebGPUEngine): SogStorageBuffers {
     const make = (name: string, data: Uint32Array | Float32Array) => {
+      if (this.writer) {
+        return this.writer.createStorageBufferWithFallback(name, data);
+      }
       const buffer = new StorageBuffer(engine, data.byteLength, undefined, name);
       buffer.update(data);
       return buffer;

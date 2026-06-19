@@ -252,6 +252,17 @@ class ViewerDebugStats {
       gpuPagePoolPressure?: number;
       gpuPageEvictedChunks?: number;
       gpuPageEvictedPages?: number;
+      gpuBufferWriterTotalUploadBytes?: number;
+      gpuBufferWriterTotalUploadCount?: number;
+      gpuBufferWriterTotalErrorCount?: number;
+      gpuBufferWriterTotalFallbackCount?: number;
+      gpuBufferWriterScratchReuseCount?: number;
+      gpuBufferWriterArenaBufferCount?: number;
+      gpuBufferWriterArenaTotalBytes?: number;
+      gpuBufferWriterFrameUploadBytes?: number;
+      gpuBufferWriterFrameUploadCount?: number;
+      gpuBufferWriterFrameErrorCount?: number;
+      gpuBufferWriterLastErrorMessage?: string;
       maxPendingLoads?: number;
       prefetchMultiplier?: number;
       chunkSortMode?: string;
@@ -461,6 +472,15 @@ class ViewerDebugStats {
         : "",
       streamingStats.uploadBudgetBytes !== undefined
         ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)}/${formatCount(streamingStats.attemptedUploadChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / skipped ${formatCount(streamingStats.skippedUploadChunksThisFrame ?? 0)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)} (${formatBytes(streamingStats.deferredUploadBytes ?? 0)})`
+        : "",
+      streamingStats.gpuBufferWriterTotalUploadCount !== undefined
+        ? `SSOG GPU writer: frame ${formatCount(streamingStats.gpuBufferWriterFrameUploadCount ?? 0)} uploads / ${formatBytes(streamingStats.gpuBufferWriterFrameUploadBytes ?? 0)} / total ${formatCount(streamingStats.gpuBufferWriterTotalUploadCount ?? 0)} uploads ${formatBytes(streamingStats.gpuBufferWriterTotalUploadBytes ?? 0)} / fallback ${formatCount(streamingStats.gpuBufferWriterTotalFallbackCount ?? 0)} / errors ${formatCount(streamingStats.gpuBufferWriterTotalErrorCount ?? 0)}`
+        : "",
+      streamingStats.gpuBufferWriterArenaBufferCount !== undefined && streamingStats.gpuBufferWriterArenaBufferCount > 0
+        ? `SSOG GPU writer scratch: ${formatCount(streamingStats.gpuBufferWriterArenaBufferCount)} buffers / ${formatBytes(streamingStats.gpuBufferWriterArenaTotalBytes ?? 0)} / reuse ${formatCount(streamingStats.gpuBufferWriterScratchReuseCount ?? 0)}`
+        : "",
+      streamingStats.gpuBufferWriterLastErrorMessage
+        ? `SSOG GPU writer error: ${streamingStats.gpuBufferWriterLastErrorMessage}`
         : "",
       streamingStats.chunkSortMode !== undefined
         ? `SSOG chunk sort: ${streamingStats.chunkSortMode} / scale ${formatCount(streamingStats.chunkSortScale ?? 0)} / hysteresis ${formatCount(streamingStats.chunkSortHysteresis ?? 0)}`

@@ -1,6 +1,7 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Plane } from "@babylonjs/core/Maths/math.plane";
 import type { Scene } from "@babylonjs/core/scene";
+import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
 import { SogBuffers } from "../splat/SogBuffers";
@@ -13,6 +14,7 @@ import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRende
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
+import { GpuBufferWriter } from "./GpuBufferWriter";
 
 type StreamingSsogRenderStats = PackedSogRenderStats & {
   qualityPreset: SsogQualityPreset;
@@ -57,6 +59,17 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuResidentSplats: number;
   cpuEvictedChunks: number;
   reuploadedChunks: number;
+  gpuBufferWriterTotalUploadBytes: number;
+  gpuBufferWriterTotalUploadCount: number;
+  gpuBufferWriterTotalErrorCount: number;
+  gpuBufferWriterTotalFallbackCount: number;
+  gpuBufferWriterScratchReuseCount: number;
+  gpuBufferWriterArenaBufferCount: number;
+  gpuBufferWriterArenaTotalBytes: number;
+  gpuBufferWriterFrameUploadBytes: number;
+  gpuBufferWriterFrameUploadCount: number;
+  gpuBufferWriterFrameErrorCount: number;
+  gpuBufferWriterLastErrorMessage: string;
   maxPendingLoads: number;
   prefetchMultiplier: number;
   chunkSortMode: SsogChunkSortMode;
@@ -597,6 +610,7 @@ class StreamingSsogRenderPass {
   private readonly cacheSplatMultiplier = getSsogCacheSplatMultiplier();
   private readonly cacheSplatLimit: number;
   private readonly gpuPagePool: SsogGpuPagePool;
+  private readonly gpuBufferWriter: GpuBufferWriter | undefined;
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 220);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
@@ -686,6 +700,8 @@ class StreamingSsogRenderPass {
       gpuPageCapacitySplats,
       Math.max(1, Math.ceil(this.cacheSplatLimit / gpuPageCapacitySplats)),
     );
+    const engine = this.scene.getEngine();
+    this.gpuBufferWriter = engine instanceof WebGPUEngine ? new GpuBufferWriter(engine, "ssog-streaming") : undefined;
     this.updateObserver = () => this.updateLodSelection();
     scene.registerBeforeRender(this.updateObserver);
     this.updateLodSelection(true);
@@ -703,6 +719,7 @@ class StreamingSsogRenderPass {
     this.disposePackedGlobalRuntime();
     this.disposeExpandedRuntime();
     this.debugBounds.disposeAll();
+    this.gpuBufferWriter?.dispose();
     this.gpuLoaded.clear();
     this.decodedCache.clear();
     this.pending.clear();
@@ -756,6 +773,7 @@ class StreamingSsogRenderPass {
     const mergedKeys = this.getMergedKeys();
     const packedMetadata = this.getActivePackedMetadataStats();
     const gpuPagePoolStats = this.gpuPagePool.getStats();
+    const gpuBufferWriterStats = this.gpuBufferWriter?.getStats();
     const selectedKeys = Array.from(this.selectedKeys);
     const gpuActiveChunks = Array.from(this.gpuLoaded.values()).filter((gpu) => gpu.active).length;
     const activeStats = [
@@ -1092,6 +1110,17 @@ class StreamingSsogRenderPass {
       gpuResidentSplats: gpuPagePoolStats.residentSplats,
       cpuEvictedChunks: this.cpuEvictedChunks,
       reuploadedChunks: this.reuploadedChunks,
+      gpuBufferWriterTotalUploadBytes: gpuBufferWriterStats?.totalUploadBytes ?? 0,
+      gpuBufferWriterTotalUploadCount: gpuBufferWriterStats?.totalUploadCount ?? 0,
+      gpuBufferWriterTotalErrorCount: gpuBufferWriterStats?.totalErrorCount ?? 0,
+      gpuBufferWriterTotalFallbackCount: gpuBufferWriterStats?.totalFallbackCount ?? 0,
+      gpuBufferWriterScratchReuseCount: gpuBufferWriterStats?.scratchReuseCount ?? 0,
+      gpuBufferWriterArenaBufferCount: gpuBufferWriterStats?.arenaBufferCount ?? 0,
+      gpuBufferWriterArenaTotalBytes: gpuBufferWriterStats?.arenaTotalBytes ?? 0,
+      gpuBufferWriterFrameUploadBytes: gpuBufferWriterStats?.frameUploadBytes ?? 0,
+      gpuBufferWriterFrameUploadCount: gpuBufferWriterStats?.frameUploadCount ?? 0,
+      gpuBufferWriterFrameErrorCount: gpuBufferWriterStats?.frameErrorCount ?? 0,
+      gpuBufferWriterLastErrorMessage: gpuBufferWriterStats?.lastErrorMessage ?? "",
       maxPendingLoads: this.maxPendingLoads,
       prefetchMultiplier: this.prefetchMultiplier,
       chunkSortMode: this.chunkSortMode,
@@ -1132,6 +1161,7 @@ class StreamingSsogRenderPass {
 
   private updateLodSelection(force = false): void {
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
+    this.gpuBufferWriter?.beginFrame();
     force = this.processRendererCommandQueue() > 0 || force;
     this.attemptedUploadChunksThisFrame = 0;
     this.uploadedBytesThisFrame = 0;
@@ -1751,7 +1781,7 @@ class StreamingSsogRenderPass {
       return;
     }
 
-    const buffers = new SogBuffers(this.scene.getEngine(), chunk.data);
+    const buffers = new SogBuffers(this.scene.getEngine(), chunk.data, this.gpuBufferWriter);
     const pass = new PackedSogRenderPass(this.scene, buffers);
     pass.setVizMode(this.activeVizMode);
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
