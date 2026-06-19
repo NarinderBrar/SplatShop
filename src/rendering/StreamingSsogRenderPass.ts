@@ -99,6 +99,7 @@ type RendererCommand =
   | {
       type: "chunkLoadFailed";
       key: string;
+      entry: SsogChunkEntry;
       error: unknown;
     }
   | {
@@ -133,6 +134,7 @@ type SsogGlobalSortMode = "off" | "packed" | "expanded";
 type SsogChunkSortMode = "near" | "center" | "far";
 type SsogQualityPreset = "full" | "balanced" | "fast";
 type SsogDeviceTier = "low" | "standard" | "high";
+type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4;
 
 type SsogQualityProfile = {
   preset: SsogQualityPreset;
@@ -508,6 +510,8 @@ class StreamingSsogRenderPass {
   private readonly rendererCommands: RendererCommand[] = [];
   private readonly rendererCommandIndices = new Map<string, number>();
   private readonly queued = new Map<string, SsogChunkEntry>();
+  private readonly chunkLoadAttempts = new Map<string, number>();
+  private readonly chunkRetryReadyFrame = new Map<string, number>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
   private readonly entryKeys: string[];
   private readonly selectedKeys = new Set<string>();
@@ -641,6 +645,8 @@ class StreamingSsogRenderPass {
     this.rendererCommands.length = 0;
     this.rendererCommandIndices.clear();
     this.queued.clear();
+    this.chunkLoadAttempts.clear();
+    this.chunkRetryReadyFrame.clear();
     this.selectedKeys.clear();
     this.desiredKeys.clear();
     this.prefetchKeys.clear();
@@ -1329,6 +1335,8 @@ class StreamingSsogRenderPass {
         if (this.loaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
           return false;
         }
+        this.chunkLoadAttempts.delete(command.key);
+        this.chunkRetryReadyFrame.delete(command.key);
         this.lastChunkLoadMs = command.loadMs;
         this.decodedUploadQueue.set(command.key, {
           key: command.key,
@@ -1339,11 +1347,12 @@ class StreamingSsogRenderPass {
         return true;
       case "chunkLoadFailed":
         console.warn(`Failed to load SSOG chunk ${command.key}.`, command.error);
+        this.scheduleChunkRetry(command.key, command.entry);
         return true;
       case "chunkLoadSettled":
         this.pending.delete(command.key);
         this.pendingEntries.delete(command.key);
-        if (!this.loaded.has(command.key) && !this.decodedUploadQueue.has(command.key)) {
+        if (!this.loaded.has(command.key) && !this.decodedUploadQueue.has(command.key) && !this.queued.has(command.key)) {
           this.debugBounds.dispose(command.key);
         }
         this.pumpChunkQueue();
@@ -1363,13 +1372,51 @@ class StreamingSsogRenderPass {
     }
   }
 
+  private getChunkLoadPriority(key: string): SsogChunkLoadPriority {
+    if (this.fallbackKeys.has(key)) {
+      return 0;
+    }
+    if (this.selectedKeys.has(key)) {
+      return 1;
+    }
+    if (this.desiredKeys.has(key)) {
+      return 2;
+    }
+    if (this.prefetchKeys.has(key)) {
+      return 3;
+    }
+    return 4;
+  }
+
+  private isRetryReady(key: string): boolean {
+    return (this.chunkRetryReadyFrame.get(key) ?? 0) <= this.generation;
+  }
+
+  private scheduleChunkRetry(key: string, entry: SsogChunkEntry): void {
+    if (this.loaded.has(key) || this.decodedUploadQueue.has(key) || this.queued.has(key)) {
+      return;
+    }
+
+    const attempt = this.chunkLoadAttempts.get(key) ?? 0;
+    if (attempt >= 3) {
+      this.chunkLoadAttempts.delete(key);
+      this.chunkRetryReadyFrame.delete(key);
+      return;
+    }
+
+    this.chunkLoadAttempts.set(key, attempt + 1);
+    this.chunkRetryReadyFrame.set(key, this.generation + Math.min(60, 2 ** attempt));
+    this.queued.set(key, entry);
+  }
+
   private pumpChunkQueue(): void {
     if (this.disposed) {
       return;
     }
 
     while (this.pending.size < this.maxPendingLoads && this.queued.size > 0) {
-      const next = this.takeNextQueuedChunk();
+      const reserveUrgentSlot = this.maxPendingLoads > 1 && this.pending.size >= this.maxPendingLoads - 1;
+      const next = this.takeNextQueuedChunk(reserveUrgentSlot);
       if (!next) {
         return;
       }
@@ -1378,31 +1425,43 @@ class StreamingSsogRenderPass {
     }
   }
 
-  private takeNextQueuedChunk(): SsogChunkEntry | undefined {
+  private takeNextQueuedChunk(urgentOnly: boolean): SsogChunkEntry | undefined {
+    let bestKey = "";
+    let bestEntry: SsogChunkEntry | undefined;
+    let bestPriority: SsogChunkLoadPriority = 4;
+    let bestCount = Number.POSITIVE_INFINITY;
+
     for (const [key, entry] of this.queued) {
-      if (this.fallbackKeys.has(key)) {
+      const priority = this.getChunkLoadPriority(key);
+      if (priority >= 4) {
         this.queued.delete(key);
-        return entry;
+        this.chunkLoadAttempts.delete(key);
+        this.chunkRetryReadyFrame.delete(key);
+        this.debugBounds.dispose(key);
+        continue;
+      }
+
+      if (urgentOnly && priority > 1) {
+        continue;
+      }
+      if (!this.isRetryReady(key)) {
+        continue;
+      }
+
+      if (priority < bestPriority || (priority === bestPriority && entry.count < bestCount)) {
+        bestKey = key;
+        bestEntry = entry;
+        bestPriority = priority;
+        bestCount = entry.count;
       }
     }
 
-    for (const [key, entry] of this.queued) {
-      if (this.selectedKeys.has(key)) {
-        this.queued.delete(key);
-        return entry;
-      }
+    if (!bestEntry) {
+      return undefined;
     }
 
-    for (const [key, entry] of this.queued) {
-      if (this.prefetchKeys.has(key)) {
-        this.queued.delete(key);
-        return entry;
-      }
-      this.queued.delete(key);
-      this.debugBounds.dispose(key);
-    }
-
-    return undefined;
+    this.queued.delete(bestKey);
+    return bestEntry;
   }
 
   private startChunkLoad(entry: SsogChunkEntry): void {
@@ -1438,6 +1497,7 @@ class StreamingSsogRenderPass {
         this.enqueueRendererCommand({
           type: "chunkLoadFailed",
           key,
+          entry,
           error,
         });
       })
