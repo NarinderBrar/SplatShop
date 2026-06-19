@@ -257,9 +257,12 @@ class ViewerDebugStats {
       lastChunkLoadMs?: number;
       lastChunkUploadMs?: number;
       uploadBudgetBytes?: number;
+      attemptedUploadChunksThisFrame?: number;
       uploadedBytesThisFrame?: number;
       uploadedChunksThisFrame?: number;
+      skippedUploadChunksThisFrame?: number;
       deferredUploadChunks?: number;
+      deferredUploadBytes?: number;
       lodTransitionCount?: number;
       pendingReplacementNodes?: number;
       finestSelectedNodes?: number;
@@ -443,7 +446,7 @@ class ViewerDebugStats {
         ? `SSOG loading: max pending ${formatCount(streamingStats.maxPendingLoads)} / prefetch ${streamingStats.prefetchMultiplier?.toFixed(2) ?? "0.00"}x`
         : "",
       streamingStats.uploadBudgetBytes !== undefined
-        ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)}`
+        ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)}/${formatCount(streamingStats.attemptedUploadChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / skipped ${formatCount(streamingStats.skippedUploadChunksThisFrame ?? 0)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)} (${formatBytes(streamingStats.deferredUploadBytes ?? 0)})`
         : "",
       streamingStats.chunkSortMode !== undefined
         ? `SSOG chunk sort: ${streamingStats.chunkSortMode} / scale ${formatCount(streamingStats.chunkSortScale ?? 0)} / hysteresis ${formatCount(streamingStats.chunkSortHysteresis ?? 0)}`

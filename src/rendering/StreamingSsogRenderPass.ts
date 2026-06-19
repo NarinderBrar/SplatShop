@@ -54,9 +54,12 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   lastChunkLoadMs: number;
   lastChunkUploadMs: number;
   uploadBudgetBytes: number;
+  attemptedUploadChunksThisFrame: number;
   uploadedBytesThisFrame: number;
   uploadedChunksThisFrame: number;
+  skippedUploadChunksThisFrame: number;
   deferredUploadChunks: number;
+  deferredUploadBytes: number;
   lodTransitionCount: number;
   pendingReplacementNodes: number;
   finestSelectedNodes: number;
@@ -86,6 +89,20 @@ type DecodedChunk = {
   entry: SsogChunkEntry;
   chunk: SsogPackedChunk;
   bytes: number;
+};
+
+type SsogUploadFrameDiagnostics = {
+  attemptedChunks: number;
+  uploadedChunks: number;
+  uploadedBytes: number;
+  skippedLoadedChunks: number;
+  deferredChunks: number;
+  deferredBytes: number;
+};
+
+type SsogUploadBudgetState = {
+  uploadedChunks: number;
+  uploadedBytes: number;
 };
 
 type RendererCommand =
@@ -588,9 +605,12 @@ class StreamingSsogRenderPass {
   private lastGlobalRuntimeRebuildFrame = Number.NEGATIVE_INFINITY;
   private lastChunkLoadMs = 0;
   private lastChunkUploadMs = 0;
+  private attemptedUploadChunksThisFrame = 0;
   private uploadedBytesThisFrame = 0;
   private uploadedChunksThisFrame = 0;
+  private skippedUploadChunksThisFrame = 0;
   private deferredUploadChunks = 0;
+  private deferredUploadBytes = 0;
   private lodTransitionCount = 0;
   private pendingReplacementNodes = 0;
   private finestSelectedNodes = 0;
@@ -1012,9 +1032,12 @@ class StreamingSsogRenderPass {
       lastChunkLoadMs: this.lastChunkLoadMs,
       lastChunkUploadMs: this.lastChunkUploadMs,
       uploadBudgetBytes: Number.isFinite(this.uploadBudgetBytes) ? this.uploadBudgetBytes : -1,
+      attemptedUploadChunksThisFrame: this.attemptedUploadChunksThisFrame,
       uploadedBytesThisFrame: this.uploadedBytesThisFrame,
       uploadedChunksThisFrame: this.uploadedChunksThisFrame,
+      skippedUploadChunksThisFrame: this.skippedUploadChunksThisFrame,
       deferredUploadChunks: this.deferredUploadChunks,
+      deferredUploadBytes: this.deferredUploadBytes,
       lodTransitionCount: this.lodTransitionCount,
       pendingReplacementNodes: this.pendingReplacementNodes,
       finestSelectedNodes: this.finestSelectedNodes,
@@ -1034,9 +1057,12 @@ class StreamingSsogRenderPass {
   private updateLodSelection(force = false): void {
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
     force = this.processRendererCommandQueue() > 0 || force;
+    this.attemptedUploadChunksThisFrame = 0;
     this.uploadedBytesThisFrame = 0;
     this.uploadedChunksThisFrame = 0;
+    this.skippedUploadChunksThisFrame = 0;
     this.deferredUploadChunks = this.decodedUploadQueue.size;
+    this.deferredUploadBytes = this.getDecodedUploadQueueBytes();
     force = this.processDecodedUploadQueue() > 0 || force;
 
     const camera = this.scene.activeCamera;
@@ -1524,32 +1550,74 @@ class StreamingSsogRenderPass {
     const queued = Array.from(this.decodedUploadQueue.values()).sort(
       (a, b) => this.getUploadPriority(a.key) - this.getUploadPriority(b.key) || a.bytes - b.bytes,
     );
-    let uploaded = 0;
-    let uploadedBytes = 0;
+    const diagnostics: SsogUploadFrameDiagnostics = {
+      attemptedChunks: 0,
+      uploadedChunks: 0,
+      uploadedBytes: 0,
+      skippedLoadedChunks: 0,
+      deferredChunks: 0,
+      deferredBytes: 0,
+    };
+    const budgetState: SsogUploadBudgetState = {
+      uploadedChunks: 0,
+      uploadedBytes: 0,
+    };
 
     for (const decoded of queued) {
-      if (this.loaded.has(decoded.key)) {
-        this.decodedUploadQueue.delete(decoded.key);
-        continue;
-      }
-
-      const wouldExceedBudget =
-        Number.isFinite(this.uploadBudgetBytes) && uploadedBytes + decoded.bytes > this.uploadBudgetBytes;
-      if (wouldExceedBudget && uploaded > 0) {
-        continue;
-      }
-
-      this.uploadDecodedChunk(decoded);
-      this.decodedUploadQueue.delete(decoded.key);
-      uploaded++;
-      uploadedBytes += decoded.bytes;
+      this.processDecodedUpload(decoded, budgetState, diagnostics);
     }
 
-    this.uploadedChunksThisFrame = uploaded;
-    this.uploadedBytesThisFrame = uploadedBytes;
-    this.deferredUploadChunks = this.decodedUploadQueue.size;
-    this.lastChunkUploadMs = uploaded > 0 ? performance.now() - uploadStart : 0;
-    return uploaded;
+    this.attemptedUploadChunksThisFrame = diagnostics.attemptedChunks;
+    this.uploadedChunksThisFrame = diagnostics.uploadedChunks;
+    this.uploadedBytesThisFrame = diagnostics.uploadedBytes;
+    this.skippedUploadChunksThisFrame = diagnostics.skippedLoadedChunks;
+    this.deferredUploadChunks = diagnostics.deferredChunks;
+    this.deferredUploadBytes = diagnostics.deferredBytes;
+    this.lastChunkUploadMs = diagnostics.uploadedChunks > 0 ? performance.now() - uploadStart : 0;
+    return diagnostics.uploadedChunks;
+  }
+
+  private processDecodedUpload(
+    decoded: DecodedChunk,
+    budgetState: SsogUploadBudgetState,
+    diagnostics: SsogUploadFrameDiagnostics,
+  ): void {
+    diagnostics.attemptedChunks++;
+
+    if (this.loaded.has(decoded.key)) {
+      this.decodedUploadQueue.delete(decoded.key);
+      diagnostics.skippedLoadedChunks++;
+      return;
+    }
+
+    if (this.shouldDeferDecodedUpload(decoded, budgetState)) {
+      diagnostics.deferredChunks++;
+      diagnostics.deferredBytes += decoded.bytes;
+      return;
+    }
+
+    this.writeDecodedChunkToGpu(decoded);
+    this.decodedUploadQueue.delete(decoded.key);
+    budgetState.uploadedChunks++;
+    budgetState.uploadedBytes += decoded.bytes;
+    diagnostics.uploadedChunks++;
+    diagnostics.uploadedBytes += decoded.bytes;
+  }
+
+  private shouldDeferDecodedUpload(decoded: DecodedChunk, budgetState: SsogUploadBudgetState): boolean {
+    return (
+      Number.isFinite(this.uploadBudgetBytes) &&
+      budgetState.uploadedChunks > 0 &&
+      budgetState.uploadedBytes + decoded.bytes > this.uploadBudgetBytes
+    );
+  }
+
+  private getDecodedUploadQueueBytes(): number {
+    let bytes = 0;
+    this.decodedUploadQueue.forEach((decoded) => {
+      bytes += decoded.bytes;
+    });
+    return bytes;
   }
 
   private getUploadPriority(key: string): number {
@@ -1568,7 +1636,7 @@ class StreamingSsogRenderPass {
     return 4;
   }
 
-  private uploadDecodedChunk(decoded: DecodedChunk): void {
+  private writeDecodedChunkToGpu(decoded: DecodedChunk): void {
     const { key, entry, chunk } = decoded;
     const buffers = new SogBuffers(this.scene.getEngine(), chunk.data);
     const pass = new PackedSogRenderPass(this.scene, buffers);
