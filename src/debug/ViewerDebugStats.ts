@@ -250,6 +250,8 @@ class ViewerDebugStats {
       gpuPagePoolOverflowChunks?: number;
       gpuPagePoolOverflowPages?: number;
       gpuPagePoolPressure?: number;
+      gpuPageEvictedChunks?: number;
+      gpuPageEvictedPages?: number;
       maxPendingLoads?: number;
       prefetchMultiplier?: number;
       chunkSortMode?: string;
@@ -452,7 +454,7 @@ class ViewerDebugStats {
         ? `SSOG cache pressure: chunks ${(streamingStats.cacheChunkPressure * 100).toFixed(0)}% / splats ${((streamingStats.cacheSplatPressure ?? 0) * 100).toFixed(0)}% / selected ${(streamingStats.selectedCacheRatio ?? 0).toFixed(2)}x`
         : "",
       streamingStats.gpuPagePoolTotalPages !== undefined
-        ? `SSOG GPU pages: ${formatCount(streamingStats.gpuPagePoolUsedPages ?? 0)}/${formatCount(streamingStats.gpuPagePoolTotalPages)} used / ${formatCount(streamingStats.gpuPagePoolAllocatedChunks ?? 0)} chunks / ${formatCount(streamingStats.gpuPagePoolResidentSplats ?? 0)} splats / page ${formatCount(streamingStats.gpuPagePoolPageCapacitySplats ?? 0)} / pressure ${((streamingStats.gpuPagePoolPressure ?? 0) * 100).toFixed(0)}%${(streamingStats.gpuPagePoolOverflowPages ?? 0) > 0 ? ` / overflow ${formatCount(streamingStats.gpuPagePoolOverflowChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPagePoolOverflowPages ?? 0)} pages` : ""}`
+        ? `SSOG GPU pages: ${formatCount(streamingStats.gpuPagePoolUsedPages ?? 0)}/${formatCount(streamingStats.gpuPagePoolTotalPages)} used / ${formatCount(streamingStats.gpuPagePoolAllocatedChunks ?? 0)} chunks / ${formatCount(streamingStats.gpuPagePoolResidentSplats ?? 0)} splats / page ${formatCount(streamingStats.gpuPagePoolPageCapacitySplats ?? 0)} / pressure ${((streamingStats.gpuPagePoolPressure ?? 0) * 100).toFixed(0)}% / evicted ${formatCount(streamingStats.gpuPageEvictedChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPageEvictedPages ?? 0)} pages${(streamingStats.gpuPagePoolOverflowPages ?? 0) > 0 ? ` / overflow ${formatCount(streamingStats.gpuPagePoolOverflowChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPagePoolOverflowPages ?? 0)} pages` : ""}`
         : "",
       streamingStats.maxPendingLoads !== undefined
         ? `SSOG loading: max pending ${formatCount(streamingStats.maxPendingLoads)} / prefetch ${streamingStats.prefetchMultiplier?.toFixed(2) ?? "0.00"}x`

@@ -48,6 +48,8 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuPagePoolOverflowChunks: number;
   gpuPagePoolOverflowPages: number;
   gpuPagePoolPressure: number;
+  gpuPageEvictedChunks: number;
+  gpuPageEvictedPages: number;
   maxPendingLoads: number;
   prefetchMultiplier: number;
   chunkSortMode: SsogChunkSortMode;
@@ -636,6 +638,8 @@ class StreamingSsogRenderPass {
   private prefetchCandidateChunks = 0;
   private prefetchFrustumChunks = 0;
   private nearPrefetchChunks = 0;
+  private gpuPageEvictedChunks = 0;
+  private gpuPageEvictedPages = 0;
   private debugChunkBoundsVisible = false;
   private debugBounds!: SsogDebugBounds;
 
@@ -1054,6 +1058,8 @@ class StreamingSsogRenderPass {
       gpuPagePoolOverflowChunks: gpuPagePoolStats.overflowChunks,
       gpuPagePoolOverflowPages: gpuPagePoolStats.overflowPages,
       gpuPagePoolPressure: gpuPagePoolStats.pressure,
+      gpuPageEvictedChunks: this.gpuPageEvictedChunks,
+      gpuPageEvictedPages: this.gpuPageEvictedPages,
       maxPendingLoads: this.maxPendingLoads,
       prefetchMultiplier: this.prefetchMultiplier,
       chunkSortMode: this.chunkSortMode,
@@ -1700,27 +1706,31 @@ class StreamingSsogRenderPass {
   }
 
   private evictInactiveChunks(): void {
-    const globalRuntimeReady = !!this.expandedRuntime || !!this.packedGlobalRuntime;
+    const initialPageStats = this.gpuPagePool.getStats();
+    const pagePressure = initialPageStats.pressure >= 1 || initialPageStats.overflowPages > 0;
     const inactive = Array.from(this.loaded.entries())
       .filter(([key, runtime]) => {
-        const protectPrefetch =
-          this.prefetchKeys.has(key) && (!globalRuntimeReady || this.qualityPreset !== "fast");
-        const protectedChunk =
-          runtime.active || this.selectedKeys.has(key) || protectPrefetch;
+        const protectedChunk = runtime.active || this.selectedKeys.has(key) || this.fallbackKeys.has(key);
         const oldEnough = this.generation - runtime.lastUsedFrame >= this.evictAfterFrames;
-        return !protectedChunk && oldEnough;
+        return !protectedChunk && (oldEnough || pagePressure);
       })
       .sort((a, b) => {
-        const prefetchA = this.prefetchKeys.has(a[0]) ? 1 : 0;
-        const prefetchB = this.prefetchKeys.has(b[0]) ? 1 : 0;
-        return prefetchA - prefetchB || a[1].lastUsedFrame - b[1].lastUsedFrame;
+        const priorityA = this.getGpuPageEvictionPriority(a[0]);
+        const priorityB = this.getGpuPageEvictionPriority(b[0]);
+        return priorityA - priorityB || a[1].lastUsedFrame - b[1].lastUsedFrame;
       });
 
+    let evictedChunks = 0;
+    let evictedPages = 0;
     for (const [key, runtime] of inactive) {
-      if (this.loaded.size <= this.cacheChunkLimit && this.cacheSplats <= this.cacheSplatLimit) {
+      const pageStats = this.gpuPagePool.getStats();
+      const overCache = this.loaded.size > this.cacheChunkLimit || this.cacheSplats > this.cacheSplatLimit;
+      const overPages = pageStats.pressure >= 1 || pageStats.overflowPages > 0;
+      if (!overCache && !overPages) {
         break;
       }
 
+      evictedPages += runtime.pageAllocation.pages.length + runtime.pageAllocation.overflowPages;
       runtime.pass.dispose();
       runtime.buffers.dispose();
       this.gpuPagePool.freeChunk(key);
@@ -1728,6 +1738,13 @@ class StreamingSsogRenderPass {
       this.loaded.delete(key);
       this.debugBounds.dispose(key);
       this.evictedChunks++;
+      evictedChunks++;
+    }
+
+    if (evictedPages > 0) {
+      this.gpuPageEvictedChunks += evictedChunks;
+      this.gpuPageEvictedPages += evictedPages;
+      this.repackGpuPagePool();
     }
 
     if (this.globalSortMode === "packed") {
@@ -1737,6 +1754,45 @@ class StreamingSsogRenderPass {
     } else {
       this.updateMergedRuntime();
     }
+  }
+
+  private getGpuPageEvictionPriority(key: string): number {
+    if (this.prefetchKeys.has(key)) {
+      return 0;
+    }
+    if (!this.desiredKeys.has(key)) {
+      return 1;
+    }
+    return 2;
+  }
+
+  private repackGpuPagePool(): void {
+    const residents = Array.from(this.loaded.entries()).sort((a, b) => {
+      const priorityA = this.getGpuPageRepackPriority(a[0]);
+      const priorityB = this.getGpuPageRepackPriority(b[0]);
+      return priorityA - priorityB || b[1].lastUsedFrame - a[1].lastUsedFrame;
+    });
+
+    this.gpuPagePool.clear();
+    for (const [key, runtime] of residents) {
+      runtime.pageAllocation = this.gpuPagePool.allocateChunk(key, runtime.chunk.data.numSplats);
+    }
+  }
+
+  private getGpuPageRepackPriority(key: string): number {
+    if (this.fallbackKeys.has(key)) {
+      return 0;
+    }
+    if (this.selectedKeys.has(key)) {
+      return 1;
+    }
+    if (this.desiredKeys.has(key)) {
+      return 2;
+    }
+    if (this.prefetchKeys.has(key)) {
+      return 3;
+    }
+    return 4;
   }
 
   private getCoarsestEntryForNode(nodeId: number): SsogChunkEntry | undefined {
