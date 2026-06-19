@@ -12,6 +12,7 @@ import { SsogDebugBounds } from "../debug/SsogDebugBounds";
 import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRenderPass";
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
+import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 
 type StreamingSsogRenderStats = PackedSogRenderStats & {
   qualityPreset: SsogQualityPreset;
@@ -38,6 +39,15 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   requestedSplats: number;
   cacheChunkLimit: number;
   cacheSplatLimit: number;
+  gpuPagePoolPageCapacitySplats: number;
+  gpuPagePoolTotalPages: number;
+  gpuPagePoolUsedPages: number;
+  gpuPagePoolFreePages: number;
+  gpuPagePoolAllocatedChunks: number;
+  gpuPagePoolResidentSplats: number;
+  gpuPagePoolOverflowChunks: number;
+  gpuPagePoolOverflowPages: number;
+  gpuPagePoolPressure: number;
   maxPendingLoads: number;
   prefetchMultiplier: number;
   chunkSortMode: SsogChunkSortMode;
@@ -82,6 +92,7 @@ type LoadedChunk = {
   pass: PackedSogRenderPass;
   active: boolean;
   lastUsedFrame: number;
+  pageAllocation: SsogGpuPageAllocation;
 };
 
 type DecodedChunk = {
@@ -485,6 +496,9 @@ const getSsogUploadBudgetBytes = (): number => {
   return Math.floor(getPositiveNumberParam("ssogUploadBudgetBytes", getSsogQualityProfile().uploadBudgetBytes));
 };
 
+const getSsogGpuPageCapacitySplats = (): number =>
+  Math.max(1, Math.floor(getPositiveNumberParam("ssogGpuPageSplats", 65_536)));
+
 const getSogPackedDataByteLength = (data: SogPackedData): number => {
   const shNBytes = data.shN
     ? data.shN.centroids.byteLength + data.shN.labels.byteLength + data.shN.codebook.byteLength
@@ -562,6 +576,7 @@ class StreamingSsogRenderPass {
   private readonly evictAfterFrames = getSsogEvictAfterFrames();
   private readonly cacheSplatMultiplier = getSsogCacheSplatMultiplier();
   private readonly cacheSplatLimit: number;
+  private readonly gpuPagePool: SsogGpuPagePool;
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 220);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
@@ -642,6 +657,11 @@ class StreamingSsogRenderPass {
     this.cacheSplatLimit = Math.floor(
       getPositiveNumberParam("ssogCacheSplats", Math.max(this.splatBudget * this.cacheSplatMultiplier, 1)),
     );
+    const gpuPageCapacitySplats = getSsogGpuPageCapacitySplats();
+    this.gpuPagePool = new SsogGpuPagePool(
+      gpuPageCapacitySplats,
+      Math.max(1, Math.ceil(this.cacheSplatLimit / gpuPageCapacitySplats)),
+    );
     this.updateObserver = () => this.updateLodSelection();
     scene.registerBeforeRender(this.updateObserver);
     this.updateLodSelection(true);
@@ -653,6 +673,7 @@ class StreamingSsogRenderPass {
     this.loaded.forEach((runtime) => {
       runtime.pass.dispose();
       runtime.buffers.dispose();
+      this.gpuPagePool.freeChunk(chunkKey(runtime.entry));
     });
     this.disposeMergedRuntimes();
     this.disposePackedGlobalRuntime();
@@ -671,6 +692,7 @@ class StreamingSsogRenderPass {
     this.desiredKeys.clear();
     this.prefetchKeys.clear();
     this.fallbackKeys.clear();
+    this.gpuPagePool.clear();
   }
 
   setDebugChunkBoundsVisible(visible: boolean): void {
@@ -704,6 +726,7 @@ class StreamingSsogRenderPass {
   getStats(): StreamingSsogRenderStats {
     const mergedKeys = this.getMergedKeys();
     const packedMetadata = this.getActivePackedMetadataStats();
+    const gpuPagePoolStats = this.gpuPagePool.getStats();
     const selectedKeys = Array.from(this.selectedKeys);
     const loadedActiveChunks = Array.from(this.loaded.values()).filter((runtime) => runtime.active).length;
     const activeStats = [
@@ -1022,6 +1045,15 @@ class StreamingSsogRenderPass {
       requestedSplats: this.requestedSplats,
       cacheChunkLimit: Number.isFinite(this.cacheChunkLimit) ? this.cacheChunkLimit : -1,
       cacheSplatLimit: this.cacheSplatLimit,
+      gpuPagePoolPageCapacitySplats: gpuPagePoolStats.pageCapacitySplats,
+      gpuPagePoolTotalPages: gpuPagePoolStats.totalPages,
+      gpuPagePoolUsedPages: gpuPagePoolStats.usedPages,
+      gpuPagePoolFreePages: gpuPagePoolStats.freePages,
+      gpuPagePoolAllocatedChunks: gpuPagePoolStats.allocatedChunks,
+      gpuPagePoolResidentSplats: gpuPagePoolStats.residentSplats,
+      gpuPagePoolOverflowChunks: gpuPagePoolStats.overflowChunks,
+      gpuPagePoolOverflowPages: gpuPagePoolStats.overflowPages,
+      gpuPagePoolPressure: gpuPagePoolStats.pressure,
       maxPendingLoads: this.maxPendingLoads,
       prefetchMultiplier: this.prefetchMultiplier,
       chunkSortMode: this.chunkSortMode,
@@ -1649,6 +1681,7 @@ class StreamingSsogRenderPass {
     pass.setVizMode(this.activeVizMode);
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
     pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && active);
+    const pageAllocation = this.gpuPagePool.allocateChunk(key, chunk.data.numSplats);
     this.loaded.set(key, {
       entry,
       chunk,
@@ -1656,6 +1689,7 @@ class StreamingSsogRenderPass {
       pass,
       active,
       lastUsedFrame: this.generation,
+      pageAllocation,
     });
     this.cacheSplats += chunk.data.numSplats;
     if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
@@ -1689,6 +1723,7 @@ class StreamingSsogRenderPass {
 
       runtime.pass.dispose();
       runtime.buffers.dispose();
+      this.gpuPagePool.freeChunk(key);
       this.cacheSplats -= runtime.chunk.data.numSplats;
       this.loaded.delete(key);
       this.debugBounds.dispose(key);
