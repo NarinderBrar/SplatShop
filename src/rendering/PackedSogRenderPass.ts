@@ -482,6 +482,12 @@ type PackedSogRenderStats = {
   gpuRadixDuplicateAdjacentIndices: number;
   gpuRadixChecksumValid: boolean;
   gpuRadixValidatedIndexCount: number;
+  gpuBufferArenaBuffers: number;
+  gpuBufferArenaBytes: number;
+  gpuBufferArenaPeakBytes: number;
+  gpuBufferArenaAllocations: number;
+  gpuBufferArenaReuses: number;
+  gpuBufferArenaGrows: number;
 };
 
 class PackedSogRenderPass {
@@ -1340,6 +1346,12 @@ class PackedSogRenderPass {
     | "gpuRadixDuplicateAdjacentIndices"
     | "gpuRadixChecksumValid"
     | "gpuRadixValidatedIndexCount"
+    | "gpuBufferArenaBuffers"
+    | "gpuBufferArenaBytes"
+    | "gpuBufferArenaPeakBytes"
+    | "gpuBufferArenaAllocations"
+    | "gpuBufferArenaReuses"
+    | "gpuBufferArenaGrows"
   > {
     const stats: GpuRadixSortStats | undefined = this.gpuRadixSortPass?.getStats();
     return {
@@ -1358,6 +1370,12 @@ class PackedSogRenderPass {
       gpuRadixDuplicateAdjacentIndices: stats?.duplicateAdjacentIndices ?? 0,
       gpuRadixChecksumValid: stats?.checksumValid ?? false,
       gpuRadixValidatedIndexCount: stats?.validatedIndexCount ?? 0,
+      gpuBufferArenaBuffers: stats?.gpuBufferArenaBuffers ?? 0,
+      gpuBufferArenaBytes: stats?.gpuBufferArenaBytes ?? 0,
+      gpuBufferArenaPeakBytes: stats?.gpuBufferArenaPeakBytes ?? 0,
+      gpuBufferArenaAllocations: stats?.gpuBufferArenaAllocations ?? 0,
+      gpuBufferArenaReuses: stats?.gpuBufferArenaReuses ?? 0,
+      gpuBufferArenaGrows: stats?.gpuBufferArenaGrows ?? 0,
     };
   }
 

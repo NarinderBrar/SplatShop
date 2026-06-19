@@ -510,6 +510,9 @@ class ViewerDebugStats {
       renderStats.gpuRadixSortEnabled
         ? `GPU radix bits: ${formatCount(renderStats.gpuRadixSortBits)} / passes ${formatCount(renderStats.gpuRadixSortPasses)}`
         : "",
+      renderStats.gpuBufferArenaBuffers > 0
+        ? `GPU arena: ${formatCount(renderStats.gpuBufferArenaBuffers)} buffers / ${formatBytes(renderStats.gpuBufferArenaBytes)} live / peak ${formatBytes(renderStats.gpuBufferArenaPeakBytes)} / alloc ${formatCount(renderStats.gpuBufferArenaAllocations)} reuse ${formatCount(renderStats.gpuBufferArenaReuses)} grow ${formatCount(renderStats.gpuBufferArenaGrows)}`
+        : "",
       renderStats.gpuRadixValidationEnabled
         ? `GPU radix validation: ${renderStats.gpuRadixValidationPending ? "pending" : "ready"}`
         : "",

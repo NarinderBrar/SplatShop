@@ -5,6 +5,7 @@ import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import { GpuBufferArena } from "./GpuBufferArena";
 
 const WORKGROUP_SIZE_X = 16;
 const WORKGROUP_SIZE_Y = 16;
@@ -286,6 +287,12 @@ type GpuRadixSortStats = {
   indexXor: number;
   expectedIndexXor: number;
   validatedIndexCount: number;
+  gpuBufferArenaBuffers: number;
+  gpuBufferArenaBytes: number;
+  gpuBufferArenaPeakBytes: number;
+  gpuBufferArenaAllocations: number;
+  gpuBufferArenaReuses: number;
+  gpuBufferArenaGrows: number;
 };
 
 type PrefixPass = {
@@ -316,6 +323,7 @@ class GpuRadixSortPass {
   private readonly validationClearShader: ComputeShader;
   private readonly validationShader: ComputeShader;
   private readonly validationCounters: StorageBuffer;
+  private readonly tempBufferArena: GpuBufferArena;
   private readonly validationReadback = new Uint32Array(8);
   private lastDispatchMs = 0;
   private lastDispatchSplats = 0;
@@ -340,6 +348,7 @@ class GpuRadixSortPass {
     private readonly validationEnabled = true,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
+    this.tempBufferArena = new GpuBufferArena(engine, "GpuRadixSortTemp");
     const elementBytes = splatCount * 4;
     this.workgroupCount = Math.ceil(splatCount / ELEMENTS_PER_WORKGROUP);
     this.dispatchX = Math.min(this.workgroupCount, 65535);
@@ -414,10 +423,7 @@ class GpuRadixSortPass {
     this.valueScratchB.dispose();
     this.validationCounters.dispose();
     this.blockSums.dispose();
-    for (const pass of this.prefixPasses) {
-      pass.blockSums.dispose();
-      pass.params.dispose();
-    }
+    this.tempBufferArena.dispose();
   }
 
   dispatch(): boolean {
@@ -476,6 +482,7 @@ class GpuRadixSortPass {
   }
 
   getStats(): GpuRadixSortStats {
+    const arenaStats = this.tempBufferArena.getStats();
     return {
       enabled: true,
       dispatched: this.lastDispatchSplats > 0,
@@ -499,6 +506,12 @@ class GpuRadixSortPass {
       indexXor: this.indexXor,
       expectedIndexXor: this.expectedIndexXor,
       validatedIndexCount: this.validatedIndexCount,
+      gpuBufferArenaBuffers: arenaStats.bufferCount,
+      gpuBufferArenaBytes: arenaStats.totalBytes,
+      gpuBufferArenaPeakBytes: arenaStats.peakBytes,
+      gpuBufferArenaAllocations: arenaStats.allocationCount,
+      gpuBufferArenaReuses: arenaStats.reuseCount,
+      gpuBufferArenaGrows: arenaStats.growCount,
     };
   }
 
@@ -605,9 +618,13 @@ class GpuRadixSortPass {
 
   private createPrefixPasses(engine: WebGPUEngine, dataBuffer: StorageBuffer, count: number): void {
     const workgroupCount = Math.ceil(count / PREFIX_ITEMS_PER_WORKGROUP);
-    const blockSums = new StorageBuffer(engine, Math.max(1, workgroupCount) * 4, undefined, "GpuRadixPrefixBlockSums");
+    const passIndex = this.prefixPasses.length;
+    const blockSums = this.tempBufferArena.getStorageBuffer(
+      `PrefixBlockSums${passIndex}`,
+      Math.max(1, workgroupCount) * 4,
+    );
     const paramsData = new Uint32Array(4);
-    const params = new StorageBuffer(engine, paramsData.byteLength, undefined, "GpuRadixPrefixParams");
+    const params = this.tempBufferArena.getStorageBuffer(`PrefixParams${passIndex}`, paramsData.byteLength);
     const scanShader = new ComputeShader(
       "GpuRadixPrefixScan",
       engine,

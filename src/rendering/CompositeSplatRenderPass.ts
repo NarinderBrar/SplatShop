@@ -331,6 +331,12 @@ class CompositeSplatRenderPass {
       gpuRadixDuplicateAdjacentIndices: stats.reduce((sum, item) => sum + item.gpuRadixDuplicateAdjacentIndices, 0),
       gpuRadixChecksumValid: stats.length > 0 && stats.every((item) => item.gpuRadixChecksumValid),
       gpuRadixValidatedIndexCount: stats.reduce((sum, item) => sum + item.gpuRadixValidatedIndexCount, 0),
+      gpuBufferArenaBuffers: stats.reduce((sum, item) => sum + item.gpuBufferArenaBuffers, 0),
+      gpuBufferArenaBytes: stats.reduce((sum, item) => sum + item.gpuBufferArenaBytes, 0),
+      gpuBufferArenaPeakBytes: stats.reduce((sum, item) => sum + item.gpuBufferArenaPeakBytes, 0),
+      gpuBufferArenaAllocations: stats.reduce((sum, item) => sum + item.gpuBufferArenaAllocations, 0),
+      gpuBufferArenaReuses: stats.reduce((sum, item) => sum + item.gpuBufferArenaReuses, 0),
+      gpuBufferArenaGrows: stats.reduce((sum, item) => sum + item.gpuBufferArenaGrows, 0),
     };
   }
 
