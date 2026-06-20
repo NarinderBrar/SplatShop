@@ -8,6 +8,13 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { ComputeTileDepthRangePass } from "./ComputeTileDepthRangePass";
 import type { ComputeTileStatsPass } from "./ComputeTileStatsPass";
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import ComputeTileWorkQueuePass_CLEAR_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.clear-source.wgsl?raw";
+import ComputeTileWorkQueuePass_COMPACT_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.compact-source.wgsl?raw";
+import ComputeTileWorkQueuePass_DEPTH_BAND_COUNT_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.depth-band-count-source.wgsl?raw";
+import ComputeTileWorkQueuePass_DEPTH_BAND_PREFIX_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.depth-band-prefix-source.wgsl?raw";
+import ComputeTileWorkQueuePass_DEPTH_BAND_RESET_COUNTERS_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.depth-band-reset-counters-source.wgsl?raw";
+import ComputeTileWorkQueuePass_DEPTH_BAND_SCATTER_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.depth-band-scatter-source.wgsl?raw";
+import ComputeTileWorkQueuePass_DEPTH_BAND_STABLE_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.depth-band-stable-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 128;
 const MAX_TILES = 8192;
@@ -85,253 +92,19 @@ function getDepthBandCount(): number {
 
 const DEPTH_BAND_COUNT = getDepthBandCount();
 
-const CLEAR_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> metadata: array<u32>;
-@group(0) @binding(1) var<storage, read_write> depthBandCounters: array<u32>;
-@group(0) @binding(2) var<storage, read_write> depthBandOffsets: array<u32>;
+const CLEAR_SOURCE = ComputeTileWorkQueuePass_CLEAR_SOURCE_raw.replaceAll("__CLEAR_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__CLEAR_SOURCE_EXPR_1__", String(METADATA_COUNT)).replaceAll("__CLEAR_SOURCE_EXPR_2__", String(DEPTH_BAND_COUNT));
 
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  if (index >= ${METADATA_COUNT}u) {
-  } else {
-    metadata[index] = 0u;
-  }
-  if (index < ${DEPTH_BAND_COUNT}u) {
-    depthBandCounters[index] = 0u;
-    depthBandOffsets[index] = 0u;
-  }
-}
-`;
+const COMPACT_SOURCE = ComputeTileWorkQueuePass_COMPACT_SOURCE_raw.replaceAll("__COMPACT_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__COMPACT_SOURCE_EXPR_1__", String(MAX_TILES)).replaceAll("__COMPACT_SOURCE_EXPR_2__", String(MAX_WORK_ITEMS));
 
-const COMPACT_SOURCE = `
-@group(0) @binding(0) var<storage, read> tileCounters: array<u32>;
-@group(0) @binding(1) var<storage, read> tileOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read> depthRanges: array<vec4f>;
-@group(0) @binding(3) var<storage, read_write> workQueue: array<vec4u>;
-@group(0) @binding(4) var<storage, read_write> workDepthRanges: array<vec4f>;
-@group(0) @binding(5) var<storage, read_write> metadata: array<atomic<u32>>;
-@group(0) @binding(6) var<storage, read> paramsBuffer: array<u32>;
+const DEPTH_BAND_COUNT_SOURCE = ComputeTileWorkQueuePass_DEPTH_BAND_COUNT_SOURCE_raw.replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_0__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_1__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_2__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_3__", String(DEPTH_BAND_COUNT - 1)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_4__", String(DEPTH_BAND_COUNT)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_5__", String(DEPTH_BAND_COUNT - 1)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_6__", String(WORKGROUP_SIZE)).replaceAll("__DEPTH_BAND_COUNT_SOURCE_EXPR_7__", String(MAX_TILES));
 
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let tileIndex = globalId.x;
-  let tileCount = paramsBuffer[0];
-  if (tileIndex >= tileCount || tileIndex >= ${MAX_TILES}u) {
-    return;
-  }
+const DEPTH_BAND_PREFIX_SOURCE = ComputeTileWorkQueuePass_DEPTH_BAND_PREFIX_SOURCE_raw.replaceAll("__DEPTH_BAND_PREFIX_SOURCE_EXPR_0__", String(MAX_WORK_ITEMS)).replaceAll("__DEPTH_BAND_PREFIX_SOURCE_EXPR_1__", String(DEPTH_BAND_COUNT));
 
-  let splatCount = tileCounters[tileIndex];
-  let depth = depthRanges[tileIndex];
-  if (splatCount == 0u || depth.w <= 0.0) {
-    return;
-  }
+const DEPTH_BAND_RESET_COUNTERS_SOURCE = ComputeTileWorkQueuePass_DEPTH_BAND_RESET_COUNTERS_SOURCE_raw.replaceAll("__DEPTH_BAND_RESET_COUNTERS_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__DEPTH_BAND_RESET_COUNTERS_SOURCE_EXPR_1__", String(DEPTH_BAND_COUNT));
 
-  let maxBatchSplats = paramsBuffer[1];
-  let batchSize = select(splatCount, min(splatCount, maxBatchSplats), maxBatchSplats > 0u);
-  let maxWorkItems = paramsBuffer[2];
-  let batchCount = (splatCount + batchSize - 1u) / batchSize;
-  let tileOffset = tileOffsets[tileIndex];
-  for (var batch = 0u; batch < batchCount; batch = batch + 1u) {
-    let batchOffset = batch * batchSize;
-    let batchSplats = min(batchSize, splatCount - batchOffset);
-    let slot = atomicAdd(&metadata[0], 1u);
-    if (slot >= maxWorkItems || slot >= ${MAX_WORK_ITEMS}u) {
-      atomicAdd(&metadata[3], 1u);
-      continue;
-    }
+const DEPTH_BAND_SCATTER_SOURCE = ComputeTileWorkQueuePass_DEPTH_BAND_SCATTER_SOURCE_raw.replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_0__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_1__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_2__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_3__", String(DEPTH_BAND_COUNT - 1)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_4__", String(DEPTH_BAND_COUNT)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_5__", String(DEPTH_BAND_COUNT - 1)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_6__", String(WORKGROUP_SIZE)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_7__", String(MAX_TILES)).replaceAll("__DEPTH_BAND_SCATTER_SOURCE_EXPR_8__", String(MAX_WORK_ITEMS));
 
-    workQueue[slot] = vec4u(tileIndex, tileOffset + batchOffset, batchSplats, 0u);
-    workDepthRanges[slot] = depth;
-    atomicAdd(&metadata[1], batchSplats);
-    atomicMax(&metadata[2], batchSplats);
-  }
-}
-`;
-
-const DEPTH_BAND_COUNT_SOURCE = `
-@group(0) @binding(0) var<storage, read> tileCounters: array<u32>;
-@group(0) @binding(1) var<storage, read> depthRanges: array<vec4f>;
-@group(0) @binding(2) var<storage, read_write> depthBandCounters: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read> paramsBuffer: array<u32>;
-
-fn depthBand(depth: f32, minDepthQ: u32, depthBandRangeQ: u32) -> u32 {
-  let minDepth = f32(minDepthQ) / ${DEPTH_BAND_QUANTIZATION}.0;
-  let depthBandRange = max(1.0 / ${DEPTH_BAND_QUANTIZATION}.0, f32(depthBandRangeQ) / ${DEPTH_BAND_QUANTIZATION}.0);
-  let t = clamp((depth - minDepth) / depthBandRange, 0.0, 0.999999);
-  let bucket = min(${DEPTH_BAND_COUNT - 1}u, u32(floor(t * ${DEPTH_BAND_COUNT}.0)));
-  return ${DEPTH_BAND_COUNT - 1}u - bucket;
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let tileIndex = globalId.x;
-  let tileCount = paramsBuffer[0];
-  if (tileIndex >= tileCount || tileIndex >= ${MAX_TILES}u) {
-    return;
-  }
-
-  let splatCount = tileCounters[tileIndex];
-  let depth = depthRanges[tileIndex];
-  if (splatCount == 0u || depth.w <= 0.0) {
-    return;
-  }
-
-  let maxBatchSplats = paramsBuffer[1];
-  let batchSize = select(splatCount, min(splatCount, maxBatchSplats), maxBatchSplats > 0u);
-  let batchCount = (splatCount + batchSize - 1u) / batchSize;
-  atomicAdd(&depthBandCounters[depthBand(depth.z, paramsBuffer[4], max(1u, paramsBuffer[5]))], batchCount);
-}
-`;
-
-const DEPTH_BAND_PREFIX_SOURCE = `
-@group(0) @binding(0) var<storage, read> depthBandCounters: array<u32>;
-@group(0) @binding(1) var<storage, read_write> depthBandOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read_write> metadata: array<u32>;
-@group(0) @binding(3) var<storage, read> paramsBuffer: array<u32>;
-
-@compute @workgroup_size(1)
-fn main() {
-  let maxWorkItems = min(paramsBuffer[2], ${MAX_WORK_ITEMS}u);
-  var cursor = 0u;
-  for (var band = 0u; band < ${DEPTH_BAND_COUNT}u; band = band + 1u) {
-    depthBandOffsets[band] = min(cursor, maxWorkItems);
-    cursor = cursor + depthBandCounters[band];
-  }
-  metadata[0] = min(cursor, maxWorkItems);
-  if (cursor > maxWorkItems) {
-    metadata[3] = cursor - maxWorkItems;
-  }
-}
-`;
-
-const DEPTH_BAND_RESET_COUNTERS_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> depthBandCounters: array<u32>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  if (index < ${DEPTH_BAND_COUNT}u) {
-    depthBandCounters[index] = 0u;
-  }
-}
-`;
-
-const DEPTH_BAND_SCATTER_SOURCE = `
-@group(0) @binding(0) var<storage, read> tileCounters: array<u32>;
-@group(0) @binding(1) var<storage, read> tileOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read> depthRanges: array<vec4f>;
-@group(0) @binding(3) var<storage, read_write> workQueue: array<vec4u>;
-@group(0) @binding(4) var<storage, read_write> metadata: array<atomic<u32>>;
-@group(0) @binding(5) var<storage, read> paramsBuffer: array<u32>;
-@group(0) @binding(6) var<storage, read_write> depthBandCounters: array<atomic<u32>>;
-@group(0) @binding(7) var<storage, read> depthBandOffsets: array<u32>;
-
-fn depthBand(depth: f32, minDepthQ: u32, depthBandRangeQ: u32) -> u32 {
-  let minDepth = f32(minDepthQ) / ${DEPTH_BAND_QUANTIZATION}.0;
-  let depthBandRange = max(1.0 / ${DEPTH_BAND_QUANTIZATION}.0, f32(depthBandRangeQ) / ${DEPTH_BAND_QUANTIZATION}.0);
-  let t = clamp((depth - minDepth) / depthBandRange, 0.0, 0.999999);
-  let bucket = min(${DEPTH_BAND_COUNT - 1}u, u32(floor(t * ${DEPTH_BAND_COUNT}.0)));
-  return ${DEPTH_BAND_COUNT - 1}u - bucket;
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let tileIndex = globalId.x;
-  let tileCount = paramsBuffer[0];
-  if (tileIndex >= tileCount || tileIndex >= ${MAX_TILES}u) {
-    return;
-  }
-
-  let splatCount = tileCounters[tileIndex];
-  let depth = depthRanges[tileIndex];
-  if (splatCount == 0u || depth.w <= 0.0) {
-    return;
-  }
-
-  let maxBatchSplats = paramsBuffer[1];
-  let batchSize = select(splatCount, min(splatCount, maxBatchSplats), maxBatchSplats > 0u);
-  let maxWorkItems = min(paramsBuffer[2], ${MAX_WORK_ITEMS}u);
-  let band = depthBand(depth.z, paramsBuffer[4], max(1u, paramsBuffer[5]));
-  let batchCount = (splatCount + batchSize - 1u) / batchSize;
-  let tileOffset = tileOffsets[tileIndex];
-  for (var batch = 0u; batch < batchCount; batch = batch + 1u) {
-    let batchOffset = batch * batchSize;
-    let batchSplats = min(batchSize, splatCount - batchOffset);
-    let slot = depthBandOffsets[band] + atomicAdd(&depthBandCounters[band], 1u);
-    if (slot >= maxWorkItems) {
-      continue;
-    }
-
-    workQueue[slot] = vec4u(tileIndex, tileOffset + batchOffset, batchSplats, 0u);
-    atomicAdd(&metadata[1], batchSplats);
-    atomicMax(&metadata[2], batchSplats);
-  }
-}
-`;
-
-const DEPTH_BAND_STABLE_SOURCE = `
-@group(0) @binding(0) var<storage, read> tileCounters: array<u32>;
-@group(0) @binding(1) var<storage, read> tileOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read> depthRanges: array<vec4f>;
-@group(0) @binding(3) var<storage, read_write> workQueue: array<vec4u>;
-@group(0) @binding(4) var<storage, read_write> metadata: array<u32>;
-@group(0) @binding(5) var<storage, read> paramsBuffer: array<u32>;
-
-fn depthBand(depth: f32, minDepthQ: u32, depthBandRangeQ: u32) -> u32 {
-  let minDepth = f32(minDepthQ) / ${DEPTH_BAND_QUANTIZATION}.0;
-  let depthBandRange = max(1.0 / ${DEPTH_BAND_QUANTIZATION}.0, f32(depthBandRangeQ) / ${DEPTH_BAND_QUANTIZATION}.0);
-  let t = clamp((depth - minDepth) / depthBandRange, 0.0, 0.999999);
-  let bucket = min(${DEPTH_BAND_COUNT - 1}u, u32(floor(t * ${DEPTH_BAND_COUNT}.0)));
-  return ${DEPTH_BAND_COUNT - 1}u - bucket;
-}
-
-@compute @workgroup_size(1)
-fn main() {
-  let tileCount = min(paramsBuffer[0], ${MAX_TILES}u);
-  let maxBatchSplats = paramsBuffer[1];
-  let maxWorkItems = min(paramsBuffer[2], ${MAX_WORK_ITEMS}u);
-  var slot = 0u;
-  var queuedSplats = 0u;
-  var maxTileSplats = 0u;
-  var overflow = 0u;
-
-  for (var band = 0u; band < ${DEPTH_BAND_COUNT}u; band = band + 1u) {
-    for (var tileIndex = 0u; tileIndex < tileCount; tileIndex = tileIndex + 1u) {
-      let splatCount = tileCounters[tileIndex];
-      let depth = depthRanges[tileIndex];
-      if (splatCount == 0u || depth.w <= 0.0) {
-        continue;
-      }
-      if (depthBand(depth.z, paramsBuffer[4], max(1u, paramsBuffer[5])) != band) {
-        continue;
-      }
-
-      let batchSize = select(splatCount, min(splatCount, maxBatchSplats), maxBatchSplats > 0u);
-      let batchCount = (splatCount + batchSize - 1u) / batchSize;
-      let tileOffset = tileOffsets[tileIndex];
-      for (var batch = 0u; batch < batchCount; batch = batch + 1u) {
-        let batchOffset = batch * batchSize;
-        let batchSplats = min(batchSize, splatCount - batchOffset);
-        if (slot >= maxWorkItems) {
-          overflow = overflow + 1u;
-          continue;
-        }
-
-        workQueue[slot] = vec4u(tileIndex, tileOffset + batchOffset, batchSplats, band);
-        slot = slot + 1u;
-        queuedSplats = queuedSplats + batchSplats;
-        maxTileSplats = max(maxTileSplats, batchSplats);
-      }
-    }
-  }
-
-  metadata[0] = slot;
-  metadata[1] = queuedSplats;
-  metadata[2] = maxTileSplats;
-  metadata[3] = overflow;
-}
-`;
+const DEPTH_BAND_STABLE_SOURCE = ComputeTileWorkQueuePass_DEPTH_BAND_STABLE_SOURCE_raw.replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_0__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_1__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_2__", String(DEPTH_BAND_QUANTIZATION)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_3__", String(DEPTH_BAND_COUNT - 1)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_4__", String(DEPTH_BAND_COUNT)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_5__", String(DEPTH_BAND_COUNT - 1)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_6__", String(MAX_TILES)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_7__", String(MAX_WORK_ITEMS)).replaceAll("__DEPTH_BAND_STABLE_SOURCE_EXPR_8__", String(DEPTH_BAND_COUNT));
 
 type ComputeTileWorkQueueStats = {
   enabled: boolean;

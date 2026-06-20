@@ -9,60 +9,16 @@ import { Scene } from "@babylonjs/core/scene";
 import "@babylonjs/core/Shaders/postprocess.vertex";
 import "@babylonjs/core/ShadersWGSL/postprocess.vertex";
 import "@babylonjs/core/PostProcesses/RenderPipeline/postProcessRenderPipelineManagerSceneComponent";
+import compositeFragmentGlsl from "./shaders/splat-shop-render-pipeline.composite.fragment.glsl?raw";
+import compositeFragmentWgsl from "./shaders/splat-shop-render-pipeline.composite.fragment.wgsl?raw";
+import postprocessVertexWgsl from "./shaders/splat-shop-render-pipeline.postprocess-vertex.wgsl?raw";
 
 const PIPELINE_NAME = "SplatShopPipeline";
 const COMPOSITE_PASS = "SplatShopComposite";
 
-ShaderStore.ShadersStoreWGSL.postprocessVertexShader ??= `
-attribute position: vec2<f32>;
-uniform scale: vec2<f32>;
-varying vUV: vec2<f32>;
-const madd = vec2(0.5, 0.5);
-
-#define CUSTOM_VERTEX_DEFINITIONS
-
-@vertex
-fn main(input: VertexInputs) -> FragmentInputs {
-  vertexOutputs.vUV = (vertexInputs.position * madd + madd) * uniforms.scale;
-  vertexOutputs.position = vec4(vertexInputs.position, 0.0, 1.0);
-}
-`;
-
-ShaderStore.ShadersStore[`${COMPOSITE_PASS}PixelShader`] = `
-precision highp float;
-
-varying vec2 vUV;
-uniform sampler2D textureSampler;
-uniform float time;
-uniform float strength;
-
-void main(void) {
-  vec4 color = texture2D(textureSampler, vUV);
-  float vignette = smoothstep(0.92, 0.2, distance(vUV, vec2(0.5)));
-  float pulse = 0.5 + 0.5 * sin(time * 0.9);
-  vec3 warmLift = vec3(0.06, 0.025, -0.015) * strength * pulse;
-  gl_FragColor = vec4(color.rgb * (0.82 + 0.18 * vignette) + warmLift, color.a);
-}
-`;
-
-ShaderStore.ShadersStoreWGSL[`${COMPOSITE_PASS}PixelShader`] = `
-varying vUV: vec2f;
-var textureSamplerSampler: sampler;
-var textureSampler: texture_2d<f32>;
-uniform time: f32;
-uniform strength: f32;
-
-#define CUSTOM_FRAGMENT_DEFINITIONS
-
-@fragment
-fn main(input: FragmentInputs) -> FragmentOutputs {
-  let color = textureSample(textureSampler, textureSamplerSampler, input.vUV);
-  let vignette = smoothstep(0.92, 0.2, distance(input.vUV, vec2f(0.5, 0.5)));
-  let pulse = 0.5 + 0.5 * sin(uniforms.time * 0.9);
-  let warmLift = vec3f(0.06, 0.025, -0.015) * uniforms.strength * pulse;
-  fragmentOutputs.color = vec4f(color.rgb * (0.82 + 0.18 * vignette) + warmLift, color.a);
-}
-`;
+ShaderStore.ShadersStoreWGSL.postprocessVertexShader ??= postprocessVertexWgsl;
+ShaderStore.ShadersStore[`${COMPOSITE_PASS}PixelShader`] = compositeFragmentGlsl;
+ShaderStore.ShadersStoreWGSL[`${COMPOSITE_PASS}PixelShader`] = compositeFragmentWgsl;
 
 export class SplatShopRenderPipeline extends PostProcessRenderPipeline {
   private readonly scene: Scene;

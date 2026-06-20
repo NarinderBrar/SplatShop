@@ -5,45 +5,15 @@ import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import GpuSortHistogramPass_CLEAR_SOURCE_raw from "./shaders/gpu-sort-histogram-pass.clear-source.wgsl?raw";
+import GpuSortHistogramPass_HISTOGRAM_SOURCE_raw from "./shaders/gpu-sort-histogram-pass.histogram-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 256;
 const DEFAULT_BUCKET_COUNT = 2048;
 
-const CLEAR_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> bucketCounts: array<atomic<u32>>;
-@group(0) @binding(1) var<storage, read> paramsBuffer: array<u32>;
+const CLEAR_SOURCE = GpuSortHistogramPass_CLEAR_SOURCE_raw.replaceAll("__CLEAR_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
 
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let bucketCount = paramsBuffer[1];
-  if (index >= bucketCount) {
-    return;
-  }
-
-  atomicStore(&bucketCounts[index], 0u);
-}
-`;
-
-const HISTOGRAM_SOURCE = `
-@group(0) @binding(0) var<storage, read> depthKeyBuffer: array<u32>;
-@group(0) @binding(1) var<storage, read_write> bucketCounts: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<u32>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let splatCount = paramsBuffer[0];
-  if (index >= splatCount) {
-    return;
-  }
-
-  let bucketShift = paramsBuffer[2];
-  let bucketCount = paramsBuffer[1];
-  let bucket = min(depthKeyBuffer[index] >> bucketShift, bucketCount - 1u);
-  atomicAdd(&bucketCounts[bucket], 1u);
-}
-`;
+const HISTOGRAM_SOURCE = GpuSortHistogramPass_HISTOGRAM_SOURCE_raw.replaceAll("__HISTOGRAM_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
 
 type GpuSortHistogramStats = {
   enabled: boolean;

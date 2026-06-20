@@ -95,8 +95,8 @@ class SplatCloud {
       throw new Error(`Unsupported splat asset runtime: ${asset.kind}`);
     }
 
-    if (this.selectionPass && "setSelectionBuffer" in this.renderPass) {
-      (this.renderPass as { setSelectionBuffer: (b: import("@babylonjs/core/Buffers/storageBuffer").StorageBuffer) => void }).setSelectionBuffer(this.selectionPass.getSelectionBuffer());
+    if (this.selectionPass && "setSplatStateBuffer" in this.renderPass) {
+      (this.renderPass as { setSplatStateBuffer: (b: import("@babylonjs/core/Buffers/storageBuffer").StorageBuffer) => void }).setSplatStateBuffer(this.selectionPass.getStateBuffer().storage);
     }
 
     this.preview.setVisible(false);

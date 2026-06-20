@@ -3,29 +3,11 @@ import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Scene } from "@babylonjs/core/scene";
+import ColorSegmentationPass_COMPUTE_SOURCE_raw from "./shaders/color-segmentation-pass.compute-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 256;
 
-const COMPUTE_SOURCE = `
-@group(0) @binding(0) var<storage, read> colorBuffer: array<vec4f>;
-@group(0) @binding(1) var<storage, read_write> colorGroupBuffer: array<u32>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<f32>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let splatCount = u32(paramsBuffer[0]);
-  if (index >= splatCount) {
-    return;
-  }
-
-  let color = colorBuffer[index].rgb;
-  let r = u32(color.r * 255.0) >> 5u;
-  let g = u32(color.g * 255.0) >> 5u;
-  let b = u32(color.b * 255.0) >> 5u;
-  colorGroupBuffer[index] = (r << 6u) | (g << 3u) | b;
-}
-`;
+const COMPUTE_SOURCE = ColorSegmentationPass_COMPUTE_SOURCE_raw.replaceAll("__COMPUTE_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
 
 class ColorSegmentationPass {
   private readonly shader: ComputeShader;

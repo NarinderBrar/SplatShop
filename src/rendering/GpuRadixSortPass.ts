@@ -6,6 +6,12 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
 import { GpuBufferArena } from "./GpuBufferArena";
+import GpuRadixSortPass_PREFIX_SCAN_SOURCE_raw from "./shaders/gpu-radix-sort-pass.prefix-scan-source.wgsl?raw";
+import GpuRadixSortPass_PREFIX_ADD_SOURCE_raw from "./shaders/gpu-radix-sort-pass.prefix-add-source.wgsl?raw";
+import GpuRadixSortPass_VALIDATION_CLEAR_SOURCE_raw from "./shaders/gpu-radix-sort-pass.validation-clear-source.wgsl?raw";
+import GpuRadixSortPass_VALIDATION_SOURCE_raw from "./shaders/gpu-radix-sort-pass.validation-source.wgsl?raw";
+import GpuRadixSortPass_RADIX_HISTOGRAM_SOURCE_raw from "./shaders/gpu-radix-sort-pass.radix-histogram-source.wgsl?raw";
+import GpuRadixSortPass_RADIX_REORDER_SOURCE_raw from "./shaders/gpu-radix-sort-pass.radix-reorder-source.wgsl?raw";
 
 const WORKGROUP_SIZE_X = 16;
 const WORKGROUP_SIZE_Y = 16;
@@ -17,255 +23,17 @@ const BUCKET_COUNT = 16;
 const PREFIX_ITEMS_PER_WORKGROUP = 512;
 const DEFAULT_SORT_BITS = 20;
 
-const makeRadixHistogramSource = (currentBit: number) => `
-@group(0) @binding(0) var<storage, read> inputKeys: array<u32>;
-@group(0) @binding(1) var<storage, read_write> blockSums: array<u32>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<u32>;
+const makeRadixHistogramSource = (currentBit: number) => GpuRadixSortPass_RADIX_HISTOGRAM_SOURCE_raw.replaceAll("__TEMPLATE_EXPR_0__", String(BUCKET_COUNT)).replaceAll("__TEMPLATE_EXPR_1__", String(WORKGROUP_SIZE_X)).replaceAll("__TEMPLATE_EXPR_2__", String(WORKGROUP_SIZE_Y)).replaceAll("__TEMPLATE_EXPR_3__", String(ELEMENTS_PER_WORKGROUP)).replaceAll("__TEMPLATE_EXPR_4__", String(BUCKET_COUNT)).replaceAll("__TEMPLATE_EXPR_5__", String(ELEMENTS_PER_THREAD)).replaceAll("__TEMPLATE_EXPR_6__", String(THREADS_PER_WORKGROUP)).replaceAll("__TEMPLATE_EXPR_7__", String(currentBit)).replaceAll("__TEMPLATE_EXPR_8__", String(BUCKET_COUNT));
 
-var<workgroup> histogram: array<atomic<u32>, ${BUCKET_COUNT}>;
+const makeRadixReorderSource = (currentBit: number) => GpuRadixSortPass_RADIX_REORDER_SOURCE_raw.replaceAll("__TEMPLATE_EXPR_0__", String(BUCKET_COUNT)).replaceAll("__TEMPLATE_EXPR_1__", String(WORKGROUP_SIZE_X)).replaceAll("__TEMPLATE_EXPR_2__", String(WORKGROUP_SIZE_Y)).replaceAll("__TEMPLATE_EXPR_3__", String(ELEMENTS_PER_WORKGROUP)).replaceAll("__TEMPLATE_EXPR_4__", String(BUCKET_COUNT)).replaceAll("__TEMPLATE_EXPR_5__", String(ELEMENTS_PER_THREAD)).replaceAll("__TEMPLATE_EXPR_6__", String(THREADS_PER_WORKGROUP)).replaceAll("__TEMPLATE_EXPR_7__", String(currentBit)).replaceAll("__TEMPLATE_EXPR_8__", String(ELEMENTS_PER_THREAD - 1)).replaceAll("__TEMPLATE_EXPR_9__", String(BUCKET_COUNT));
 
-@compute @workgroup_size(${WORKGROUP_SIZE_X}, ${WORKGROUP_SIZE_Y}, 1)
-fn main(
-  @builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(num_workgroups) workgroupDim: vec3u,
-  @builtin(local_invocation_index) threadIndex: u32,
-) {
-  let linearWorkgroupId = workgroupId.x + workgroupId.y * workgroupDim.x;
-  let workgroupStart = linearWorkgroupId * ${ELEMENTS_PER_WORKGROUP}u;
-  let workgroupCount = paramsBuffer[0];
-  let elementCount = paramsBuffer[1];
+const PREFIX_SCAN_SOURCE = GpuRadixSortPass_PREFIX_SCAN_SOURCE_raw.replaceAll("__PREFIX_SCAN_SOURCE_EXPR_0__", String(PREFIX_ITEMS_PER_WORKGROUP)).replaceAll("__PREFIX_SCAN_SOURCE_EXPR_1__", String(THREADS_PER_WORKGROUP)).replaceAll("__PREFIX_SCAN_SOURCE_EXPR_2__", String(PREFIX_ITEMS_PER_WORKGROUP)).replaceAll("__PREFIX_SCAN_SOURCE_EXPR_3__", String(PREFIX_ITEMS_PER_WORKGROUP / 2)).replaceAll("__PREFIX_SCAN_SOURCE_EXPR_4__", String(PREFIX_ITEMS_PER_WORKGROUP - 1)).replaceAll("__PREFIX_SCAN_SOURCE_EXPR_5__", String(PREFIX_ITEMS_PER_WORKGROUP - 1)).replaceAll("__PREFIX_SCAN_SOURCE_EXPR_6__", String(PREFIX_ITEMS_PER_WORKGROUP));
 
-  if (threadIndex < ${BUCKET_COUNT}u) {
-    atomicStore(&histogram[threadIndex], 0u);
-  }
-  workgroupBarrier();
+const PREFIX_ADD_SOURCE = GpuRadixSortPass_PREFIX_ADD_SOURCE_raw.replaceAll("__PREFIX_ADD_SOURCE_EXPR_0__", String(THREADS_PER_WORKGROUP)).replaceAll("__PREFIX_ADD_SOURCE_EXPR_1__", String(PREFIX_ITEMS_PER_WORKGROUP));
 
-  for (var round = 0u; round < ${ELEMENTS_PER_THREAD}u; round++) {
-    let index = workgroupStart + round * ${THREADS_PER_WORKGROUP}u + threadIndex;
-    if (index < elementCount && linearWorkgroupId < workgroupCount) {
-      let digit = (inputKeys[index] >> ${currentBit}u) & 15u;
-      atomicAdd(&histogram[digit], 1u);
-    }
-  }
-  workgroupBarrier();
+const VALIDATION_CLEAR_SOURCE = GpuRadixSortPass_VALIDATION_CLEAR_SOURCE_raw;
 
-  if (threadIndex < ${BUCKET_COUNT}u && linearWorkgroupId < workgroupCount) {
-    blockSums[threadIndex * workgroupCount + linearWorkgroupId] = atomicLoad(&histogram[threadIndex]);
-  }
-}
-`;
-
-const makeRadixReorderSource = (currentBit: number) => `
-@group(0) @binding(0) var<storage, read> inputKeys: array<u32>;
-@group(0) @binding(1) var<storage, read_write> outputKeys: array<u32>;
-@group(0) @binding(2) var<storage, read> prefixBlockSums: array<u32>;
-@group(0) @binding(3) var<storage, read> inputValues: array<u32>;
-@group(0) @binding(4) var<storage, read_write> outputValues: array<u32>;
-@group(0) @binding(5) var<storage, read> paramsBuffer: array<u32>;
-
-var<workgroup> digitMasks: array<atomic<u32>, 128>;
-var<workgroup> digitOffsets: array<u32, ${BUCKET_COUNT}>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE_X}, ${WORKGROUP_SIZE_Y}, 1)
-fn main(
-  @builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(num_workgroups) workgroupDim: vec3u,
-  @builtin(local_invocation_index) threadIndex: u32,
-) {
-  let linearWorkgroupId = workgroupId.x + workgroupId.y * workgroupDim.x;
-  let workgroupStart = linearWorkgroupId * ${ELEMENTS_PER_WORKGROUP}u;
-  let workgroupCount = paramsBuffer[0];
-  let elementCount = paramsBuffer[1];
-  let wordIndex = threadIndex >> 5u;
-  let bitIndex = threadIndex & 31u;
-
-  if (threadIndex < ${BUCKET_COUNT}u) {
-    digitOffsets[threadIndex] = 0u;
-  }
-  if (threadIndex < 128u) {
-    atomicStore(&digitMasks[threadIndex], 0u);
-  }
-  workgroupBarrier();
-
-  for (var round = 0u; round < ${ELEMENTS_PER_THREAD}u; round++) {
-    let index = workgroupStart + round * ${THREADS_PER_WORKGROUP}u + threadIndex;
-    let isValid = index < elementCount && linearWorkgroupId < workgroupCount;
-    let key = select(0u, inputKeys[index], isValid);
-    let digit = select(16u, (key >> ${currentBit}u) & 15u, isValid);
-    let value = select(0u, inputValues[index], isValid);
-
-    if (isValid) {
-      atomicOr(&digitMasks[digit * 8u + wordIndex], 1u << bitIndex);
-    }
-    workgroupBarrier();
-
-    if (isValid) {
-      let base = digit * 8u;
-      var localPrefix = digitOffsets[digit];
-      for (var word = 0u; word < wordIndex; word++) {
-        localPrefix += countOneBits(atomicLoad(&digitMasks[base + word]));
-      }
-      localPrefix += countOneBits(atomicLoad(&digitMasks[base + wordIndex]) & ((1u << bitIndex) - 1u));
-
-      let prefixIndex = digit * workgroupCount + linearWorkgroupId;
-      let sortedPosition = prefixBlockSums[prefixIndex] + localPrefix;
-
-      outputKeys[sortedPosition] = key;
-      outputValues[sortedPosition] = value;
-    }
-
-    if (round < ${ELEMENTS_PER_THREAD - 1}u) {
-      workgroupBarrier();
-      if (threadIndex < ${BUCKET_COUNT}u) {
-        var count = 0u;
-        for (var word = 0u; word < 8u; word++) {
-          let maskIndex = threadIndex * 8u + word;
-          count += countOneBits(atomicLoad(&digitMasks[maskIndex]));
-          atomicStore(&digitMasks[maskIndex], 0u);
-        }
-        digitOffsets[threadIndex] += count;
-      }
-      workgroupBarrier();
-    }
-  }
-}
-`;
-
-const PREFIX_SCAN_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> items: array<u32>;
-@group(0) @binding(1) var<storage, read_write> blockSums: array<u32>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<u32>;
-
-var<workgroup> temp: array<u32, ${PREFIX_ITEMS_PER_WORKGROUP}>;
-
-@compute @workgroup_size(${THREADS_PER_WORKGROUP})
-fn main(
-  @builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(local_invocation_index) threadIndex: u32,
-) {
-  let elementCount = paramsBuffer[0];
-  let elementOffset = workgroupId.x * ${PREFIX_ITEMS_PER_WORKGROUP}u + threadIndex * 2u;
-
-  temp[threadIndex * 2u] = select(items[elementOffset], 0u, elementOffset >= elementCount);
-  temp[threadIndex * 2u + 1u] = select(items[elementOffset + 1u], 0u, elementOffset + 1u >= elementCount);
-
-  var offset = 1u;
-  for (var d = ${PREFIX_ITEMS_PER_WORKGROUP / 2}u; d > 0u; d = d >> 1u) {
-    workgroupBarrier();
-    if (threadIndex < d) {
-      let ai = offset * (threadIndex * 2u + 1u) - 1u;
-      let bi = offset * (threadIndex * 2u + 2u) - 1u;
-      temp[bi] += temp[ai];
-    }
-    offset = offset << 1u;
-  }
-
-  if (threadIndex == 0u) {
-    blockSums[workgroupId.x] = temp[${PREFIX_ITEMS_PER_WORKGROUP - 1}u];
-    temp[${PREFIX_ITEMS_PER_WORKGROUP - 1}u] = 0u;
-  }
-
-  for (var d = 1u; d < ${PREFIX_ITEMS_PER_WORKGROUP}u; d = d << 1u) {
-    offset = offset >> 1u;
-    workgroupBarrier();
-    if (threadIndex < d) {
-      let ai = offset * (threadIndex * 2u + 1u) - 1u;
-      let bi = offset * (threadIndex * 2u + 2u) - 1u;
-      let value = temp[ai];
-      temp[ai] = temp[bi];
-      temp[bi] += value;
-    }
-  }
-  workgroupBarrier();
-
-  if (elementOffset < elementCount) {
-    items[elementOffset] = temp[threadIndex * 2u];
-  }
-  if (elementOffset + 1u < elementCount) {
-    items[elementOffset + 1u] = temp[threadIndex * 2u + 1u];
-  }
-}
-`;
-
-const PREFIX_ADD_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> items: array<u32>;
-@group(0) @binding(1) var<storage, read> blockSums: array<u32>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<u32>;
-
-@compute @workgroup_size(${THREADS_PER_WORKGROUP})
-fn main(
-  @builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(local_invocation_index) threadIndex: u32,
-) {
-  let elementCount = paramsBuffer[0];
-  let elementOffset = workgroupId.x * ${PREFIX_ITEMS_PER_WORKGROUP}u + threadIndex * 2u;
-  if (elementOffset >= elementCount) {
-    return;
-  }
-
-  let blockSum = blockSums[workgroupId.x];
-  items[elementOffset] += blockSum;
-  if (elementOffset + 1u < elementCount) {
-    items[elementOffset + 1u] += blockSum;
-  }
-}
-`;
-
-const VALIDATION_CLEAR_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> counters: array<atomic<u32>>;
-
-@compute @workgroup_size(4)
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  if (globalId.x < 8u) {
-    atomicStore(&counters[globalId.x], 0u);
-  }
-}
-`;
-
-const VALIDATION_SOURCE = `
-@group(0) @binding(0) var<storage, read> inputKeys: array<u32>;
-@group(0) @binding(1) var<storage, read> sortedIndices: array<u32>;
-@group(0) @binding(2) var<storage, read_write> counters: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read> paramsBuffer: array<u32>;
-
-@compute @workgroup_size(${THREADS_PER_WORKGROUP})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let elementCount = paramsBuffer[1];
-  if (index + 1u >= elementCount) {
-    return;
-  }
-
-  let left = sortedIndices[index];
-  let right = sortedIndices[index + 1u];
-  if (left >= elementCount || right >= elementCount) {
-    atomicAdd(&counters[2], 1u);
-    return;
-  }
-
-  let leftKey = inputKeys[left];
-  let rightKey = inputKeys[right];
-  if (leftKey > rightKey) {
-    atomicAdd(&counters[0], 1u);
-  }
-  if (leftKey < rightKey) {
-    atomicAdd(&counters[1], 1u);
-  }
-  if (left == right) {
-    atomicAdd(&counters[3], 1u);
-  }
-
-  atomicAdd(&counters[4], left);
-  atomicXor(&counters[5], left);
-  atomicAdd(&counters[6], 1u);
-
-  if (index + 2u == elementCount) {
-    atomicAdd(&counters[4], right);
-    atomicXor(&counters[5], right);
-    atomicAdd(&counters[6], 1u);
-  }
-}
-`;
+const VALIDATION_SOURCE = GpuRadixSortPass_VALIDATION_SOURCE_raw.replaceAll("__VALIDATION_SOURCE_EXPR_0__", String(THREADS_PER_WORKGROUP));
 
 type GpuRadixSortStats = {
   enabled: boolean;

@@ -18,6 +18,7 @@ type SplatStorageBuffers = {
   scale: StorageBuffer;
   rotationOpacity: StorageBuffer;
   color: StorageBuffer;
+  state: StorageBuffer;
   depthKeys: StorageBuffer;
   sortBucketCounts: StorageBuffer;
   sortBucketOffsets: StorageBuffer;
@@ -62,6 +63,7 @@ class SplatBuffers {
     this.storage?.scale.dispose();
     this.storage?.rotationOpacity.dispose();
     this.storage?.color.dispose();
+    this.storage?.state.dispose();
     this.storage?.depthKeys.dispose();
     this.storage?.sortBucketCounts.dispose();
     this.storage?.sortBucketOffsets.dispose();
@@ -86,6 +88,10 @@ class SplatBuffers {
 
     const color = new StorageBuffer(engine, this.packed.color.byteLength, undefined, "SplatColor");
     color.update(this.packed.color);
+
+    const stateData = new Uint32Array(this.packed.indices.length);
+    const state = new StorageBuffer(engine, Math.max(stateData.byteLength, 4), undefined, "SplatStateDefault");
+    state.update(stateData);
 
     const depthKeysData = new Uint32Array(this.packed.indices.length);
     const depthKeys = new StorageBuffer(engine, depthKeysData.byteLength, undefined, "SplatDepthKeys");
@@ -126,6 +132,7 @@ class SplatBuffers {
       scale,
       rotationOpacity,
       color,
+      state,
       depthKeys,
       sortBucketCounts,
       sortBucketOffsets,

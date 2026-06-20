@@ -13,6 +13,7 @@ type SogStorageBuffers = {
   scales: StorageBuffer;
   sh0: StorageBuffer;
   color: StorageBuffer;
+  state: StorageBuffer;
   scaleCodebook: StorageBuffer;
   sh0Codebook: StorageBuffer;
   centers: StorageBuffer;
@@ -80,6 +81,7 @@ class SogBuffers {
     this.storage?.scales.dispose();
     this.storage?.sh0.dispose();
     this.storage?.color.dispose();
+    this.storage?.state.dispose();
     this.storage?.scaleCodebook.dispose();
     this.storage?.sh0Codebook.dispose();
     this.storage?.centers.dispose();
@@ -110,6 +112,7 @@ class SogBuffers {
       centers[i * 4 + 3] = 1;
     }
     const depthKeys = new Uint32Array(this.packed.numSplats);
+    const state = new Uint32Array(this.packed.numSplats);
     const sortBucketCounts = new Uint32Array(4096);
     const sortBucketOffsets = new Uint32Array(4096);
     const sortScratchIndices = new Uint32Array(this.packed.numSplats);
@@ -121,6 +124,7 @@ class SogBuffers {
       scales: make("SogScales", this.packed.scales),
       sh0: make("SogSh0", this.packed.sh0),
       color: make("SogColor", this.colorData),
+      state: make("SogStateDefault", state),
       scaleCodebook: make("SogScaleCodebook", this.packed.scaleCodebook),
       sh0Codebook: make("SogSh0Codebook", this.packed.sh0Codebook),
       centers: make("SogCenters", centers),

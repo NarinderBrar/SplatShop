@@ -5,81 +5,12 @@ import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import GpuSortPrefixSumPass_PREFIX_SUM_SOURCE_raw from "./shaders/gpu-sort-prefix-sum-pass.prefix-sum-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 256;
 const BUCKET_COUNT = 2048;
 
-const PREFIX_SUM_SOURCE = `
-@group(0) @binding(0) var<storage, read> bucketCounts: array<u32>;
-@group(0) @binding(1) var<storage, read_write> bucketOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<u32>;
-
-var<workgroup> scanValues: array<u32, ${BUCKET_COUNT}>;
-var<workgroup> nextValues: array<u32, ${BUCKET_COUNT}>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(local_invocation_id) localId: vec3u) {
-  let threadIndex = localId.x;
-  let bucketCount = paramsBuffer[0];
-
-  var index = threadIndex;
-  loop {
-    if (index >= bucketCount) {
-      break;
-    }
-    scanValues[index] = bucketCounts[index];
-    index = index + ${WORKGROUP_SIZE}u;
-  }
-  workgroupBarrier();
-
-  var offset = 1u;
-  loop {
-    if (offset >= bucketCount) {
-      break;
-    }
-
-    index = threadIndex;
-    loop {
-      if (index >= bucketCount) {
-        break;
-      }
-
-      var value = scanValues[index];
-      if (index >= offset) {
-        value = value + scanValues[index - offset];
-      }
-      nextValues[index] = value;
-      index = index + ${WORKGROUP_SIZE}u;
-    }
-    workgroupBarrier();
-
-    index = threadIndex;
-    loop {
-      if (index >= bucketCount) {
-        break;
-      }
-      scanValues[index] = nextValues[index];
-      index = index + ${WORKGROUP_SIZE}u;
-    }
-    workgroupBarrier();
-
-    offset = offset << 1u;
-  }
-
-  index = threadIndex;
-  loop {
-    if (index >= bucketCount) {
-      break;
-    }
-    if (index == 0u) {
-      bucketOffsets[index] = 0u;
-    } else {
-      bucketOffsets[index] = scanValues[index - 1u];
-    }
-    index = index + ${WORKGROUP_SIZE}u;
-  }
-}
-`;
+const PREFIX_SUM_SOURCE = GpuSortPrefixSumPass_PREFIX_SUM_SOURCE_raw.replaceAll("__PREFIX_SUM_SOURCE_EXPR_0__", String(BUCKET_COUNT)).replaceAll("__PREFIX_SUM_SOURCE_EXPR_1__", String(BUCKET_COUNT)).replaceAll("__PREFIX_SUM_SOURCE_EXPR_2__", String(WORKGROUP_SIZE)).replaceAll("__PREFIX_SUM_SOURCE_EXPR_3__", String(WORKGROUP_SIZE)).replaceAll("__PREFIX_SUM_SOURCE_EXPR_4__", String(WORKGROUP_SIZE)).replaceAll("__PREFIX_SUM_SOURCE_EXPR_5__", String(WORKGROUP_SIZE)).replaceAll("__PREFIX_SUM_SOURCE_EXPR_6__", String(WORKGROUP_SIZE));
 
 type GpuSortPrefixSumStats = {
   enabled: boolean;

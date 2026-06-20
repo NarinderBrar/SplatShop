@@ -1,8 +1,7 @@
-import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
-import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Scene } from "@babylonjs/core/scene";
 
 import type { SelectionMode } from "../app/createUI";
+import { SplatStateBuffer, SPLAT_STATE_SELECTED } from "./SplatStateBuffer";
 
 type SelectionSource = {
   centers: Float32Array;
@@ -14,8 +13,7 @@ const DEFAULT_PICK_RADIUS_NDC = 0.025;
 const MAX_CONNECTED_DISTANCE = 10;
 
 class SelectionPass {
-  private readonly selectionFlags: StorageBuffer;
-  private readonly selectionMask: Uint32Array;
+  private readonly state: SplatStateBuffer;
   private selectedCount = 0;
 
   constructor(
@@ -23,10 +21,7 @@ class SelectionPass {
     private readonly source: SelectionSource,
     private readonly numSplats: number,
   ) {
-    const engine = scene.getEngine() as WebGPUEngine;
-    this.selectionMask = new Uint32Array(numSplats);
-    this.selectionFlags = new StorageBuffer(engine, Math.max(numSplats * 4, 4), undefined, "SelectionFlags");
-    this.selectionFlags.update(this.selectionMask);
+    this.state = new SplatStateBuffer(scene, numSplats);
   }
 
   selectPoint(
@@ -42,13 +37,13 @@ class SelectionPass {
     }
 
     if (selectionMode === "normal") {
-      this.selectionMask.fill(0);
+      this.state.clearFlag(SPLAT_STATE_SELECTED);
       this.selectedCount = 0;
     }
 
     const seedIndex = this.findNearestProjectedSplat(ndcX, ndcY, selectBehind, viewProjection);
     if (seedIndex < 0) {
-      this.selectionFlags.update(this.selectionMask);
+      this.state.flush();
       return Promise.resolve(this.selectedCount);
     }
 
@@ -78,23 +73,23 @@ class SelectionPass {
       this.applySelection(index, selectionMode);
     }
 
-    this.selectionFlags.update(this.selectionMask);
+    this.state.flush();
     return Promise.resolve(this.selectedCount);
   }
 
   clearSelection(): Promise<number> {
-    this.selectionMask.fill(0);
+    this.state.clearFlag(SPLAT_STATE_SELECTED);
     this.selectedCount = 0;
-    this.selectionFlags.update(this.selectionMask);
+    this.state.flush();
     return Promise.resolve(0);
   }
 
-  getSelectionBuffer(): StorageBuffer {
-    return this.selectionFlags;
+  getStateBuffer(): SplatStateBuffer {
+    return this.state;
   }
 
   dispose(): void {
-    this.selectionFlags.dispose();
+    this.state.dispose();
   }
 
   private findNearestProjectedSplat(
@@ -143,15 +138,13 @@ class SelectionPass {
 
   private applySelection(index: number, selectionMode: SelectionMode): void {
     if (selectionMode === "sub") {
-      if (this.selectionMask[index] !== 0) {
-        this.selectionMask[index] = 0;
+      if (this.state.set(index, SPLAT_STATE_SELECTED, false)) {
         this.selectedCount = Math.max(0, this.selectedCount - 1);
       }
       return;
     }
 
-    if (this.selectionMask[index] === 0) {
-      this.selectionMask[index] = 1;
+    if (this.state.set(index, SPLAT_STATE_SELECTED, true)) {
       this.selectedCount++;
     }
   }

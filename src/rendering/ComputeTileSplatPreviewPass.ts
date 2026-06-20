@@ -8,6 +8,8 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { ComputeTileStatsPass } from "./ComputeTileStatsPass";
 import type { ComputeTileWorkQueuePass } from "./ComputeTileWorkQueuePass";
+import ComputeTileSplatPreviewPass_FRAGMENT_SOURCE_raw from "./shaders/compute-tile-splat-preview-pass.fragment-source.wgsl?raw";
+import ComputeTileSplatPreviewPass_CHAN_HELPERS_raw from "./shaders/compute-tile-splat-preview-pass.chan-helpers.wgsl?raw";
 
 const DEFAULT_SPLAT_SAMPLES_PER_TILE = 32;
 const DEFAULT_RASTER_SPLATS_PER_TILE = 128;
@@ -467,15 +469,7 @@ const getAlphaScale = (): number => {
   return Math.min(2.0, Math.max(0.02, value));
 };
 
-const chanHelpers = `
-fn chan(pixel: u32, component: u32) -> u32 {
-  return (pixel >> (component * 8u)) & 255u;
-}
-
-fn chanf(pixel: u32, component: u32) -> f32 {
-  return f32(chan(pixel, component));
-}
-`;
+const chanHelpers = ComputeTileSplatPreviewPass_CHAN_HELPERS_raw;
 
 const getVertexSource = (
   mode: "expanded" | "sog" | "globalSog" | "debug",
@@ -740,40 +734,7 @@ ${shape === "gaussian" ? `  if (uniforms.useGaussianShape < 0.5) {
 }
 `;
 
-const FRAGMENT_SOURCE = `
-varying vIntensity: f32;
-varying vSampleT: f32;
-varying vCorner: vec2f;
-varying vColor: vec4f;
-varying vCoverageAlpha: f32;
-
-uniform minAlpha: f32;
-uniform maxAlpha: f32;
-uniform alphaClip: f32;
-uniform alphaScale: f32;
-
-const EXP4: f32 = 0.01831563888873418;
-const INV_ONE_MINUS_EXP4: f32 = 1.018657360363774;
-
-fn normExp(x: f32) -> f32 {
-  return (exp(-4.0 * x) - EXP4) * INV_ONE_MINUS_EXP4;
-}
-
-@fragment
-fn main(input: FragmentInputs) -> FragmentOutputs {
-  let radius2 = dot(input.vCorner, input.vCorner);
-  if (radius2 > 1.0) {
-    discard;
-  }
-
-  let color = max(input.vColor.rgb, vec3f(0.0));
-  let alpha = normExp(radius2) * clamp(input.vColor.a * uniforms.alphaScale * input.vCoverageAlpha, uniforms.minAlpha, uniforms.maxAlpha);
-  if (alpha < uniforms.alphaClip) {
-    discard;
-  }
-  fragmentOutputs.color = vec4f(color * alpha, alpha);
-}
-`;
+const FRAGMENT_SOURCE = ComputeTileSplatPreviewPass_FRAGMENT_SOURCE_raw;
 
 const isEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("computeTileSplatPreview") === "true";

@@ -6,6 +6,11 @@ import type { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import ComputeTileStatsPass_CLEAR_SOURCE_raw from "./shaders/compute-tile-stats-pass.clear-source.wgsl?raw";
+import ComputeTileStatsPass_BIN_SOURCE_raw from "./shaders/compute-tile-stats-pass.bin-source.wgsl?raw";
+import ComputeTileStatsPass_PREFIX_SOURCE_raw from "./shaders/compute-tile-stats-pass.prefix-source.wgsl?raw";
+import ComputeTileStatsPass_CLEAR_CURSORS_SOURCE_raw from "./shaders/compute-tile-stats-pass.clear-cursors-source.wgsl?raw";
+import ComputeTileStatsPass_SCATTER_SOURCE_raw from "./shaders/compute-tile-stats-pass.scatter-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 256;
 const DEFAULT_TILE_SIZE = 32;
@@ -14,162 +19,15 @@ const STATS_OFFSET = MAX_TILES;
 const COUNTER_COUNT = MAX_TILES + 4;
 const OFFSET_COUNT = MAX_TILES + 1;
 
-const CLEAR_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> counters: array<u32>;
-@group(0) @binding(1) var<storage, read> paramsBuffer: array<f32>;
+const CLEAR_SOURCE = ComputeTileStatsPass_CLEAR_SOURCE_raw.replaceAll("__CLEAR_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
 
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let counterCount = u32(paramsBuffer[22]);
-  if (index >= counterCount) {
-    return;
-  }
-  counters[index] = 0u;
-}
-`;
+const BIN_SOURCE = ComputeTileStatsPass_BIN_SOURCE_raw.replaceAll("__BIN_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__BIN_SOURCE_EXPR_1__", String(STATS_OFFSET + 1)).replaceAll("__BIN_SOURCE_EXPR_2__", String(STATS_OFFSET + 2)).replaceAll("__BIN_SOURCE_EXPR_3__", String(MAX_TILES)).replaceAll("__BIN_SOURCE_EXPR_4__", String(STATS_OFFSET + 3)).replaceAll("__BIN_SOURCE_EXPR_5__", String(STATS_OFFSET));
 
-const BIN_SOURCE = `
-@group(0) @binding(0) var<storage, read> centerBuffer: array<vec4f>;
-@group(0) @binding(1) var<storage, read_write> counters: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<f32>;
+const PREFIX_SOURCE = ComputeTileStatsPass_PREFIX_SOURCE_raw;
 
-fn transformCenter(center: vec3f) -> vec4f {
-  return vec4f(
-    paramsBuffer[0] * center.x + paramsBuffer[4] * center.y + paramsBuffer[8] * center.z + paramsBuffer[12],
-    paramsBuffer[1] * center.x + paramsBuffer[5] * center.y + paramsBuffer[9] * center.z + paramsBuffer[13],
-    paramsBuffer[2] * center.x + paramsBuffer[6] * center.y + paramsBuffer[10] * center.z + paramsBuffer[14],
-    paramsBuffer[3] * center.x + paramsBuffer[7] * center.y + paramsBuffer[11] * center.z + paramsBuffer[15]
-  );
-}
+const CLEAR_CURSORS_SOURCE = ComputeTileStatsPass_CLEAR_CURSORS_SOURCE_raw.replaceAll("__CLEAR_CURSORS_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
 
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let splatCount = u32(paramsBuffer[21]);
-  if (index >= splatCount) {
-    return;
-  }
-
-  let clip = transformCenter(centerBuffer[index].xyz);
-  if (clip.w <= 0.000001) {
-    atomicAdd(&counters[${STATS_OFFSET + 1}u], 1u);
-    return;
-  }
-
-  let ndc = clip.xy / clip.w;
-  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) {
-    atomicAdd(&counters[${STATS_OFFSET + 2}u], 1u);
-    return;
-  }
-
-  let viewport = vec2f(paramsBuffer[16], paramsBuffer[17]);
-  let tileSize = paramsBuffer[18];
-  let tileCols = u32(paramsBuffer[19]);
-  let tileRows = u32(paramsBuffer[20]);
-  let pixel = (ndc * vec2f(0.5, -0.5) + vec2f(0.5)) * viewport;
-  let tileX = min(tileCols - 1u, u32(clamp(floor(pixel.x / tileSize), 0.0, f32(tileCols - 1u))));
-  let tileY = min(tileRows - 1u, u32(clamp(floor(pixel.y / tileSize), 0.0, f32(tileRows - 1u))));
-  let tileIndex = tileY * tileCols + tileX;
-  if (tileIndex >= ${MAX_TILES}u) {
-    atomicAdd(&counters[${STATS_OFFSET + 3}u], 1u);
-    return;
-  }
-
-  atomicAdd(&counters[tileIndex], 1u);
-  atomicAdd(&counters[${STATS_OFFSET}u], 1u);
-}
-`;
-
-const PREFIX_SOURCE = `
-@group(0) @binding(0) var<storage, read> counters: array<u32>;
-@group(0) @binding(1) var<storage, read_write> tileOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read> paramsBuffer: array<f32>;
-
-@compute @workgroup_size(1)
-fn main() {
-  let tileCount = u32(paramsBuffer[23]);
-  var total = 0u;
-  for (var i = 0u; i < tileCount; i = i + 1u) {
-    tileOffsets[i] = total;
-    total = total + counters[i];
-  }
-  tileOffsets[tileCount] = total;
-}
-`;
-
-const CLEAR_CURSORS_SOURCE = `
-@group(0) @binding(0) var<storage, read_write> tileCursors: array<u32>;
-@group(0) @binding(1) var<storage, read> paramsBuffer: array<f32>;
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let tileCount = u32(paramsBuffer[23]);
-  if (index >= tileCount) {
-    return;
-  }
-  tileCursors[index] = 0u;
-}
-`;
-
-const SCATTER_SOURCE = `
-@group(0) @binding(0) var<storage, read> centerBuffer: array<vec4f>;
-@group(0) @binding(1) var<storage, read> tileOffsets: array<u32>;
-@group(0) @binding(2) var<storage, read_write> tileCursors: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read_write> tileSplatList: array<u32>;
-@group(0) @binding(4) var<storage, read_write> counters: array<atomic<u32>>;
-@group(0) @binding(5) var<storage, read> paramsBuffer: array<f32>;
-
-fn transformCenter(center: vec3f) -> vec4f {
-  return vec4f(
-    paramsBuffer[0] * center.x + paramsBuffer[4] * center.y + paramsBuffer[8] * center.z + paramsBuffer[12],
-    paramsBuffer[1] * center.x + paramsBuffer[5] * center.y + paramsBuffer[9] * center.z + paramsBuffer[13],
-    paramsBuffer[2] * center.x + paramsBuffer[6] * center.y + paramsBuffer[10] * center.z + paramsBuffer[14],
-    paramsBuffer[3] * center.x + paramsBuffer[7] * center.y + paramsBuffer[11] * center.z + paramsBuffer[15]
-  );
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let splatCount = u32(paramsBuffer[21]);
-  if (index >= splatCount) {
-    return;
-  }
-
-  let clip = transformCenter(centerBuffer[index].xyz);
-  if (clip.w <= 0.000001) {
-    return;
-  }
-
-  let ndc = clip.xy / clip.w;
-  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) {
-    return;
-  }
-
-  let viewport = vec2f(paramsBuffer[16], paramsBuffer[17]);
-  let tileSize = paramsBuffer[18];
-  let tileCols = u32(paramsBuffer[19]);
-  let tileRows = u32(paramsBuffer[20]);
-  let tileCount = u32(paramsBuffer[23]);
-  let pixel = (ndc * vec2f(0.5, -0.5) + vec2f(0.5)) * viewport;
-  let tileX = min(tileCols - 1u, u32(clamp(floor(pixel.x / tileSize), 0.0, f32(tileCols - 1u))));
-  let tileY = min(tileRows - 1u, u32(clamp(floor(pixel.y / tileSize), 0.0, f32(tileRows - 1u))));
-  let tileIndex = tileY * tileCols + tileX;
-  if (tileIndex >= tileCount || tileIndex >= ${MAX_TILES}u) {
-    return;
-  }
-
-  let localIndex = atomicAdd(&tileCursors[tileIndex], 1u);
-  let dst = tileOffsets[tileIndex] + localIndex;
-  if (dst >= splatCount) {
-    atomicAdd(&counters[${STATS_OFFSET + 3}u], 1u);
-    return;
-  }
-  tileSplatList[dst] = index;
-}
-`;
+const SCATTER_SOURCE = ComputeTileStatsPass_SCATTER_SOURCE_raw.replaceAll("__SCATTER_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__SCATTER_SOURCE_EXPR_1__", String(MAX_TILES)).replaceAll("__SCATTER_SOURCE_EXPR_2__", String(STATS_OFFSET + 3));
 
 type ComputeTileStats = {
   enabled: boolean;
