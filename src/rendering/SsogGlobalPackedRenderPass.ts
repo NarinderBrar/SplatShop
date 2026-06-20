@@ -18,6 +18,7 @@ import { ComputeTileStatsPass, type ComputeTileStats } from "./ComputeTileStatsP
 import { ComputeTileWorkQueuePass, type ComputeTileWorkQueueStats } from "./ComputeTileWorkQueuePass";
 import { canCreateComputeShader, GpuDepthKeyPass, type GpuDepthKeyStats } from "./GpuDepthKeyPass";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
+import { getQualityPreset } from "./qualityProfiles";
 import { getRequestedRendererMode, type EffectiveRendererMode, type RequestedRendererMode } from "./renderControls";
 import { BufferVersionTracker } from "./BufferVersionTracker";
 
@@ -198,6 +199,8 @@ type SsogGlobalPackedStats = {
   lastGpuRadixSortSplats: number;
   gpuRadixSortBits: number;
   gpuRadixSortPasses: number;
+  gpuRadixSortIntervalFrames: number;
+  gpuRadixSortSkippedReason: string;
   gpuSortVisibleMode: "cpu" | "auto" | "radix";
   gpuSortVisibleEffective: "cpu" | "radix";
   gpuRadixValidationEnabled: boolean;
@@ -274,6 +277,27 @@ const getCpuShIntervalFrames = (): number => {
 const isCpuShEnabled = (): boolean => {
   const value = new URLSearchParams(window.location.search).get("sogSh");
   return value === "cpu" || value === "true";
+};
+
+const getSsogGpuRadixSortIntervalFrames = (): number => {
+  const params = new URLSearchParams(window.location.search);
+  const explicit = Number(params.get("ssogGpuSortInterval") ?? params.get("gpuSortInterval"));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.max(1, Math.floor(explicit));
+  }
+
+  switch (getQualityPreset()) {
+    case "fast":
+      return 12;
+    case "full":
+      return 3;
+    case "idle":
+    case "screenshot":
+      return 1;
+    case "balanced":
+    default:
+      return 6;
+  }
 };
 
 const GPU_INDEX_GATHER_SOURCE = `
@@ -570,6 +594,9 @@ class SsogGlobalPackedRenderPass {
   private lastUploadMs = 0;
   private lastGpuGatherMs = 0;
   private gpuSortFrame = 0;
+  private lastGpuSortCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
+  private lastGpuSortCameraForward = new Vector3(0, 0, 0);
+  private lastGpuSortSkippedReason = "not-run";
   private gpuVisibleActive = false;
   private gpuGatheredCurrentSort = false;
   private computePreviewDrawableFrames = 0;
@@ -625,6 +652,7 @@ class SsogGlobalPackedRenderPass {
   private readonly computeTileRasterPrimaryAllowed = isSsogComputeTileRasterPrimaryEnabled();
   private readonly cpuShEnabled = isCpuShEnabled();
   private readonly cpuShIntervalFrames = getCpuShIntervalFrames();
+  private readonly gpuRadixSortIntervalFrames = getSsogGpuRadixSortIntervalFrames();
 
   readonly signature: string;
   readonly keys: Set<string>;
@@ -877,6 +905,8 @@ class SsogGlobalPackedRenderPass {
       lastGpuSortScatterMs: this.lastGpuGatherMs,
       lastGpuSortScatterSplats: this.gpuGatheredCurrentSort ? this.numSplats : 0,
       ...this.getGpuRadixSortStats(),
+      gpuRadixSortIntervalFrames: this.gpuRadixSortIntervalFrames,
+      gpuRadixSortSkippedReason: this.lastGpuSortSkippedReason,
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.gpuVisibleActive ? "radix" : "cpu",
       bindGroupGeneration: this.bufferVersions.bindGroupGeneration,
@@ -1525,6 +1555,18 @@ class SsogGlobalPackedRenderPass {
       return;
     }
 
+    if (this.gpuSortVisibleMode !== "cpu" && this.gpuRadixSortPass) {
+      const gpuSorted = this.updateGpuSortStages(cameraPosition, cameraForward, true);
+      if (gpuSorted) {
+        this.lastCameraPosition.copyFrom(cameraPosition);
+        this.lastCameraForward.copyFrom(cameraForward);
+        this.sortPending = false;
+        this.lastSortMs = 0;
+        this.lastUploadMs = 0;
+        return;
+      }
+    }
+
     this.sortFrame = (this.sortFrame + 1) % SORT_INTERVAL_FRAMES;
     if (!initialSort && this.sortFrame !== 1) {
       return;
@@ -1553,24 +1595,39 @@ class SsogGlobalPackedRenderPass {
 
   private updateGpuSortStages(cameraPosition: Vector3, cameraForward: Vector3, forceDepth = false): boolean {
     if (!this.gpuDepthKeyPass || !this.gpuRadixSortPass) {
+      this.lastGpuSortSkippedReason = "gpu-sort-unavailable";
       return false;
     }
 
     const depthStats = this.gpuDepthKeyPass.getStats();
     const radixStats = this.gpuRadixSortPass.getStats();
     if (this.gpuSortVisibleMode === "cpu" && !isSsogGpuSortShadowContinuous() && radixStats.dispatched) {
+      this.lastGpuSortSkippedReason = "shadow-sort-already-dispatched";
       return false;
     }
     if (!forceDepth && depthStats.dispatched && radixStats.dispatched) {
+      this.lastGpuSortSkippedReason = "sort-already-current";
       this.updateGpuVisibleState();
       return this.gpuVisibleActive;
     }
 
-    if (forceDepth && depthStats.dispatched) {
-      this.gpuSortFrame = (this.gpuSortFrame + 1) % SORT_INTERVAL_FRAMES;
-      if (this.gpuSortFrame !== 1) {
+    if (forceDepth) {
+      const initialGpuSort = !Number.isFinite(this.lastGpuSortCameraPosition.x) || !radixStats.dispatched;
+      const moved = Vector3.DistanceSquared(cameraPosition, this.lastGpuSortCameraPosition) > SORT_MOVE_EPSILON_SQ;
+      const turned = Vector3.Dot(cameraForward, this.lastGpuSortCameraForward) < SORT_FORWARD_DOT_THRESHOLD;
+      if (!initialGpuSort && !moved && !turned) {
+        this.lastGpuSortSkippedReason = "camera-static";
         this.updateGpuVisibleState();
         return this.gpuVisibleActive;
+      }
+
+      if (!initialGpuSort && !isSsogGpuSortForceVisible()) {
+        this.gpuSortFrame = (this.gpuSortFrame + 1) % this.gpuRadixSortIntervalFrames;
+        if (this.gpuSortFrame !== 1) {
+          this.lastGpuSortSkippedReason = `interval-${this.gpuRadixSortIntervalFrames}-frames`;
+          this.updateGpuVisibleState();
+          return this.gpuVisibleActive;
+        }
       }
     }
 
@@ -1579,9 +1636,16 @@ class SsogGlobalPackedRenderPass {
       : true;
     if (depthDispatched && (forceDepth || !this.gpuRadixSortPass.getStats().dispatched)) {
       if (this.gpuRadixSortPass.dispatch()) {
+        this.lastGpuSortCameraPosition.copyFrom(cameraPosition);
+        this.lastGpuSortCameraForward.copyFrom(cameraForward);
+        this.lastGpuSortSkippedReason = "none";
         this.gpuVisibleActive = false;
         this.gpuGatheredCurrentSort = false;
+      } else {
+        this.lastGpuSortSkippedReason = "dispatch-failed";
       }
+    } else if (!depthDispatched) {
+      this.lastGpuSortSkippedReason = "depth-key-dispatch-failed";
     }
     this.updateGpuVisibleState();
     return this.gpuVisibleActive;

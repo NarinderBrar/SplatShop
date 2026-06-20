@@ -554,6 +554,9 @@ class ViewerDebugStats {
       renderStats.gpuRadixSortEnabled
         ? `GPU radix sort: ${formatMs(renderStats.lastGpuRadixSortMs)} ms / ${formatCount(renderStats.lastGpuRadixSortSplats)}`
         : "",
+      renderStats.gpuRadixSortEnabled && "gpuRadixSortIntervalFrames" in renderStats
+        ? `GPU radix throttle: ${formatCount(renderStats.gpuRadixSortIntervalFrames as number)} frames / ${String((renderStats as typeof renderStats & { gpuRadixSortSkippedReason?: string }).gpuRadixSortSkippedReason ?? "unknown")}`
+        : "",
       renderStats.gpuRadixSortEnabled
         ? `GPU radix bits: ${formatCount(renderStats.gpuRadixSortBits)} / passes ${formatCount(renderStats.gpuRadixSortPasses)}`
         : "",
