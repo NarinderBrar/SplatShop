@@ -37,6 +37,7 @@ import {
   type GpuSortVisibleMode,
   type SortMode,
 } from "./renderControls";
+import { getQualitySplatBudget } from "./qualityProfiles";
 
 const SPLATS_PER_INSTANCE = 128;
 const LOD_REBUILD_INTERVAL_FRAMES = 30;
@@ -44,29 +45,12 @@ const LOD_CAMERA_POSITION_EPSILON = 0.08;
 const MIN_PIXEL_RADIUS = 2.0;
 const MAX_PIXEL_RADIUS = 96;
 const ALPHA_CLIP = 1 / 255;
-const BALANCED_RENDER_SPLAT_BUDGET = 2_000_000;
-const FAST_RENDER_SPLAT_BUDGET = 1_000_000;
-
 const getRenderSplatBudget = (sourceSplats: number): number => {
   const params = new URLSearchParams(window.location.search);
-  const explicitBudget = Number(params.get("splatBudget"));
-  if (Number.isFinite(explicitBudget) && explicitBudget > 0) {
-    return explicitBudget;
-  }
-
   if (params.get("sogQualityBudget") !== "true") {
     return sourceSplats;
   }
-
-  const quality = params.get("quality");
-  if (quality === "fast") {
-    return Math.min(sourceSplats, FAST_RENDER_SPLAT_BUDGET);
-  }
-  if (quality === "balanced") {
-    return Math.min(sourceSplats, BALANCED_RENDER_SPLAT_BUDGET);
-  }
-
-  return sourceSplats;
+  return getQualitySplatBudget(sourceSplats);
 };
 
 const getPositiveNumberParam = (name: string, fallback: number): number => {

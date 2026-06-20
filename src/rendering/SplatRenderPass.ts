@@ -37,9 +37,8 @@ import {
   type GpuSortVisibleMode,
   type SortMode,
 } from "./renderControls";
+import { getQualitySplatBudget } from "./qualityProfiles";
 
-const BALANCED_RENDER_SPLAT_BUDGET = 2_000_000;
-const FULL_RENDER_SPLAT_BUDGET = 6_000_000;
 const SPLATS_PER_INSTANCE = 128;
 const MIN_PIXEL_RADIUS = 2.0;
 const MAX_PIXEL_RADIUS = 96;
@@ -47,22 +46,7 @@ const ALPHA_CLIP = 1 / 255;
 const LOD_REBUILD_INTERVAL_FRAMES = 30;
 const LOD_CAMERA_POSITION_EPSILON = 0.08;
 
-const getRenderSplatBudget = (): number => {
-  const params = new URLSearchParams(window.location.search);
-  const explicitBudget = Number(params.get("splatBudget"));
-  if (Number.isFinite(explicitBudget) && explicitBudget > 0) {
-    return explicitBudget;
-  }
-
-  const quality = params.get("quality");
-  if (quality === "fast") {
-    return 1_000_000;
-  }
-  if (quality === "balanced") {
-    return BALANCED_RENDER_SPLAT_BUDGET;
-  }
-  return FULL_RENDER_SPLAT_BUDGET;
-};
+const getRenderSplatBudget = (sourceSplats: number): number => getQualitySplatBudget(sourceSplats);
 
 const getPositiveNumberParam = (name: string, fallback: number): number => {
   const value = Number(new URLSearchParams(window.location.search).get(name));
@@ -598,7 +582,7 @@ class SplatRenderPass {
   constructor(scene: Scene, splatBuffers: SplatBuffers, options: SplatRenderPassOptions = {}) {
     this.splatBuffers = splatBuffers;
     this.mesh = new Mesh("SplatRenderPassQuads", scene);
-    this.renderBudget = options.renderBudget ?? getRenderSplatBudget();
+    this.renderBudget = options.renderBudget ?? getRenderSplatBudget(splatBuffers.stats.numSplats);
     this.rendererBackend = resolveRendererBackend(scene);
     this.mesh.isPickable = false;
     this.mesh.hasVertexAlpha = true;

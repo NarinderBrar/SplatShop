@@ -225,6 +225,8 @@ class ViewerDebugStats {
       evictedChunks?: number;
       cacheSplats?: number;
       qualityPreset?: string;
+      qualityDeviceTier?: string;
+      splatBudget?: number;
       cacheChunkPressure?: number;
       cacheSplatPressure?: number;
       selectedCacheRatio?: number;
@@ -463,7 +465,9 @@ class ViewerDebugStats {
       streamingStats.cacheSplats !== undefined
         ? `Cache splats: ${formatCount(streamingStats.cacheSplats)}`
         : "",
-      streamingStats.qualityPreset !== undefined ? `SSOG preset: ${streamingStats.qualityPreset}` : "",
+      streamingStats.qualityPreset !== undefined
+        ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}`
+        : "",
       streamingStats.cacheChunkLimit !== undefined
         ? `SSOG cache: ${streamingStats.cacheChunkLimit < 0 ? "all" : formatCount(streamingStats.cacheChunkLimit)} chunks / ${formatCount(streamingStats.cacheSplatLimit ?? 0)} splats`
         : "",

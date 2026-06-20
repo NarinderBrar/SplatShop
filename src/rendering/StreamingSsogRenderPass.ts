@@ -15,9 +15,19 @@ import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 import { GpuBufferWriter } from "./GpuBufferWriter";
+import {
+  getDeviceTier,
+  getExplicitSplatBudget,
+  getPlatformQualityProfile,
+  getQualityPreset,
+  type SplatDeviceTier,
+  type SplatQualityPreset,
+} from "./qualityProfiles";
 
 type StreamingSsogRenderStats = PackedSogRenderStats & {
   qualityPreset: SsogQualityPreset;
+  qualityDeviceTier: SsogDeviceTier;
+  splatBudget: number;
   loadedChunks: number;
   pendingChunks: number;
   pendingUploadChunks: number;
@@ -193,8 +203,8 @@ type ExpandedRuntime = {
 
 type SsogGlobalSortMode = "off" | "packed" | "expanded";
 type SsogChunkSortMode = "near" | "center" | "far";
-type SsogQualityPreset = "full" | "balanced" | "fast";
-type SsogDeviceTier = "low" | "standard" | "high";
+type SsogQualityPreset = SplatQualityPreset;
+type SsogDeviceTier = SplatDeviceTier;
 type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4;
 
 type SsogQualityProfile = {
@@ -252,37 +262,9 @@ const getNonNegativeNumberParam = (name: string, fallback: number): number => {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 };
 
-const getSsogQualityPreset = (): SsogQualityPreset => {
-  const params = new URLSearchParams(window.location.search);
-  const value = params.get("quality");
-  if (value === "full" || value === "balanced" || value === "fast") {
-    return value;
-  }
-  return params.get("ssogReference") === "true" ? "full" : "balanced";
-};
+const getSsogQualityPreset = (): SsogQualityPreset => getQualityPreset();
 
-const getSsogDeviceTier = (): SsogDeviceTier => {
-  const params = new URLSearchParams(window.location.search);
-  const explicit = params.get("ssogDeviceTier");
-  if (explicit === "low" || explicit === "standard" || explicit === "high") {
-    return explicit;
-  }
-
-  const nav = navigator as Navigator & { deviceMemory?: number; userAgentData?: { mobile?: boolean } };
-  const memoryGb = nav.deviceMemory ?? 8;
-  const cores = navigator.hardwareConcurrency ?? 4;
-  const isMobile =
-    nav.userAgentData?.mobile ??
-    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-
-  if (isMobile || memoryGb <= 4 || cores <= 4) {
-    return "low";
-  }
-  if (memoryGb >= 12 && cores >= 8) {
-    return "high";
-  }
-  return "standard";
-};
+const getSsogDeviceTier = (): SsogDeviceTier => getDeviceTier();
 
 const scaleSsogQualityProfileForDevice = (profile: SsogQualityProfile): SsogQualityProfile => {
   if (profile.preset === "fast") {
@@ -323,13 +305,14 @@ const scaleSsogQualityProfileForDevice = (profile: SsogQualityProfile): SsogQual
 const getSsogQualityProfile = (): SsogQualityProfile => {
   const preset = getSsogQualityPreset();
   const deviceTier = getSsogDeviceTier();
+  const platformProfile = getPlatformQualityProfile();
   const base = (() => {
     switch (preset) {
     case "fast":
       return {
         preset,
         deviceTier,
-        splatBudget: 900_000,
+        splatBudget: platformProfile.ssogSplatBudget,
         expandedSortBudgetRatio: 0.55,
         cacheChunks: 48,
         maxPendingLoads: 3,
@@ -350,7 +333,7 @@ const getSsogQualityProfile = (): SsogQualityProfile => {
       return {
         preset,
         deviceTier,
-        splatBudget: 2_000_000,
+        splatBudget: platformProfile.ssogSplatBudget,
         expandedSortBudgetRatio: 1,
         cacheChunks: 96,
         maxPendingLoads: 6,
@@ -371,7 +354,7 @@ const getSsogQualityProfile = (): SsogQualityProfile => {
       return {
         preset,
         deviceTier,
-        splatBudget: Number.POSITIVE_INFINITY,
+        splatBudget: platformProfile.ssogSplatBudget,
         expandedSortBudgetRatio: 1,
         cacheChunks: 128,
         maxPendingLoads: 6,
@@ -397,9 +380,9 @@ const getSsogQualityProfile = (): SsogQualityProfile => {
 const getSplatBudget = (sourceSplats: number): number => {
   const params = new URLSearchParams(window.location.search);
   const profile = getSsogQualityProfile();
-  const explicit = Number(params.get("splatBudget"));
-  if (Number.isFinite(explicit) && explicit > 0) {
-    return Math.floor(explicit);
+  const explicit = getExplicitSplatBudget();
+  if (explicit !== undefined) {
+    return Math.min(sourceSplats, explicit);
   }
 
   if (params.get("ssogReference") === "true") {
@@ -1086,6 +1069,8 @@ class StreamingSsogRenderPass {
       gpuBufferArenaGrows: activeStats.reduce((sum, item) => sum + item.gpuBufferArenaGrows, 0),
       bindGroupGeneration: activeStats.reduce((sum, item) => sum + item.bindGroupGeneration, 0),
       qualityPreset: this.qualityPreset,
+      qualityDeviceTier: getSsogDeviceTier(),
+      splatBudget: Number.isFinite(this.splatBudget) ? this.splatBudget : -1,
       loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,
       pendingUploadChunks: this.decodedUploadQueue.size,

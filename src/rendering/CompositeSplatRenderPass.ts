@@ -5,6 +5,7 @@ import type { SsogPackedChunk } from "../splat/SplatAsset";
 import { selectSsogLod } from "../splat/SsogLodSelector";
 import type { PackedSogRenderPass, PackedSogRenderStats } from "./PackedSogRenderPass";
 import type { SplatRenderPass, SplatRenderStats } from "./SplatRenderPass";
+import { getQualitySplatBudget } from "./qualityProfiles";
 
 type RenderPassLike = SplatRenderPass | PackedSogRenderPass;
 
@@ -24,22 +25,7 @@ type ChunkRuntime = {
 
 const LOD_SELECT_INTERVAL_FRAMES = 15;
 
-const getSplatBudget = (sourceSplats: number): number => {
-  const params = new URLSearchParams(window.location.search);
-  const explicit = Number(params.get("splatBudget"));
-  if (Number.isFinite(explicit) && explicit > 0) {
-    return Math.floor(explicit);
-  }
-
-  const quality = params.get("quality");
-  if (quality === "fast") {
-    return Math.min(sourceSplats, 1_000_000);
-  }
-  if (quality === "balanced") {
-    return Math.min(sourceSplats, 2_000_000);
-  }
-  return sourceSplats;
-};
+const getSplatBudget = (sourceSplats: number): number => getQualitySplatBudget(sourceSplats);
 
 const getLodRangeMin = (): number => {
   const value = Number(new URLSearchParams(window.location.search).get("lodRangeMin"));
