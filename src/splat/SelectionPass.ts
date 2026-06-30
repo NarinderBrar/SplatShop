@@ -1,6 +1,7 @@
 import type { Scene } from "@babylonjs/core/scene";
 
 import type { SelectionMode } from "../app/createUI";
+import { SplatStateCommandQueue, type SplatStateCommandStats } from "./SplatStateCommandQueue";
 import { SplatStateBuffer, SPLAT_STATE_SELECTED } from "./SplatStateBuffer";
 
 type SelectionSource = {
@@ -14,6 +15,7 @@ const MAX_CONNECTED_DISTANCE = 10;
 
 class SelectionPass {
   private readonly state: SplatStateBuffer;
+  private readonly commands = new SplatStateCommandQueue();
   private selectedCount = 0;
 
   constructor(
@@ -32,8 +34,43 @@ class SelectionPass {
     selectBehind: boolean,
     viewProjection: Float32Array,
   ): Promise<number> {
+    return this.commands.enqueue("selection", () =>
+      this.selectPointNow(ndcX, ndcY, threshold, selectionMode, selectBehind, viewProjection),
+    );
+  }
+
+  clearSelection(): Promise<number> {
+    return this.commands.enqueue("selection", () => {
+      this.state.clearFlag(SPLAT_STATE_SELECTED);
+      this.selectedCount = 0;
+      this.state.flush();
+      return 0;
+    });
+  }
+
+  getStateBuffer(): SplatStateBuffer {
+    return this.state;
+  }
+
+  getCommandStats(): SplatStateCommandStats {
+    return this.commands.getStats();
+  }
+
+  dispose(): void {
+    this.commands.dispose();
+    this.state.dispose();
+  }
+
+  private selectPointNow(
+    ndcX: number,
+    ndcY: number,
+    threshold: number,
+    selectionMode: SelectionMode,
+    selectBehind: boolean,
+    viewProjection: Float32Array,
+  ): number {
     if (this.numSplats <= 0) {
-      return Promise.resolve(0);
+      return 0;
     }
 
     if (selectionMode === "normal") {
@@ -44,11 +81,12 @@ class SelectionPass {
     const seedIndex = this.findNearestProjectedSplat(ndcX, ndcY, selectBehind, viewProjection);
     if (seedIndex < 0) {
       this.state.flush();
-      return Promise.resolve(this.selectedCount);
+      return this.selectedCount;
     }
 
     const seedCenter = this.getCenter(seedIndex);
     const seedColor = this.getColor(seedIndex);
+    const matchedIndices: number[] = [];
 
     for (let index = 0; index < this.numSplats; index++) {
       const color = this.getColor(index);
@@ -70,26 +108,13 @@ class SelectionPass {
         continue;
       }
 
-      this.applySelection(index, selectionMode);
+      matchedIndices.push(index);
     }
 
+    this.state.setMany(matchedIndices, SPLAT_STATE_SELECTED, selectionMode !== "sub");
+    this.selectedCount = this.state.count(SPLAT_STATE_SELECTED);
     this.state.flush();
-    return Promise.resolve(this.selectedCount);
-  }
-
-  clearSelection(): Promise<number> {
-    this.state.clearFlag(SPLAT_STATE_SELECTED);
-    this.selectedCount = 0;
-    this.state.flush();
-    return Promise.resolve(0);
-  }
-
-  getStateBuffer(): SplatStateBuffer {
-    return this.state;
-  }
-
-  dispose(): void {
-    this.state.dispose();
+    return this.selectedCount;
   }
 
   private findNearestProjectedSplat(
@@ -134,19 +159,6 @@ class SelectionPass {
     }
 
     return bestIndex;
-  }
-
-  private applySelection(index: number, selectionMode: SelectionMode): void {
-    if (selectionMode === "sub") {
-      if (this.state.set(index, SPLAT_STATE_SELECTED, false)) {
-        this.selectedCount = Math.max(0, this.selectedCount - 1);
-      }
-      return;
-    }
-
-    if (this.state.set(index, SPLAT_STATE_SELECTED, true)) {
-      this.selectedCount++;
-    }
   }
 
   private getCenter(index: number): [number, number, number] {

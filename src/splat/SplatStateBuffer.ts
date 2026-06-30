@@ -54,20 +54,41 @@ class SplatStateBuffer {
     return true;
   }
 
-  clearFlag(flag: SplatStateFlag): void {
-    let changed = false;
+  setMany(indices: ArrayLike<number>, flag: SplatStateFlag, enabled: boolean): number {
+    let changed = 0;
+    for (let item = 0; item < indices.length; item++) {
+      if (this.set(indices[item], flag, enabled)) {
+        changed++;
+      }
+    }
+    return changed;
+  }
+
+  clearFlag(flag: SplatStateFlag): number {
+    let changed = 0;
     for (let index = 0; index < this.numSplats; index++) {
       const previous = this.data[index];
       const next = previous & ~flag;
       if (next !== previous) {
         this.data[index] = next;
         this.markDirty(index);
-        changed = true;
+        changed++;
       }
     }
     if (!changed) {
       this.clearDirty();
     }
+    return changed;
+  }
+
+  count(flag: SplatStateFlag): number {
+    let total = 0;
+    for (let index = 0; index < this.numSplats; index++) {
+      if ((this.data[index] & flag) !== 0) {
+        total++;
+      }
+    }
+    return total;
   }
 
   flush(): void {
