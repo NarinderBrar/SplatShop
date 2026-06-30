@@ -258,6 +258,12 @@ class ViewerDebugStats {
       gpuPagePoolPressure?: number;
       gpuPageEvictedChunks?: number;
       gpuPageEvictedPages?: number;
+      protectedFallbackChunks?: number;
+      nearPrefetchChunksLoaded?: number;
+      idlePrefetchChunksLoaded?: number;
+      gpuPreUploadEvictedChunks?: number;
+      gpuPreUploadEvictedPages?: number;
+      decodedCacheSplatLimit?: number;
       gpuBufferWriterTotalUploadBytes?: number;
       gpuBufferWriterTotalUploadCount?: number;
       gpuBufferWriterTotalErrorCount?: number;
@@ -486,6 +492,12 @@ class ViewerDebugStats {
         : "",
       streamingStats.gpuPagePoolTotalPages !== undefined
         ? `SSOG GPU pages: ${formatCount(streamingStats.gpuPagePoolUsedPages ?? 0)}/${formatCount(streamingStats.gpuPagePoolTotalPages)} used / ${formatCount(streamingStats.gpuPagePoolAllocatedChunks ?? 0)} chunks / ${formatCount(streamingStats.gpuPagePoolResidentSplats ?? 0)} splats / page ${formatCount(streamingStats.gpuPagePoolPageCapacitySplats ?? 0)} / pressure ${((streamingStats.gpuPagePoolPressure ?? 0) * 100).toFixed(0)}% / evicted ${formatCount(streamingStats.gpuPageEvictedChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPageEvictedPages ?? 0)} pages${(streamingStats.gpuPagePoolOverflowPages ?? 0) > 0 ? ` / overflow ${formatCount(streamingStats.gpuPagePoolOverflowChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPagePoolOverflowPages ?? 0)} pages` : ""}`
+        : "",
+      streamingStats.decodedCacheSplatLimit !== undefined
+        ? `SSOG cache classes: fallback ${formatCount(streamingStats.protectedFallbackChunks ?? 0)} / near prefetch ${formatCount(streamingStats.nearPrefetchChunksLoaded ?? 0)} / idle prefetch ${formatCount(streamingStats.idlePrefetchChunksLoaded ?? 0)} / decoded limit ${formatCount(streamingStats.decodedCacheSplatLimit ?? 0)}`
+        : "",
+      streamingStats.gpuPreUploadEvictedChunks !== undefined
+        ? `SSOG pre-upload eviction: ${formatCount(streamingStats.gpuPreUploadEvictedChunks ?? 0)} chunks / ${formatCount(streamingStats.gpuPreUploadEvictedPages ?? 0)} pages`
         : "",
       streamingStats.maxPendingLoads !== undefined
         ? `SSOG loading: max pending ${formatCount(streamingStats.maxPendingLoads)} / prefetch ${streamingStats.prefetchMultiplier?.toFixed(2) ?? "0.00"}x`

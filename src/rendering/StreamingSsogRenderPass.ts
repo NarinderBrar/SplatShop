@@ -73,6 +73,12 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuResidentSplats: number;
   cpuEvictedChunks: number;
   reuploadedChunks: number;
+  protectedFallbackChunks: number;
+  nearPrefetchChunksLoaded: number;
+  idlePrefetchChunksLoaded: number;
+  gpuPreUploadEvictedChunks: number;
+  gpuPreUploadEvictedPages: number;
+  decodedCacheSplatLimit: number;
   gpuBufferWriterTotalUploadBytes: number;
   gpuBufferWriterTotalUploadCount: number;
   gpuBufferWriterTotalErrorCount: number;
@@ -166,6 +172,8 @@ type SsogUploadBudgetState = {
   uploadedBytes: number;
 };
 
+type CacheClass = "fallback" | "selected" | "desired" | "near-prefetch" | "idle-prefetch" | "inactive";
+
 type RendererCommand =
   | {
       type: "chunkLoaded";
@@ -212,7 +220,7 @@ type SsogGlobalSortMode = "off" | "packed" | "expanded";
 type SsogChunkSortMode = "near" | "center" | "far";
 type SsogQualityPreset = SplatQualityPreset;
 type SsogDeviceTier = SplatDeviceTier;
-type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4;
+type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4 | 5;
 
 type SsogQualityProfile = {
   preset: SsogQualityPreset;
@@ -442,6 +450,9 @@ const getSsogEvictAfterFrames = (): number =>
 const getSsogCacheSplatMultiplier = (): number =>
   Math.max(1, getPositiveNumberParam("ssogCacheSplatMultiplier", getSsogQualityProfile().cacheSplatMultiplier));
 
+const getSsogDecodedCacheSplatLimit = (fallback: number): number =>
+  Math.max(1, Math.floor(getPositiveNumberParam("ssogDecodedCacheSplats", fallback)));
+
 const getLodMoveEpsilonSq = (): number => {
   const epsilon = getPositiveNumberParam("lodMoveEpsilon", getSsogQualityProfile().lodMoveEpsilon);
   return epsilon * epsilon;
@@ -589,6 +600,7 @@ class StreamingSsogRenderPass {
   private readonly selectedKeys = new Set<string>();
   private readonly desiredKeys = new Set<string>();
   private readonly prefetchKeys = new Set<string>();
+  private readonly nearPrefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
   private readonly recentlyEvictedKeyFrames = new Map<string, number>();
   private readonly visibleEntryIndices = new ChunkIndexBuffer();
@@ -621,6 +633,7 @@ class StreamingSsogRenderPass {
   private readonly evictAfterFrames = getSsogEvictAfterFrames();
   private readonly cacheSplatMultiplier = getSsogCacheSplatMultiplier();
   private readonly cacheSplatLimit: number;
+  private readonly decodedCacheSplatLimit: number;
   private readonly gpuPagePool: SsogGpuPagePool;
   private readonly gpuBufferWriter: GpuBufferWriter | undefined;
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
@@ -698,6 +711,8 @@ class StreamingSsogRenderPass {
   private nearPrefetchChunks = 0;
   private gpuPageEvictedChunks = 0;
   private gpuPageEvictedPages = 0;
+  private gpuPreUploadEvictedChunks = 0;
+  private gpuPreUploadEvictedPages = 0;
   private staleQueuedChunksDropped = 0;
   private stalePendingChunksDropped = 0;
   private staleUploadChunksDropped = 0;
@@ -729,6 +744,7 @@ class StreamingSsogRenderPass {
     this.cacheSplatLimit = Math.floor(
       getPositiveNumberParam("ssogCacheSplats", Math.max(this.splatBudget * this.cacheSplatMultiplier, 1)),
     );
+    this.decodedCacheSplatLimit = getSsogDecodedCacheSplatLimit(Math.max(this.cacheSplatLimit * 2, 1));
     this.decodedCacheBudget = Math.floor(
       getPositiveNumberParam("ssogDecodedCacheBytes", Math.max(this.cacheSplatLimit * 256, 64 * 1024 * 1024)),
     );
@@ -770,6 +786,7 @@ class StreamingSsogRenderPass {
     this.selectedKeys.clear();
     this.desiredKeys.clear();
     this.prefetchKeys.clear();
+    this.nearPrefetchKeys.clear();
     this.fallbackKeys.clear();
     this.decodedCacheBytes = 0;
     this.decodedCacheSplats = 0;
@@ -1121,7 +1138,7 @@ class StreamingSsogRenderPass {
       cacheChunkPressure: Number.isFinite(this.cacheChunkLimit)
         ? this.gpuLoaded.size / Math.max(1, this.cacheChunkLimit)
         : 0,
-      cacheSplatPressure: this.decodedCacheSplats / Math.max(1, this.cacheSplatLimit),
+      cacheSplatPressure: this.decodedCacheSplats / Math.max(1, this.decodedCacheSplatLimit),
       selectedCacheRatio: this.decodedCacheSplats / Math.max(1, this.selectedSplats),
       selectedChunks: this.selectedKeys.size,
       selectedLoadedChunks: selectedKeys.filter((key) => this.gpuLoaded.has(key)).length,
@@ -1149,11 +1166,22 @@ class StreamingSsogRenderPass {
       gpuPageEvictedPages: this.gpuPageEvictedPages,
       decodedCacheChunks: this.decodedCache.size,
       decodedCacheBytes: this.decodedCacheBytes,
-      decodedCachePressure: this.decodedCacheBytes / Math.max(1, this.decodedCacheBudget) || this.decodedCacheSplats / Math.max(1, this.cacheSplatLimit * 4),
+      decodedCachePressure: Math.max(
+        this.decodedCacheBytes / Math.max(1, this.decodedCacheBudget),
+        this.decodedCacheSplats / Math.max(1, this.decodedCacheSplatLimit),
+      ),
       gpuResidentChunks: this.gpuLoaded.size,
       gpuResidentSplats: gpuPagePoolStats.residentSplats,
       cpuEvictedChunks: this.cpuEvictedChunks,
       reuploadedChunks: this.reuploadedChunks,
+      protectedFallbackChunks: this.fallbackKeys.size,
+      nearPrefetchChunksLoaded: Array.from(this.gpuLoaded.keys()).filter((key) => this.nearPrefetchKeys.has(key)).length,
+      idlePrefetchChunksLoaded: Array.from(this.gpuLoaded.keys()).filter(
+        (key) => this.prefetchKeys.has(key) && !this.nearPrefetchKeys.has(key),
+      ).length,
+      gpuPreUploadEvictedChunks: this.gpuPreUploadEvictedChunks,
+      gpuPreUploadEvictedPages: this.gpuPreUploadEvictedPages,
+      decodedCacheSplatLimit: this.decodedCacheSplatLimit,
       gpuBufferWriterTotalUploadBytes: gpuBufferWriterStats?.totalUploadBytes ?? 0,
       gpuBufferWriterTotalUploadCount: gpuBufferWriterStats?.totalUploadCount ?? 0,
       gpuBufferWriterTotalErrorCount: gpuBufferWriterStats?.totalErrorCount ?? 0,
@@ -1270,12 +1298,43 @@ class StreamingSsogRenderPass {
   }
 
   private isChunkWanted(key: string): boolean {
-    return (
-      this.fallbackKeys.has(key) ||
-      this.selectedKeys.has(key) ||
-      this.desiredKeys.has(key) ||
-      this.prefetchKeys.has(key)
-    );
+    return this.getCacheClass(key) !== "inactive";
+  }
+
+  private getCacheClass(key: string): CacheClass {
+    if (this.fallbackKeys.has(key)) {
+      return "fallback";
+    }
+    if (this.selectedKeys.has(key)) {
+      return "selected";
+    }
+    if (this.desiredKeys.has(key)) {
+      return "desired";
+    }
+    if (this.prefetchKeys.has(key) && this.nearPrefetchKeys.has(key)) {
+      return "near-prefetch";
+    }
+    if (this.prefetchKeys.has(key)) {
+      return "idle-prefetch";
+    }
+    return "inactive";
+  }
+
+  private getSchedulingPriority(key: string): SsogChunkLoadPriority {
+    switch (this.getCacheClass(key)) {
+      case "fallback":
+        return 0;
+      case "selected":
+        return 1;
+      case "desired":
+        return 2;
+      case "near-prefetch":
+        return 3;
+      case "idle-prefetch":
+        return 4;
+      case "inactive":
+        return 5;
+    }
   }
 
   private dropStaleQueuedChunks(): void {
@@ -1438,6 +1497,14 @@ class StreamingSsogRenderPass {
     this.updateFallbackReasonStats(stableSelected, selection.selectedSplats);
 
     this.prefetchKeys.clear();
+    this.nearPrefetchKeys.clear();
+    for (let index = 0; index < this.nearPrefetchEntryIndices.length; index++) {
+      const entryIndex = this.nearPrefetchEntryIndices.data[index];
+      const key = this.entryKeys[entryIndex];
+      if (key) {
+        this.nearPrefetchKeys.add(key);
+      }
+    }
     prefetchSelection.selected.forEach((item) => {
       if (!this.selectedKeys.has(item.key)) {
         this.prefetchKeys.add(item.key);
@@ -1679,19 +1746,7 @@ class StreamingSsogRenderPass {
   }
 
   private getChunkLoadPriority(key: string): SsogChunkLoadPriority {
-    if (this.fallbackKeys.has(key)) {
-      return 0;
-    }
-    if (this.selectedKeys.has(key)) {
-      return 1;
-    }
-    if (this.desiredKeys.has(key)) {
-      return 2;
-    }
-    if (this.prefetchKeys.has(key)) {
-      return 3;
-    }
-    return 4;
+    return this.getSchedulingPriority(key);
   }
 
   private isRetryReady(key: string): boolean {
@@ -1734,12 +1789,12 @@ class StreamingSsogRenderPass {
   private takeNextQueuedChunk(urgentOnly: boolean): SsogChunkEntry | undefined {
     let bestKey = "";
     let bestEntry: SsogChunkEntry | undefined;
-    let bestPriority: SsogChunkLoadPriority = 4;
+    let bestPriority: SsogChunkLoadPriority = 5;
     let bestCount = Number.POSITIVE_INFINITY;
 
     for (const [key, entry] of this.queued) {
       const priority = this.getChunkLoadPriority(key);
-      if (priority >= 4) {
+      if (priority >= 5) {
         this.queued.delete(key);
         this.chunkLoadAttempts.delete(key);
         this.chunkRetryReadyFrame.delete(key);
@@ -1878,6 +1933,13 @@ class StreamingSsogRenderPass {
   ): void {
     diagnostics.attemptedChunks++;
 
+    if (this.getSchedulingPriority(decoded.key) >= 5) {
+      this.decodedUploadQueue.delete(decoded.key);
+      this.debugBounds.dispose(decoded.key);
+      this.staleUploadChunksDropped++;
+      return;
+    }
+
     if (this.gpuLoaded.has(decoded.key)) {
       this.decodedUploadQueue.delete(decoded.key);
       diagnostics.skippedLoadedChunks++;
@@ -1915,19 +1977,7 @@ class StreamingSsogRenderPass {
   }
 
   private getUploadPriority(key: string): number {
-    if (this.fallbackKeys.has(key)) {
-      return 0;
-    }
-    if (this.selectedKeys.has(key)) {
-      return 1;
-    }
-    if (this.desiredKeys.has(key)) {
-      return 2;
-    }
-    if (this.prefetchKeys.has(key)) {
-      return 3;
-    }
-    return 4;
+    return this.getSchedulingPriority(key);
   }
 
   private writeDecodedChunkToGpu(decoded: DecodedChunk): void {
@@ -1948,6 +1998,7 @@ class StreamingSsogRenderPass {
       return;
     }
 
+    this.evictGpuChunksForUpload(decoded);
     const buffers = new SogBuffers(this.scene.getEngine(), chunk.data, this.gpuBufferWriter);
     const pass = new PackedSogRenderPass(this.scene, buffers);
     pass.setVizMode(this.activeVizMode);
@@ -1975,7 +2026,7 @@ class StreamingSsogRenderPass {
     const pagePressure = initialPageStats.pressure > 0.98 || initialPageStats.overflowPages > 0;
     const inactive = Array.from(this.gpuLoaded.entries())
       .filter(([key, gpu]) => {
-        const protectedChunk = gpu.active || this.selectedKeys.has(key) || this.fallbackKeys.has(key);
+        const protectedChunk = this.isGpuChunkProtected(key, gpu);
         const oldEnough = this.generation - gpu.lastUsedFrame >= this.evictAfterFrames;
         return !protectedChunk && (oldEnough || pagePressure);
       })
@@ -1995,14 +2046,7 @@ class StreamingSsogRenderPass {
         break;
       }
 
-      evictedPages += gpu.pageAllocation.pages.length + gpu.pageAllocation.overflowPages;
-      gpu.pass.dispose();
-      gpu.buffers.dispose();
-      this.gpuPagePool.freeChunk(key);
-      this.gpuLoaded.delete(key);
-      this.debugBounds.dispose(key);
-      this.recentlyEvictedKeyFrames.set(key, this.generation);
-      this.evictedChunks++;
+      evictedPages += this.evictGpuResidentChunk(key, gpu);
       evictedChunks++;
     }
 
@@ -2022,17 +2066,73 @@ class StreamingSsogRenderPass {
     }
   }
 
+  private evictGpuChunksForUpload(decoded: DecodedChunk): void {
+    const pageStats = this.gpuPagePool.getStats();
+    const requiredPages = Math.max(1, Math.ceil(decoded.chunk.data.numSplats / pageStats.pageCapacitySplats));
+    const needsChunkRoom = Number.isFinite(this.cacheChunkLimit) && this.gpuLoaded.size >= this.cacheChunkLimit;
+    const needsPageRoom = pageStats.freePages < requiredPages || pageStats.overflowPages > 0;
+    if (!needsChunkRoom && !needsPageRoom) {
+      return;
+    }
+
+    const candidates = Array.from(this.gpuLoaded.entries())
+      .filter(([key, gpu]) => !this.isGpuChunkProtected(key, gpu))
+      .sort((a, b) => {
+        const priorityA = this.getGpuPageEvictionPriority(a[0]);
+        const priorityB = this.getGpuPageEvictionPriority(b[0]);
+        return priorityA - priorityB || a[1].lastUsedFrame - b[1].lastUsedFrame;
+      });
+
+    let evictedChunks = 0;
+    let evictedPages = 0;
+    for (const [key, gpu] of candidates) {
+      const stats = this.gpuPagePool.getStats();
+      const hasChunkRoom = !Number.isFinite(this.cacheChunkLimit) || this.gpuLoaded.size < this.cacheChunkLimit;
+      const hasPageRoom = stats.freePages >= requiredPages && stats.overflowPages === 0;
+      if (hasChunkRoom && hasPageRoom) {
+        break;
+      }
+
+      evictedPages += this.evictGpuResidentChunk(key, gpu);
+      evictedChunks++;
+    }
+
+    if (evictedChunks > 0) {
+      this.gpuPreUploadEvictedChunks += evictedChunks;
+      this.gpuPreUploadEvictedPages += evictedPages;
+      this.gpuPageEvictedChunks += evictedChunks;
+      this.gpuPageEvictedPages += evictedPages;
+      this.evictDecodedCache();
+    }
+  }
+
+  private evictGpuResidentChunk(key: string, gpu: GpuResidentChunk): number {
+    const pages = gpu.pageAllocation.pages.length + gpu.pageAllocation.overflowPages;
+    gpu.pass.dispose();
+    gpu.buffers.dispose();
+    this.gpuPagePool.freeChunk(key);
+    this.gpuLoaded.delete(key);
+    this.debugBounds.dispose(key);
+    this.recentlyEvictedKeyFrames.set(key, this.generation);
+    this.evictedChunks++;
+    return pages;
+  }
+
   private evictDecodedCache(): void {
-    if (this.decodedCacheBytes <= this.decodedCacheBudget) {
+    if (this.isDecodedCacheWithinBudget()) {
       return;
     }
 
     const evictable = Array.from(this.decodedCache.entries())
       .filter(([key]) => !this.gpuLoaded.has(key))
-      .sort((a, b) => a[1].lastUsedFrame - b[1].lastUsedFrame);
+      .sort((a, b) => {
+        const priorityA = this.getDecodedCacheEvictionPriority(a[0]);
+        const priorityB = this.getDecodedCacheEvictionPriority(b[0]);
+        return priorityA - priorityB || a[1].lastUsedFrame - b[1].lastUsedFrame || b[1].bytes - a[1].bytes;
+      });
 
     for (const [key, cached] of evictable) {
-      if (this.decodedCacheBytes <= this.decodedCacheBudget) {
+      if (this.isDecodedCacheWithinBudget()) {
         break;
       }
 
@@ -2040,6 +2140,27 @@ class StreamingSsogRenderPass {
       this.decodedCacheSplats -= cached.chunk.data.numSplats;
       this.decodedCache.delete(key);
       this.cpuEvictedChunks++;
+    }
+  }
+
+  private isDecodedCacheWithinBudget(): boolean {
+    return this.decodedCacheBytes <= this.decodedCacheBudget && this.decodedCacheSplats <= this.decodedCacheSplatLimit;
+  }
+
+  private getDecodedCacheEvictionPriority(key: string): number {
+    switch (this.getCacheClass(key)) {
+      case "inactive":
+        return 0;
+      case "idle-prefetch":
+        return 1;
+      case "near-prefetch":
+        return 2;
+      case "desired":
+        return 3;
+      case "selected":
+        return 4;
+      case "fallback":
+        return 5;
     }
   }
 
@@ -2051,13 +2172,24 @@ class StreamingSsogRenderPass {
   }
 
   private getGpuPageEvictionPriority(key: string): number {
-    if (this.prefetchKeys.has(key)) {
-      return 0;
+    switch (this.getCacheClass(key)) {
+      case "inactive":
+        return 0;
+      case "idle-prefetch":
+        return 1;
+      case "near-prefetch":
+        return 2;
+      case "desired":
+        return 3;
+      case "selected":
+        return 4;
+      case "fallback":
+        return 5;
     }
-    if (!this.desiredKeys.has(key)) {
-      return 1;
-    }
-    return 2;
+  }
+
+  private isGpuChunkProtected(key: string, gpu: GpuResidentChunk): boolean {
+    return gpu.active || this.fallbackKeys.has(key) || this.selectedKeys.has(key) || this.desiredKeys.has(key);
   }
 
   private repackGpuPagePool(): void {
