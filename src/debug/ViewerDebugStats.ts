@@ -251,8 +251,10 @@ class ViewerDebugStats {
       splatBudget?: number;
       baseSplatBudget?: number;
       adaptiveQualityScale?: number;
+      adaptiveInteractionScale?: number;
       adaptiveFrameMs?: number;
       adaptiveTargetFrameMs?: number;
+      qualityInteractionState?: string;
       cacheChunkPressure?: number;
       cacheSplatPressure?: number;
       selectedCacheRatio?: number;
@@ -504,7 +506,7 @@ class ViewerDebugStats {
         ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}${streamingStats.baseSplatBudget !== undefined && streamingStats.baseSplatBudget !== streamingStats.splatBudget ? ` of ${formatCount(streamingStats.baseSplatBudget)}` : ""}`
         : "",
       streamingStats.adaptiveQualityScale !== undefined
-        ? `SSOG adaptive: ${(streamingStats.adaptiveQualityScale * 100).toFixed(0)}% / frame ${formatMs(streamingStats.adaptiveFrameMs ?? 0)} ms / target ${formatMs(streamingStats.adaptiveTargetFrameMs ?? 0)} ms`
+        ? `SSOG adaptive: ${(streamingStats.adaptiveQualityScale * 100).toFixed(0)}% / ${streamingStats.qualityInteractionState ?? "unknown"} ${((streamingStats.adaptiveInteractionScale ?? 1) * 100).toFixed(0)}% / frame ${formatMs(streamingStats.adaptiveFrameMs ?? 0)} ms / target ${formatMs(streamingStats.adaptiveTargetFrameMs ?? 0)} ms`
         : "",
       streamingStats.cacheChunkLimit !== undefined
         ? `SSOG cache: ${streamingStats.cacheChunkLimit < 0 ? "all" : formatCount(streamingStats.cacheChunkLimit)} chunks / ${formatCount(streamingStats.cacheSplatLimit ?? 0)} splats`

@@ -30,8 +30,10 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   splatBudget: number;
   baseSplatBudget: number;
   adaptiveQualityScale: number;
+  adaptiveInteractionScale: number;
   adaptiveFrameMs: number;
   adaptiveTargetFrameMs: number;
+  qualityInteractionState: "moving" | "settling" | "idle" | "screenshot";
   loadedChunks: number;
   pendingChunks: number;
   pendingUploadChunks: number;
@@ -268,6 +270,12 @@ const ADAPTIVE_QUALITY_MIN_SCALE = 0.45;
 const ADAPTIVE_QUALITY_MAX_SCALE = 1.15;
 const ADAPTIVE_QUALITY_RECOVERY_RATE = 0.015;
 const ADAPTIVE_QUALITY_DECAY_RATE = 0.08;
+const DEFAULT_IDLE_REFINE_FRAMES = 24;
+const DEFAULT_SETTLE_FRAMES = 8;
+const DEFAULT_MOVING_QUALITY_SCALE = 0.72;
+const DEFAULT_SETTLING_QUALITY_SCALE = 0.9;
+const DEFAULT_IDLE_QUALITY_SCALE = 1.18;
+const DEFAULT_SCREENSHOT_QUALITY_SCALE = 1.45;
 
 const chunkKey = (entry: SsogChunkEntry): string =>
   `${entry.fileIndex}:${entry.offset}:${entry.count}:${entry.lod}:${entry.nodeId}`;
@@ -463,6 +471,16 @@ const getLodForwardDotThreshold = (): number => {
   return Math.cos((degrees * Math.PI) / 180);
 };
 
+const getSsogMotionMoveEpsilonSq = (): number => {
+  const epsilon = getPositiveNumberParam("ssogMotionMoveEpsilon", 0.025);
+  return epsilon * epsilon;
+};
+
+const getSsogMotionForwardDotThreshold = (): number => {
+  const degrees = getPositiveNumberParam("ssogMotionAngleDegrees", 0.35);
+  return Math.cos((degrees * Math.PI) / 180);
+};
+
 const getSsogChunkSortMode = (): SsogChunkSortMode => {
   const value = new URLSearchParams(window.location.search).get("ssogChunkSort");
   return value === "center" || value === "far" ? value : "near";
@@ -501,7 +519,8 @@ const getSsogGlobalSortMode = (): SsogGlobalSortMode => {
   if (value === "packed") {
     return "packed";
   }
-  if (params.get("ssogPackedFallback") === "expanded" || getSsogQualityProfile().preset === "full") {
+  const preset = getSsogQualityProfile().preset;
+  if (params.get("ssogPackedFallback") === "expanded" || preset === "full" || preset === "screenshot") {
     return "expanded";
   }
   return "packed";
@@ -641,6 +660,14 @@ class StreamingSsogRenderPass {
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly lodMoveEpsilonSq = getLodMoveEpsilonSq();
   private readonly lodForwardDotThreshold = getLodForwardDotThreshold();
+  private readonly motionMoveEpsilonSq = getSsogMotionMoveEpsilonSq();
+  private readonly motionForwardDotThreshold = getSsogMotionForwardDotThreshold();
+  private readonly idleRefineFrames = Math.max(1, Math.floor(getPositiveNumberParam("ssogIdleRefineFrames", DEFAULT_IDLE_REFINE_FRAMES)));
+  private readonly settleFrames = Math.max(0, Math.floor(getNonNegativeNumberParam("ssogSettleFrames", DEFAULT_SETTLE_FRAMES)));
+  private readonly movingQualityScale = getPositiveNumberParam("ssogMovingQualityScale", DEFAULT_MOVING_QUALITY_SCALE);
+  private readonly settlingQualityScale = getPositiveNumberParam("ssogSettlingQualityScale", DEFAULT_SETTLING_QUALITY_SCALE);
+  private readonly idleQualityScale = getPositiveNumberParam("ssogIdleQualityScale", DEFAULT_IDLE_QUALITY_SCALE);
+  private readonly screenshotQualityScale = getPositiveNumberParam("ssogScreenshotQualityScale", DEFAULT_SCREENSHOT_QUALITY_SCALE);
   private readonly chunkSortMode = getSsogChunkSortMode();
   private readonly chunkSortScale = getSsogChunkSortScale();
   private readonly chunkSortHysteresis = getSsogChunkSortHysteresis();
@@ -669,8 +696,13 @@ class StreamingSsogRenderPass {
   private generation = 0;
   private disposed = false;
   private adaptiveQualityScale = 1;
+  private adaptiveInteractionScale = 1;
   private adaptiveFrameMs = ADAPTIVE_QUALITY_TARGET_FRAME_MS;
   private lastAdaptiveFrameTime = performance.now();
+  private qualityInteractionState: StreamingSsogRenderStats["qualityInteractionState"] = "idle";
+  private idleFrames = 0;
+  private lastQualityCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
+  private lastQualityCameraForward = new Vector3(0, 0, 0);
   private lastLodCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private lastLodCameraForward = new Vector3(0, 0, 0);
   private activeChunks = 0;
@@ -1124,8 +1156,10 @@ class StreamingSsogRenderPass {
       splatBudget: Number.isFinite(this.splatBudget) ? this.splatBudget : -1,
       baseSplatBudget: Number.isFinite(this.baseSplatBudget) ? this.baseSplatBudget : -1,
       adaptiveQualityScale: this.adaptiveQualityScale,
+      adaptiveInteractionScale: this.adaptiveInteractionScale,
       adaptiveFrameMs: this.adaptiveFrameMs,
       adaptiveTargetFrameMs: ADAPTIVE_QUALITY_TARGET_FRAME_MS,
+      qualityInteractionState: this.qualityInteractionState,
       loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,
       pendingUploadChunks: this.decodedUploadQueue.size,
@@ -1254,6 +1288,7 @@ class StreamingSsogRenderPass {
 
     if (!this.adaptiveQualityEnabled) {
       this.adaptiveQualityScale = 1;
+      this.adaptiveInteractionScale = 1;
       this.splatBudget = this.baseSplatBudget;
       this.maxPendingLoads = this.baseMaxPendingLoads;
       this.prefetchMultiplier = this.basePrefetchMultiplier;
@@ -1287,14 +1322,54 @@ class StreamingSsogRenderPass {
       );
     }
 
-    const effectiveBudget = Math.max(1, Math.floor(this.baseSplatBudget * this.adaptiveQualityScale));
+    this.adaptiveInteractionScale = this.getInteractionQualityScale();
+    const effectiveBudget = Math.max(
+      1,
+      Math.floor(this.baseSplatBudget * this.adaptiveQualityScale * this.adaptiveInteractionScale),
+    );
     this.splatBudget = Math.min(this.sourceSplats, effectiveBudget);
-    const loadScale = Math.max(0.5, Math.min(1, this.adaptiveQualityScale));
+    const loadScale = Math.max(0.45, Math.min(1.25, this.adaptiveQualityScale * this.adaptiveInteractionScale));
     this.maxPendingLoads = Math.max(1, Math.floor(this.baseMaxPendingLoads * loadScale));
     this.prefetchMultiplier = 1 + Math.max(0, this.basePrefetchMultiplier - 1) * loadScale;
     this.uploadBudgetBytes = Number.isFinite(this.baseUploadBudgetBytes)
       ? Math.max(1 * 1024 * 1024, Math.floor(this.baseUploadBudgetBytes * loadScale))
       : Number.POSITIVE_INFINITY;
+  }
+
+  private updateInteractionQualityState(cameraPosition: Vector3, cameraForward: Vector3): void {
+    const initial = !Number.isFinite(this.lastQualityCameraPosition.x);
+    const moved = initial || Vector3.DistanceSquared(cameraPosition, this.lastQualityCameraPosition) > this.motionMoveEpsilonSq;
+    const turned = initial || Vector3.Dot(cameraForward, this.lastQualityCameraForward) < this.motionForwardDotThreshold;
+
+    if (moved || turned) {
+      this.idleFrames = 0;
+      this.qualityInteractionState = "moving";
+    } else {
+      this.idleFrames++;
+      this.qualityInteractionState =
+        this.idleFrames >= Math.max(this.settleFrames, this.idleRefineFrames) ? "idle" : "settling";
+    }
+
+    if (this.qualityPreset === "screenshot") {
+      this.qualityInteractionState = "screenshot";
+    }
+
+    this.lastQualityCameraPosition.copyFrom(cameraPosition);
+    this.lastQualityCameraForward.copyFrom(cameraForward);
+  }
+
+  private getInteractionQualityScale(): number {
+    switch (this.qualityInteractionState) {
+    case "screenshot":
+      return this.screenshotQualityScale;
+    case "idle":
+      return this.idleQualityScale;
+    case "settling":
+      return this.settlingQualityScale;
+    case "moving":
+    default:
+      return this.movingQualityScale;
+    }
   }
 
   private isChunkWanted(key: string): boolean {
@@ -1366,9 +1441,18 @@ class StreamingSsogRenderPass {
   }
 
   private updateLodSelection(force = false): void {
-    this.updateAdaptiveQuality();
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
     this.gpuBufferWriter?.beginFrame();
+    const camera = this.scene.activeCamera;
+    if (!camera) {
+      this.updateAdaptiveQuality();
+      return;
+    }
+
+    const cameraPosition = camera.globalPosition;
+    const cameraForward = camera.getDirection(Vector3.Forward());
+    this.updateInteractionQualityState(cameraPosition, cameraForward);
+    this.updateAdaptiveQuality();
     force = this.processRendererCommandQueue() > 0 || force;
     this.attemptedUploadChunksThisFrame = 0;
     this.uploadedBytesThisFrame = 0;
@@ -1379,13 +1463,6 @@ class StreamingSsogRenderPass {
     this.dropStaleDecodedUploads();
     force = this.processDecodedUploadQueue() > 0 || force;
 
-    const camera = this.scene.activeCamera;
-    if (!camera) {
-      return;
-    }
-
-    const cameraPosition = camera.globalPosition;
-    const cameraForward = camera.getDirection(Vector3.Forward());
     this.updateLoadedChunkSortDepth(cameraPosition, cameraForward);
     const initial = !Number.isFinite(this.lastLodCameraPosition.x);
     const moved = Vector3.DistanceSquared(cameraPosition, this.lastLodCameraPosition) > this.lodMoveEpsilonSq;
