@@ -318,6 +318,7 @@ class SsogGlobalPackedRenderPass {
     quats: StorageBuffer;
     scales: StorageBuffer;
     color: StorageBuffer;
+    state: StorageBuffer;
     scaleCodebook: StorageBuffer;
     chunkInfo: StorageBuffer;
     indices: StorageBuffer;
@@ -449,6 +450,7 @@ class SsogGlobalPackedRenderPass {
       quats: createStorageBuffer(engine, "SsogGlobalQuats", packed.quats),
       scales: createStorageBuffer(engine, "SsogGlobalScales", packed.scales),
       color: createStorageBuffer(engine, "SsogGlobalColor", packed.color),
+      state: createStorageBuffer(engine, "SsogGlobalState", new Uint32Array(this.numSplats)),
       scaleCodebook: createStorageBuffer(engine, "SsogGlobalScaleCodebook", packed.scaleCodebook),
       chunkInfo: createStorageBuffer(engine, "SsogGlobalChunkInfo", packed.chunkInfo),
       indices: createStorageBuffer(engine, "SsogGlobalIndices", this.indices),
@@ -1187,6 +1189,7 @@ class SsogGlobalPackedRenderPass {
           "scalesBuffer",
           "colorBuffer",
           "colorGroupBuffer",
+          "splatStateBuffer",
           "scaleCodebookBuffer",
           "chunkInfoBuffer",
           "indexBuffer",
@@ -1216,6 +1219,10 @@ class SsogGlobalPackedRenderPass {
     this.material.setFloat("vizMode", mode);
   }
 
+  setSplatStateBuffer(buffer: StorageBuffer): void {
+    this.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", buffer);
+  }
+
   private bindStorageBuffers(): void {
     this.bufferVersions.rebindStorageBuffer(this.material, "meansLBuffer", this.buffers.meansL);
     this.bufferVersions.rebindStorageBuffer(this.material, "meansUBuffer", this.buffers.meansU);
@@ -1225,6 +1232,7 @@ class SsogGlobalPackedRenderPass {
     if (this.colorSegmentationPass) {
       this.bufferVersions.rebindStorageBuffer(this.material, "colorGroupBuffer", this.colorSegmentationPass.getColorGroupBuffer());
     }
+    this.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", this.buffers.state);
     this.bufferVersions.rebindStorageBuffer(this.material, "scaleCodebookBuffer", this.buffers.scaleCodebook);
     this.bufferVersions.rebindStorageBuffer(this.material, "chunkInfoBuffer", this.buffers.chunkInfo);
     this.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", this.buffers.indices);

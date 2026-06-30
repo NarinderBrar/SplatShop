@@ -16,6 +16,7 @@ var<storage, read> quatsBuffer: array<u32>;
 var<storage, read> scalesBuffer: array<u32>;
 var<storage, read> colorBuffer: array<vec4f>;
 var<storage, read> colorGroupBuffer: array<u32>;
+var<storage, read> splatStateBuffer: array<u32>;
 var<storage, read> scaleCodebookBuffer: array<f32>;
 var<storage, read> chunkInfoBuffer: array<vec4f>;
 var<storage, read> indexBuffer: array<u32>;
@@ -26,6 +27,8 @@ varying vColor: vec4f;
 #define CUSTOM_VERTEX_DEFINITIONS
 
 const SQRT2: f32 = 1.4142135623730951;
+const SPLAT_STATE_SELECTED: u32 = 1u;
+const SPLAT_STATE_RENDER_DISABLED: u32 = 26u;
 
 fn chan(pixel: u32, component: u32) -> u32 {
   return (pixel >> (component * 8u)) & 255u;
@@ -161,6 +164,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let corner = vertexInputs.position.xy;
   let packedSplatIndex = indexBuffer[sourceOrder];
   let splatIndex = sourceIndex(packedSplatIndex);
+  let splatState = splatStateBuffer[splatIndex];
+  if ((splatState & SPLAT_STATE_RENDER_DISABLED) != 0u) {
+    vertexOutputs.position = vec4f(0.0, 0.0, 2.0, 1.0);
+    vertexOutputs.vCorner = vec2f(2.0, 2.0);
+    vertexOutputs.vColor = vec4f(0.0);
+    return vertexOutputs;
+  }
+  let isSelected = (splatState & SPLAT_STATE_SELECTED) != 0u;
   let center = decodeCenter(packedSplatIndex);
   let rotation = normalize(decodeRotation(packedSplatIndex));
   let logScale = decodeScale(packedSplatIndex);
@@ -190,10 +201,16 @@ fn main(input: VertexInputs) -> FragmentInputs {
     } else {
       vertexOutputs.vColor = colorBuffer[splatIndex];
     }
+    if (isSelected) {
+      vertexOutputs.vColor = vec4f(mix(vertexOutputs.vColor.rgb, vec3f(0.3, 1.0, 0.4), 0.85), 1.0);
+    }
     return vertexOutputs;
   }
 
   vertexOutputs.position = initCornerCov(center, rotation, exp(logScale), corner, centerClip);
   vertexOutputs.vCorner = corner;
   vertexOutputs.vColor = colorBuffer[splatIndex];
+  if (isSelected) {
+    vertexOutputs.vColor = vec4f(mix(vertexOutputs.vColor.rgb, vec3f(0.3, 1.0, 0.4), 0.85), 1.0);
+  }
 }
