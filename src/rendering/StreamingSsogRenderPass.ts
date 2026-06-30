@@ -28,6 +28,10 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   qualityPreset: SsogQualityPreset;
   qualityDeviceTier: SsogDeviceTier;
   splatBudget: number;
+  baseSplatBudget: number;
+  adaptiveQualityScale: number;
+  adaptiveFrameMs: number;
+  adaptiveTargetFrameMs: number;
   loadedChunks: number;
   pendingChunks: number;
   pendingUploadChunks: number;
@@ -96,6 +100,9 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   lastChunkLoadMs: number;
   lastChunkUploadMs: number;
   uploadBudgetBytes: number;
+  staleQueuedChunksDropped: number;
+  stalePendingChunksDropped: number;
+  staleUploadChunksDropped: number;
   attemptedUploadChunksThisFrame: number;
   uploadedBytesThisFrame: number;
   uploadedChunksThisFrame: number;
@@ -248,6 +255,11 @@ class ChunkIndexBuffer {
 
 const LOD_SELECT_INTERVAL_FRAMES = 15;
 const FALLBACK_EVICTION_REASON_TTL_FRAMES = 120;
+const ADAPTIVE_QUALITY_TARGET_FRAME_MS = 1000 / 55;
+const ADAPTIVE_QUALITY_MIN_SCALE = 0.45;
+const ADAPTIVE_QUALITY_MAX_SCALE = 1.15;
+const ADAPTIVE_QUALITY_RECOVERY_RATE = 0.015;
+const ADAPTIVE_QUALITY_DECAY_RATE = 0.08;
 
 const chunkKey = (entry: SsogChunkEntry): string =>
   `${entry.fileIndex}:${entry.offset}:${entry.count}:${entry.lod}:${entry.nodeId}`;
@@ -265,6 +277,11 @@ const getNonNegativeNumberParam = (name: string, fallback: number): number => {
 const getSsogQualityPreset = (): SsogQualityPreset => getQualityPreset();
 
 const getSsogDeviceTier = (): SsogDeviceTier => getDeviceTier();
+
+const hasExplicitNumberParam = (name: string): boolean => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) && value > 0;
+};
 
 const scaleSsogQualityProfileForDevice = (profile: SsogQualityProfile): SsogQualityProfile => {
   if (profile.preset === "fast") {
@@ -594,10 +611,13 @@ class StreamingSsogRenderPass {
   private readonly updateObserver: () => void;
   private readonly qualityPreset = getSsogQualityPreset();
   private readonly sourceSplats: number;
-  private readonly splatBudget: number;
+  private readonly baseSplatBudget: number;
+  private splatBudget: number;
   private readonly cacheChunkLimit = getSsogCacheChunkLimit();
-  private readonly maxPendingLoads = getSsogMaxPendingLoads();
-  private readonly prefetchMultiplier = getSsogPrefetchMultiplier();
+  private readonly baseMaxPendingLoads = getSsogMaxPendingLoads();
+  private maxPendingLoads = this.baseMaxPendingLoads;
+  private readonly basePrefetchMultiplier = getSsogPrefetchMultiplier();
+  private prefetchMultiplier = this.basePrefetchMultiplier;
   private readonly evictAfterFrames = getSsogEvictAfterFrames();
   private readonly cacheSplatMultiplier = getSsogCacheSplatMultiplier();
   private readonly cacheSplatLimit: number;
@@ -618,7 +638,14 @@ class StreamingSsogRenderPass {
   private readonly forceFineViewDot = getSsogForceFineViewDot();
   private readonly selectionStableFrames = getSsogSelectionStableFrames();
   private readonly progressiveGlobalBuild = isSsogProgressiveGlobalBuildEnabled();
-  private readonly uploadBudgetBytes = getSsogUploadBudgetBytes();
+  private readonly baseUploadBudgetBytes = getSsogUploadBudgetBytes();
+  private uploadBudgetBytes = this.baseUploadBudgetBytes;
+  private readonly adaptiveQualityEnabled =
+    !hasExplicitNumberParam("splatBudget") &&
+    !hasExplicitNumberParam("ssogMaxPending") &&
+    !hasExplicitNumberParam("ssogUploadBudgetBytes") &&
+    new URLSearchParams(window.location.search).get("ssogAdaptiveQuality") !== "false" &&
+    new URLSearchParams(window.location.search).get("ssogReference") !== "true";
   private readonly mergedRuntimes = new Map<string, MergedRuntime>();
   private readonly pendingSelections = new Map<number, { key: string; frames: number }>();
   private readonly transitionLocks = new Map<number, number>();
@@ -628,6 +655,9 @@ class StreamingSsogRenderPass {
   private frame = 0;
   private generation = 0;
   private disposed = false;
+  private adaptiveQualityScale = 1;
+  private adaptiveFrameMs = ADAPTIVE_QUALITY_TARGET_FRAME_MS;
+  private lastAdaptiveFrameTime = performance.now();
   private lastLodCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private lastLodCameraForward = new Vector3(0, 0, 0);
   private activeChunks = 0;
@@ -668,6 +698,9 @@ class StreamingSsogRenderPass {
   private nearPrefetchChunks = 0;
   private gpuPageEvictedChunks = 0;
   private gpuPageEvictedPages = 0;
+  private staleQueuedChunksDropped = 0;
+  private stalePendingChunksDropped = 0;
+  private staleUploadChunksDropped = 0;
   private debugChunkBoundsVisible = false;
   private debugBounds!: SsogDebugBounds;
 
@@ -691,7 +724,8 @@ class StreamingSsogRenderPass {
       (sum, entry) => sum + entry.count,
       0,
     );
-    this.splatBudget = getSplatBudget(this.sourceSplats);
+    this.baseSplatBudget = getSplatBudget(this.sourceSplats);
+    this.splatBudget = this.baseSplatBudget;
     this.cacheSplatLimit = Math.floor(
       getPositiveNumberParam("ssogCacheSplats", Math.max(this.splatBudget * this.cacheSplatMultiplier, 1)),
     );
@@ -1071,6 +1105,10 @@ class StreamingSsogRenderPass {
       qualityPreset: this.qualityPreset,
       qualityDeviceTier: getSsogDeviceTier(),
       splatBudget: Number.isFinite(this.splatBudget) ? this.splatBudget : -1,
+      baseSplatBudget: Number.isFinite(this.baseSplatBudget) ? this.baseSplatBudget : -1,
+      adaptiveQualityScale: this.adaptiveQualityScale,
+      adaptiveFrameMs: this.adaptiveFrameMs,
+      adaptiveTargetFrameMs: ADAPTIVE_QUALITY_TARGET_FRAME_MS,
       loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,
       pendingUploadChunks: this.decodedUploadQueue.size,
@@ -1143,6 +1181,9 @@ class StreamingSsogRenderPass {
       lastChunkLoadMs: this.lastChunkLoadMs,
       lastChunkUploadMs: this.lastChunkUploadMs,
       uploadBudgetBytes: Number.isFinite(this.uploadBudgetBytes) ? this.uploadBudgetBytes : -1,
+      staleQueuedChunksDropped: this.staleQueuedChunksDropped,
+      stalePendingChunksDropped: this.stalePendingChunksDropped,
+      staleUploadChunksDropped: this.staleUploadChunksDropped,
       attemptedUploadChunksThisFrame: this.attemptedUploadChunksThisFrame,
       uploadedBytesThisFrame: this.uploadedBytesThisFrame,
       uploadedChunksThisFrame: this.uploadedChunksThisFrame,
@@ -1177,7 +1218,96 @@ class StreamingSsogRenderPass {
     };
   }
 
+  private updateAdaptiveQuality(): void {
+    const now = performance.now();
+    const frameMs = Math.min(250, Math.max(0, now - this.lastAdaptiveFrameTime));
+    this.lastAdaptiveFrameTime = now;
+    this.adaptiveFrameMs = this.adaptiveFrameMs * 0.9 + frameMs * 0.1;
+
+    if (!this.adaptiveQualityEnabled) {
+      this.adaptiveQualityScale = 1;
+      this.splatBudget = this.baseSplatBudget;
+      this.maxPendingLoads = this.baseMaxPendingLoads;
+      this.prefetchMultiplier = this.basePrefetchMultiplier;
+      this.uploadBudgetBytes = this.baseUploadBudgetBytes;
+      return;
+    }
+
+    const cachePressure = Math.max(
+      Number.isFinite(this.cacheChunkLimit) ? this.gpuLoaded.size / Math.max(1, this.cacheChunkLimit) : 0,
+      this.decodedCacheSplats / Math.max(1, this.cacheSplatLimit),
+      this.decodedCacheBytes / Math.max(1, this.decodedCacheBudget),
+      this.gpuPagePool.getStats().pressure,
+    );
+    const queuePressure =
+      (this.pending.size + this.decodedUploadQueue.size + this.queued.size) / Math.max(1, this.baseMaxPendingLoads * 3);
+    const frameOverTarget = this.adaptiveFrameMs / ADAPTIVE_QUALITY_TARGET_FRAME_MS;
+    const pressure = Math.max(cachePressure, queuePressure);
+    const overloaded = frameOverTarget > 1.12 || pressure > 0.92;
+    const comfortable = frameOverTarget < 0.82 && pressure < 0.68;
+
+    if (overloaded) {
+      const severity = Math.max(frameOverTarget - 1, pressure - 0.88, 0);
+      this.adaptiveQualityScale = Math.max(
+        ADAPTIVE_QUALITY_MIN_SCALE,
+        this.adaptiveQualityScale - ADAPTIVE_QUALITY_DECAY_RATE * Math.min(2, 1 + severity),
+      );
+    } else if (comfortable) {
+      this.adaptiveQualityScale = Math.min(
+        ADAPTIVE_QUALITY_MAX_SCALE,
+        this.adaptiveQualityScale + ADAPTIVE_QUALITY_RECOVERY_RATE,
+      );
+    }
+
+    const effectiveBudget = Math.max(1, Math.floor(this.baseSplatBudget * this.adaptiveQualityScale));
+    this.splatBudget = Math.min(this.sourceSplats, effectiveBudget);
+    const loadScale = Math.max(0.5, Math.min(1, this.adaptiveQualityScale));
+    this.maxPendingLoads = Math.max(1, Math.floor(this.baseMaxPendingLoads * loadScale));
+    this.prefetchMultiplier = 1 + Math.max(0, this.basePrefetchMultiplier - 1) * loadScale;
+    this.uploadBudgetBytes = Number.isFinite(this.baseUploadBudgetBytes)
+      ? Math.max(1 * 1024 * 1024, Math.floor(this.baseUploadBudgetBytes * loadScale))
+      : Number.POSITIVE_INFINITY;
+  }
+
+  private isChunkWanted(key: string): boolean {
+    return (
+      this.fallbackKeys.has(key) ||
+      this.selectedKeys.has(key) ||
+      this.desiredKeys.has(key) ||
+      this.prefetchKeys.has(key)
+    );
+  }
+
+  private dropStaleQueuedChunks(): void {
+    for (const key of Array.from(this.queued.keys())) {
+      if (this.isChunkWanted(key) || this.generation === 0) {
+        continue;
+      }
+
+      this.queued.delete(key);
+      this.chunkLoadAttempts.delete(key);
+      this.chunkRetryReadyFrame.delete(key);
+      this.debugBounds.dispose(key);
+      this.staleQueuedChunksDropped++;
+    }
+  }
+
+  private dropStaleDecodedUploads(): void {
+    for (const key of Array.from(this.decodedUploadQueue.keys())) {
+      if (this.isChunkWanted(key) || this.generation === 0) {
+        continue;
+      }
+
+      this.decodedUploadQueue.delete(key);
+      this.debugBounds.dispose(key);
+      this.staleUploadChunksDropped++;
+    }
+    this.deferredUploadChunks = this.decodedUploadQueue.size;
+    this.deferredUploadBytes = this.getDecodedUploadQueueBytes();
+  }
+
   private updateLodSelection(force = false): void {
+    this.updateAdaptiveQuality();
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
     this.gpuBufferWriter?.beginFrame();
     force = this.processRendererCommandQueue() > 0 || force;
@@ -1187,6 +1317,7 @@ class StreamingSsogRenderPass {
     this.skippedUploadChunksThisFrame = 0;
     this.deferredUploadChunks = this.decodedUploadQueue.size;
     this.deferredUploadBytes = this.getDecodedUploadQueueBytes();
+    this.dropStaleDecodedUploads();
     force = this.processDecodedUploadQueue() > 0 || force;
 
     const camera = this.scene.activeCamera;
@@ -1357,6 +1488,8 @@ class StreamingSsogRenderPass {
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.activeChunks = Math.max(renderSelected.length, activeChunks);
     this.selectedLods = Math.max(this.selectedLodValues.size, activeLods.size);
+    this.dropStaleQueuedChunks();
+    this.dropStaleDecodedUploads();
     stableSelected.forEach((item) => this.requestChunk(item.value));
     selection.selected.forEach((item) => this.requestChunk(item.value));
     prefetchSelection.selected.forEach((item) => this.requestChunk(item.value));
@@ -1495,6 +1628,13 @@ class StreamingSsogRenderPass {
         if (this.gpuLoaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
           return false;
         }
+        if (!this.isChunkWanted(command.key) && this.generation > 0) {
+          this.chunkLoadAttempts.delete(command.key);
+          this.chunkRetryReadyFrame.delete(command.key);
+          this.debugBounds.dispose(command.key);
+          this.stalePendingChunksDropped++;
+          return true;
+        }
         this.chunkLoadAttempts.delete(command.key);
         this.chunkRetryReadyFrame.delete(command.key);
         this.lastChunkLoadMs = command.loadMs;
@@ -1506,6 +1646,12 @@ class StreamingSsogRenderPass {
         });
         return true;
       case "chunkLoadFailed":
+        if (!this.isChunkWanted(command.key) && this.generation > 0) {
+          this.chunkLoadAttempts.delete(command.key);
+          this.chunkRetryReadyFrame.delete(command.key);
+          this.debugBounds.dispose(command.key);
+          return true;
+        }
         console.warn(`Failed to load SSOG chunk ${command.key}.`, command.error);
         this.scheduleChunkRetry(command.key, command.entry);
         return true;

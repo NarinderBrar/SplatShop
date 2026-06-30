@@ -227,6 +227,10 @@ class ViewerDebugStats {
       qualityPreset?: string;
       qualityDeviceTier?: string;
       splatBudget?: number;
+      baseSplatBudget?: number;
+      adaptiveQualityScale?: number;
+      adaptiveFrameMs?: number;
+      adaptiveTargetFrameMs?: number;
       cacheChunkPressure?: number;
       cacheSplatPressure?: number;
       selectedCacheRatio?: number;
@@ -281,6 +285,9 @@ class ViewerDebugStats {
       lastChunkLoadMs?: number;
       lastChunkUploadMs?: number;
       uploadBudgetBytes?: number;
+      staleQueuedChunksDropped?: number;
+      stalePendingChunksDropped?: number;
+      staleUploadChunksDropped?: number;
       attemptedUploadChunksThisFrame?: number;
       uploadedBytesThisFrame?: number;
       uploadedChunksThisFrame?: number;
@@ -466,7 +473,10 @@ class ViewerDebugStats {
         ? `Cache splats: ${formatCount(streamingStats.cacheSplats)}`
         : "",
       streamingStats.qualityPreset !== undefined
-        ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}`
+        ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}${streamingStats.baseSplatBudget !== undefined && streamingStats.baseSplatBudget !== streamingStats.splatBudget ? ` of ${formatCount(streamingStats.baseSplatBudget)}` : ""}`
+        : "",
+      streamingStats.adaptiveQualityScale !== undefined
+        ? `SSOG adaptive: ${(streamingStats.adaptiveQualityScale * 100).toFixed(0)}% / frame ${formatMs(streamingStats.adaptiveFrameMs ?? 0)} ms / target ${formatMs(streamingStats.adaptiveTargetFrameMs ?? 0)} ms`
         : "",
       streamingStats.cacheChunkLimit !== undefined
         ? `SSOG cache: ${streamingStats.cacheChunkLimit < 0 ? "all" : formatCount(streamingStats.cacheChunkLimit)} chunks / ${formatCount(streamingStats.cacheSplatLimit ?? 0)} splats`
@@ -482,6 +492,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.uploadBudgetBytes !== undefined
         ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)}/${formatCount(streamingStats.attemptedUploadChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / skipped ${formatCount(streamingStats.skippedUploadChunksThisFrame ?? 0)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)} (${formatBytes(streamingStats.deferredUploadBytes ?? 0)})`
+        : "",
+      streamingStats.staleQueuedChunksDropped !== undefined
+        ? `SSOG stale drops: queued ${formatCount(streamingStats.staleQueuedChunksDropped ?? 0)} / loaded ${formatCount(streamingStats.stalePendingChunksDropped ?? 0)} / upload ${formatCount(streamingStats.staleUploadChunksDropped ?? 0)}`
         : "",
       streamingStats.gpuBufferWriterTotalUploadCount !== undefined
         ? `SSOG GPU writer: frame ${formatCount(streamingStats.gpuBufferWriterFrameUploadCount ?? 0)} uploads / ${formatBytes(streamingStats.gpuBufferWriterFrameUploadBytes ?? 0)} / total ${formatCount(streamingStats.gpuBufferWriterTotalUploadCount ?? 0)} uploads ${formatBytes(streamingStats.gpuBufferWriterTotalUploadBytes ?? 0)} / fallback ${formatCount(streamingStats.gpuBufferWriterTotalFallbackCount ?? 0)} / errors ${formatCount(streamingStats.gpuBufferWriterTotalErrorCount ?? 0)}`
