@@ -321,6 +321,7 @@ class SsogGlobalPackedRenderPass {
     state: StorageBuffer;
     scaleCodebook: StorageBuffer;
     chunkInfo: StorageBuffer;
+    chunkDebugColor: StorageBuffer;
     indices: StorageBuffer;
     centers?: StorageBuffer;
     depthKeys?: StorageBuffer;
@@ -453,6 +454,7 @@ class SsogGlobalPackedRenderPass {
       state: createStorageBuffer(engine, "SsogGlobalState", new Uint32Array(this.numSplats)),
       scaleCodebook: createStorageBuffer(engine, "SsogGlobalScaleCodebook", packed.scaleCodebook),
       chunkInfo: createStorageBuffer(engine, "SsogGlobalChunkInfo", packed.chunkInfo),
+      chunkDebugColor: createStorageBuffer(engine, "SsogGlobalChunkDebugColor", packed.chunkDebugColor),
       indices: createStorageBuffer(engine, "SsogGlobalIndices", this.indices),
       ...((isSsogGpuSortShadowEnabled(this.rendererBackend.requested, this.numSplats) ||
         isSsogComputeTileStatsEnabled(this.rendererBackend.requested) ||
@@ -1192,6 +1194,7 @@ class SsogGlobalPackedRenderPass {
           "splatStateBuffer",
           "scaleCodebookBuffer",
           "chunkInfoBuffer",
+          "chunkDebugColorBuffer",
           "indexBuffer",
         ],
         needAlphaBlending: true,
@@ -1235,6 +1238,7 @@ class SsogGlobalPackedRenderPass {
     this.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", this.buffers.state);
     this.bufferVersions.rebindStorageBuffer(this.material, "scaleCodebookBuffer", this.buffers.scaleCodebook);
     this.bufferVersions.rebindStorageBuffer(this.material, "chunkInfoBuffer", this.buffers.chunkInfo);
+    this.bufferVersions.rebindStorageBuffer(this.material, "chunkDebugColorBuffer", this.buffers.chunkDebugColor);
     this.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", this.buffers.indices);
   }
 
@@ -1719,6 +1723,31 @@ const seedGlobalDepthOrder = (
   }
 };
 
+const hashChunkKey = (key: string): number => {
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index++) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
+
+const stableChunkDebugColor = (key: string): [number, number, number, number] => {
+  let hash = hashChunkKey(key);
+  const next = (): number => {
+    hash ^= hash << 13;
+    hash ^= hash >>> 17;
+    hash ^= hash << 5;
+    return ((hash >>> 0) & 255) / 255;
+  };
+  return [
+    0.18 + next() * 0.82,
+    0.18 + next() * 0.82,
+    0.18 + next() * 0.82,
+    1,
+  ];
+};
+
 const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortView?: InitialSortView) => {
   if (chunks.length > 255) {
     throw new Error(`Global packed SSOG supports up to 255 selected chunks. Received ${chunks.length}.`);
@@ -1737,6 +1766,7 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
   const initialDrawIndices = new Uint32Array(numSplats);
   const chunkBaseOffsets = new Uint32Array(chunks.length);
   const chunkInfo = new Float32Array(chunks.length * 8);
+  const chunkDebugColor = new Float32Array(chunks.length * 4);
   const scaleCodebookLength = chunks.reduce((sum, chunk) => sum + chunk.data.scaleCodebook.length, 0);
   const scaleCodebook = new Float32Array(scaleCodebookLength);
   const shChunks: GlobalPackedShChunk[] = [];
@@ -1797,6 +1827,7 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
     chunkInfo[chunkIndex * 8 + 5] = data.meansMaxs[1];
     chunkInfo[chunkIndex * 8 + 6] = data.meansMaxs[2];
     chunkInfo[chunkIndex * 8 + 7] = codebookOffset;
+    chunkDebugColor.set(stableChunkDebugColor(chunk.key), chunkIndex * 4);
 
     for (let i = 0; i < data.numSplats; i++) {
       globalIndices[splatOffset + i] = (chunkIndex << 24) | i;
@@ -1839,6 +1870,7 @@ const buildGlobalPackedArrays = (chunks: SsogGlobalPackedChunk[], initialSortVie
     initialDrawIndices,
     chunkBaseOffsets,
     chunkInfo,
+    chunkDebugColor,
     scaleCodebook,
     shChunks,
     shStats,

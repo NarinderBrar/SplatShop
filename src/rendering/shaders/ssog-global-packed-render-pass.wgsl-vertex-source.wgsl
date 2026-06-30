@@ -19,6 +19,7 @@ var<storage, read> colorGroupBuffer: array<u32>;
 var<storage, read> splatStateBuffer: array<u32>;
 var<storage, read> scaleCodebookBuffer: array<f32>;
 var<storage, read> chunkInfoBuffer: array<vec4f>;
+var<storage, read> chunkDebugColorBuffer: array<vec4f>;
 var<storage, read> indexBuffer: array<u32>;
 
 varying vCorner: vec2f;
@@ -183,13 +184,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
     vertexOutputs.position = vec4f(centerClip.xy + clipOffset, centerClip.zw);
     vertexOutputs.vCorner = corner;
     if (uniforms.vizMode == 2.0) {
-      let chunkId = f32(chunkIndex(packedSplatIndex));
-      let rng = vec3f(
-        fract(sin(chunkId * 12.9898 + 1.0) * 43758.5453),
-        fract(sin(chunkId * 78.233 + 2.0) * 43758.5453),
-        fract(sin(chunkId * 45.164 + 3.0) * 43758.5453),
-      );
-      vertexOutputs.vColor = vec4f(rng, 1.0);
+      vertexOutputs.vColor = chunkDebugColorBuffer[chunkIndex(packedSplatIndex)];
     } else if (uniforms.vizMode == 3.0) {
       let groupId = f32(colorGroupBuffer[splatIndex]);
       let palette = vec3f(
