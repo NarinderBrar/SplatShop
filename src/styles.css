@@ -195,6 +195,38 @@ body {
   z-index: 2;
 }
 
+.selection-gesture-overlay,
+.selection-lasso-overlay {
+  position: fixed;
+  z-index: 11;
+  pointer-events: none;
+}
+
+.selection-gesture-overlay {
+  border: 1px solid rgb(123 216 255 / 0.95);
+  background: rgb(123 216 255 / 0.12);
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.28),
+    0 0 18px rgb(123 216 255 / 0.18);
+}
+
+.selection-gesture-overlay--circle {
+  border-radius: 50%;
+}
+
+.selection-lasso-overlay {
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+}
+
+.selection-lasso-overlay__path {
+  fill: rgb(123 216 255 / 0.1);
+  stroke: rgb(123 216 255 / 0.95);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
 /* ===== Left Toolbar ===== */
 .tool-rail {
   position: fixed;

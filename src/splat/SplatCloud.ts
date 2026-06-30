@@ -13,6 +13,11 @@ import { SplatPreview } from "./SplatPreview";
 import { SelectionPass, type SelectionSource } from "./SelectionPass";
 import type { SelectionMode } from "../app/createUI";
 
+type NdcPoint = {
+  x: number;
+  y: number;
+};
+
 const requireWebGpuForPackedAsset = (scene: Scene, assetKind: string): void => {
   if (!scene.getEngine().isWebGPU) {
     throw new Error(`${assetKind} packed rendering requires WebGPU; the viewer started in WebGL mode.`);
@@ -168,6 +173,38 @@ class SplatCloud {
     viewProjection: Float32Array,
   ): Promise<number> {
     return this.selectionPass?.selectPoint(ndcX, ndcY, threshold, selectionMode, selectBehind, viewProjection) ?? Promise.resolve(0);
+  }
+
+  selectRect(
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+    selectionMode: SelectionMode,
+    selectBehind: boolean,
+    viewProjection: Float32Array,
+  ): Promise<number> {
+    return this.selectionPass?.selectRect(minX, minY, maxX, maxY, selectionMode, selectBehind, viewProjection) ?? Promise.resolve(0);
+  }
+
+  selectCircle(
+    centerX: number,
+    centerY: number,
+    radius: number,
+    selectionMode: SelectionMode,
+    selectBehind: boolean,
+    viewProjection: Float32Array,
+  ): Promise<number> {
+    return this.selectionPass?.selectCircle(centerX, centerY, radius, selectionMode, selectBehind, viewProjection) ?? Promise.resolve(0);
+  }
+
+  selectLasso(
+    points: readonly NdcPoint[],
+    selectionMode: SelectionMode,
+    selectBehind: boolean,
+    viewProjection: Float32Array,
+  ): Promise<number> {
+    return this.selectionPass?.selectLasso(points, selectionMode, selectBehind, viewProjection) ?? Promise.resolve(0);
   }
 
   clearSelection(): Promise<number> {

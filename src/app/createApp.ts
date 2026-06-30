@@ -38,6 +38,86 @@ const getFilenameFromUrl = (url: string): string => {
   }
 };
 
+type ScreenPoint = {
+  x: number;
+  y: number;
+};
+
+type DragSelectionTool = Extract<ToolId, "circleSelect" | "marqueeSelect" | "lassoSelect">;
+
+type SelectionGesture = {
+  tool: DragSelectionTool;
+  pointerId: number;
+  start: ScreenPoint;
+  current: ScreenPoint;
+  points: ScreenPoint[];
+  overlay: HTMLElement | SVGSVGElement;
+  polyline?: SVGPolylineElement;
+};
+
+const isDragSelectionTool = (tool: ToolId): tool is DragSelectionTool =>
+  tool === "circleSelect" || tool === "marqueeSelect" || tool === "lassoSelect";
+
+const toScreenPoint = (event: PointerEvent): ScreenPoint => ({
+  x: event.clientX,
+  y: event.clientY,
+});
+
+const getDistance = (a: ScreenPoint, b: ScreenPoint): number => Math.hypot(a.x - b.x, a.y - b.y);
+
+const toNdcPoint = (canvas: HTMLCanvasElement, point: ScreenPoint): ScreenPoint => {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: ((point.x - rect.left) / rect.width) * 2 - 1,
+    y: -((point.y - rect.top) / rect.height) * 2 + 1,
+  };
+};
+
+const createSelectionOverlay = (tool: DragSelectionTool, start: ScreenPoint): SelectionGesture["overlay"] => {
+  if (tool === "lassoSelect") {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    svg.classList.add("selection-lasso-overlay");
+    polyline.classList.add("selection-lasso-overlay__path");
+    polyline.setAttribute("points", `${start.x},${start.y}`);
+    svg.appendChild(polyline);
+    document.body.appendChild(svg);
+    return svg;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = `selection-gesture-overlay selection-gesture-overlay--${tool === "circleSelect" ? "circle" : "rect"}`;
+  document.body.appendChild(overlay);
+  return overlay;
+};
+
+const getLassoPolyline = (overlay: SelectionGesture["overlay"]): SVGPolylineElement | undefined =>
+  overlay instanceof SVGSVGElement ? overlay.querySelector("polyline") ?? undefined : undefined;
+
+const updateSelectionOverlay = (gesture: SelectionGesture): void => {
+  if (gesture.tool === "lassoSelect") {
+    gesture.polyline?.setAttribute("points", gesture.points.map((point) => `${point.x},${point.y}`).join(" "));
+    return;
+  }
+
+  const overlay = gesture.overlay as HTMLElement;
+  if (gesture.tool === "circleSelect") {
+    const radius = Math.max(1, getDistance(gesture.start, gesture.current));
+    overlay.style.left = `${gesture.start.x - radius}px`;
+    overlay.style.top = `${gesture.start.y - radius}px`;
+    overlay.style.width = `${radius * 2}px`;
+    overlay.style.height = `${radius * 2}px`;
+    return;
+  }
+
+  const left = Math.min(gesture.start.x, gesture.current.x);
+  const top = Math.min(gesture.start.y, gesture.current.y);
+  overlay.style.left = `${left}px`;
+  overlay.style.top = `${top}px`;
+  overlay.style.width = `${Math.max(1, Math.abs(gesture.current.x - gesture.start.x))}px`;
+  overlay.style.height = `${Math.max(1, Math.abs(gesture.current.y - gesture.start.y))}px`;
+};
+
 export async function createApp(
   canvas: HTMLCanvasElement,
   status: HTMLElement,
@@ -88,27 +168,8 @@ export async function createApp(
     debugStats.getElement(),
   );
 
-  canvas.addEventListener("pointerdown", (event: PointerEvent) => {
-    if (activeTool !== "pointSelect" || !currentSplatCloud?.hasSelection) {
-      return;
-    }
-
-    const targetCloud = currentSplatCloud;
-    const rect = canvas.getBoundingClientRect();
-    const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-    const viewProjArray = cameraManager.getViewProjectionArray();
-
-    void targetCloud
-      .selectPoint(
-        ndcX,
-        ndcY,
-        selectionThreshold,
-        selectionMode,
-        selectBehind,
-        viewProjArray,
-      )
+  const applySelectionResult = (targetCloud: SplatCloud, selection: Promise<number>): void => {
+    void selection
       .then((selectedCount) => {
         if (currentSplatCloud === targetCloud) {
           ui.setSelectedCount(selectedCount);
@@ -119,6 +180,148 @@ export async function createApp(
           ui.setSelectedCount(0);
         }
       });
+  };
+
+  let selectionGesture: SelectionGesture | undefined;
+
+  canvas.addEventListener("pointerdown", (event: PointerEvent) => {
+    if (!currentSplatCloud?.hasSelection) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const targetCloud = currentSplatCloud;
+    const viewProjArray = cameraManager.getViewProjectionArray();
+
+    if (activeTool === "pointSelect") {
+      const { x: ndcX, y: ndcY } = toNdcPoint(canvas, toScreenPoint(event));
+      applySelectionResult(
+        targetCloud,
+        targetCloud.selectPoint(
+          ndcX,
+          ndcY,
+          selectionThreshold,
+          selectionMode,
+          selectBehind,
+          viewProjArray,
+        ),
+      );
+      return;
+    }
+
+    if (!isDragSelectionTool(activeTool)) {
+      return;
+    }
+
+    const start = toScreenPoint(event);
+    const overlay = createSelectionOverlay(activeTool, start);
+    selectionGesture = {
+      tool: activeTool,
+      pointerId: event.pointerId,
+      start,
+      current: start,
+      points: [start],
+      overlay,
+      polyline: getLassoPolyline(overlay),
+    };
+    updateSelectionOverlay(selectionGesture);
+    canvas.setPointerCapture(event.pointerId);
+    cameraManager.camera.detachControl();
+  });
+
+  canvas.addEventListener("pointermove", (event: PointerEvent) => {
+    if (!selectionGesture || event.pointerId !== selectionGesture.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const current = toScreenPoint(event);
+    selectionGesture.current = current;
+    if (
+      selectionGesture.tool === "lassoSelect" &&
+      getDistance(selectionGesture.points[selectionGesture.points.length - 1], current) >= 3
+    ) {
+      selectionGesture.points.push(current);
+    }
+    updateSelectionOverlay(selectionGesture);
+  });
+
+  const finishSelectionGesture = (event: PointerEvent, cancelled: boolean): void => {
+    if (!selectionGesture || event.pointerId !== selectionGesture.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const gesture = selectionGesture;
+    selectionGesture = undefined;
+    gesture.overlay.remove();
+    if (canvas.hasPointerCapture(event.pointerId)) {
+      canvas.releasePointerCapture(event.pointerId);
+    }
+    cameraManager.camera.attachControl(canvas, true);
+
+    const targetCloud = currentSplatCloud;
+    if (cancelled || !targetCloud?.hasSelection) {
+      return;
+    }
+
+    const viewProjArray = cameraManager.getViewProjectionArray();
+    const start = toNdcPoint(canvas, gesture.start);
+    const current = toNdcPoint(canvas, gesture.current);
+    if (getDistance(gesture.start, gesture.current) < 3) {
+      applySelectionResult(
+        targetCloud,
+        targetCloud.selectPoint(start.x, start.y, selectionThreshold, selectionMode, selectBehind, viewProjArray),
+      );
+      return;
+    }
+
+    if (gesture.tool === "marqueeSelect") {
+      applySelectionResult(
+        targetCloud,
+        targetCloud.selectRect(
+          Math.min(start.x, current.x),
+          Math.min(start.y, current.y),
+          Math.max(start.x, current.x),
+          Math.max(start.y, current.y),
+          selectionMode,
+          selectBehind,
+          viewProjArray,
+        ),
+      );
+      return;
+    }
+
+    if (gesture.tool === "circleSelect") {
+      const rect = canvas.getBoundingClientRect();
+      const radiusPixels = getDistance(gesture.start, gesture.current);
+      const radiusNdc = Math.max((radiusPixels / rect.width) * 2, (radiusPixels / rect.height) * 2);
+      applySelectionResult(
+        targetCloud,
+        targetCloud.selectCircle(start.x, start.y, radiusNdc, selectionMode, selectBehind, viewProjArray),
+      );
+      return;
+    }
+
+    const lassoPoints = gesture.points.map((point) => toNdcPoint(canvas, point));
+    applySelectionResult(
+      targetCloud,
+      targetCloud.selectLasso(lassoPoints, selectionMode, selectBehind, viewProjArray),
+    );
+  };
+
+  canvas.addEventListener("pointerup", (event: PointerEvent) => {
+    finishSelectionGesture(event, false);
+  });
+
+  canvas.addEventListener("pointercancel", (event: PointerEvent) => {
+    finishSelectionGesture(event, true);
   });
 
   const fileHandler = initFileHandler(
