@@ -87,10 +87,12 @@ class ViewerDebugStats {
   private frameCount = 0;
   private fps = 0;
   private lastFpsTime = performance.now();
+  private visible = false;
 
   constructor(private readonly mode: string, container?: HTMLElement) {
     this.root = document.createElement("div");
     this.root.id = "debug-stats";
+    this.root.style.display = "none";
     (container ?? document.body).appendChild(this.root);
     const params = new URLSearchParams(window.location.search);
     this.tileOverlayMode = params.get("computeTileDepthOverlay") === "true" ? "depth" : "occupancy";
@@ -100,7 +102,6 @@ class ViewerDebugStats {
       this.tileOverlayContext = this.tileOverlay.getContext("2d") ?? undefined;
       document.body.appendChild(this.tileOverlay);
     }
-    this.render();
   }
 
   getElement(): HTMLDivElement {
@@ -109,14 +110,28 @@ class ViewerDebugStats {
 
   setCloud(splatCloud: SplatCloud): void {
     this.splatCloud = splatCloud;
-    this.render();
+    if (this.visible) {
+      this.render();
+    }
   }
 
   setVisible(visible: boolean): void {
+    this.visible = visible;
     this.root.style.display = visible ? "" : "none";
+    if (visible) {
+      this.lastFpsTime = performance.now();
+      this.frameCount = 0;
+      this.render();
+    } else {
+      this.clearTileOverlay();
+    }
   }
 
   update(): void {
+    if (!this.visible) {
+      return;
+    }
+
     this.frameCount++;
     const now = performance.now();
     const elapsed = now - this.lastFpsTime;
@@ -128,6 +143,13 @@ class ViewerDebugStats {
     this.frameCount = 0;
     this.lastFpsTime = now;
     this.render();
+  }
+
+  private clearTileOverlay(): void {
+    if (!this.tileOverlay || !this.tileOverlayContext) {
+      return;
+    }
+    this.tileOverlayContext.clearRect(0, 0, this.tileOverlay.width, this.tileOverlay.height);
   }
 
   private renderTileOverlay(renderStats: ReturnType<SplatCloud["renderPass"]["getStats"]>): void {
