@@ -134,6 +134,7 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   prefetchCandidateChunks: number;
   prefetchFrustumChunks: number;
   nearPrefetchChunks: number;
+  candidateSoACapacity: number;
   prefetchFrustumMargin: number;
   nearPrefetchDistance: number;
 };
@@ -260,6 +261,65 @@ class ChunkIndexBuffer {
       this.data = next;
     }
     this.data[this.length++] = value;
+  }
+}
+
+class SsogCandidateSoA {
+  entryIndices = new Uint32Array(0);
+  nodeIds = new Uint32Array(0);
+  parentNodeIds = new Int32Array(0);
+  depths = new Uint16Array(0);
+  lods = new Uint16Array(0);
+  counts = new Uint32Array(0);
+  flags = new Uint8Array(0);
+  bounds = new Float32Array(0);
+  length = 0;
+
+  reset(length: number): void {
+    this.ensureCapacity(length);
+    this.length = length;
+  }
+
+  set(
+    index: number,
+    entryIndex: number,
+    entry: SsogChunkEntry,
+    wasSelected: boolean,
+  ): void {
+    const boundsOffset = index * 6;
+    this.entryIndices[index] = entryIndex;
+    this.nodeIds[index] = entry.nodeId;
+    this.parentNodeIds[index] = entry.parentNodeId ?? -1;
+    this.depths[index] = entry.depth;
+    this.lods[index] = entry.lod;
+    this.counts[index] = entry.count;
+    this.flags[index] = wasSelected ? 1 : 0;
+    this.bounds[boundsOffset + 0] = entry.bound.min[0];
+    this.bounds[boundsOffset + 1] = entry.bound.min[1];
+    this.bounds[boundsOffset + 2] = entry.bound.min[2];
+    this.bounds[boundsOffset + 3] = entry.bound.max[0];
+    this.bounds[boundsOffset + 4] = entry.bound.max[1];
+    this.bounds[boundsOffset + 5] = entry.bound.max[2];
+  }
+
+  private ensureCapacity(length: number): void {
+    if (this.entryIndices.length >= length) {
+      return;
+    }
+
+    let capacity = Math.max(16, this.entryIndices.length);
+    while (capacity < length) {
+      capacity *= 2;
+    }
+
+    this.entryIndices = new Uint32Array(capacity);
+    this.nodeIds = new Uint32Array(capacity);
+    this.parentNodeIds = new Int32Array(capacity);
+    this.depths = new Uint16Array(capacity);
+    this.lods = new Uint16Array(capacity);
+    this.counts = new Uint32Array(capacity);
+    this.flags = new Uint8Array(capacity);
+    this.bounds = new Float32Array(capacity * 6);
   }
 }
 
@@ -626,6 +686,8 @@ class StreamingSsogRenderPass {
   private readonly prefetchFrustumEntryIndices = new ChunkIndexBuffer();
   private readonly nearPrefetchEntryIndices = new ChunkIndexBuffer();
   private readonly prefetchEntryIndices = new ChunkIndexBuffer();
+  private readonly visibleCandidateSoA = new SsogCandidateSoA();
+  private readonly prefetchCandidateSoA = new SsogCandidateSoA();
   private readonly prefetchEntryMarks: Uint32Array;
   private prefetchEntryMark = 1;
   private readonly visibleSelectItems: SelectableSsogEntry[] = [];
@@ -1275,6 +1337,7 @@ class StreamingSsogRenderPass {
       prefetchCandidateChunks: this.prefetchCandidateChunks,
       prefetchFrustumChunks: this.prefetchFrustumChunks,
       nearPrefetchChunks: this.nearPrefetchChunks,
+      candidateSoACapacity: this.visibleCandidateSoA.entryIndices.length,
       prefetchFrustumMargin: getSsogPrefetchFrustumMargin(),
       nearPrefetchDistance: getSsogNearPrefetchDistance(),
     };
@@ -1488,7 +1551,12 @@ class StreamingSsogRenderPass {
     const fov = "fov" in camera && typeof camera.fov === "number" ? camera.fov : Math.PI / 3;
     const viewportHeight = this.scene.getEngine().getRenderHeight(true);
     const focalPixels = viewportHeight / Math.max(0.001, 2 * Math.tan(fov * 0.5));
-    const visibleItems = this.fillSelectableItems(this.visibleSelectItems, this.visibleEntryIndices, false);
+    const visibleItems = this.fillSelectableItems(
+      this.visibleSelectItems,
+      this.visibleCandidateSoA,
+      this.visibleEntryIndices,
+      false,
+    );
     const selection = selectSsogLod(
       visibleItems,
       {
@@ -1510,8 +1578,13 @@ class StreamingSsogRenderPass {
         : this.prefetchMultiplier;
     const prefetchSelection =
       this.prefetchEntryIndices.length > this.visibleEntryIndices.length || this.prefetchMultiplier > 1
-        ? selectSsogLod(
-            this.fillSelectableItems(this.prefetchSelectItems, this.prefetchEntryIndices, true),
+          ? selectSsogLod(
+            this.fillSelectableItems(
+              this.prefetchSelectItems,
+              this.prefetchCandidateSoA,
+              this.prefetchEntryIndices,
+              true,
+            ),
             {
               budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * prefetchBudgetMultiplier)),
               cameraPosition,
@@ -1701,15 +1774,18 @@ class StreamingSsogRenderPass {
 
   private fillSelectableItems(
     target: SelectableSsogEntry[],
+    candidateSoA: SsogCandidateSoA,
     indices: ChunkIndexBuffer,
     includePrefetchKeys: boolean,
   ): SelectableSsogEntry[] {
     target.length = indices.length;
+    candidateSoA.reset(indices.length);
     for (let itemIndex = 0; itemIndex < indices.length; itemIndex++) {
       const entryIndex = indices.data[itemIndex];
       const entry = this.entries[entryIndex];
       const key = this.entryKeys[entryIndex];
       const wasSelected = this.selectedKeys.has(key) || (includePrefetchKeys && this.prefetchKeys.has(key));
+      candidateSoA.set(itemIndex, entryIndex, entry, wasSelected);
       const item = target[itemIndex];
       if (item) {
         item.value = entry;

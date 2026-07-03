@@ -21,6 +21,7 @@ import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
 import { getQualityPreset } from "./qualityProfiles";
 import { getRequestedRendererMode, type EffectiveRendererMode, type RequestedRendererMode } from "./renderControls";
 import { BufferVersionTracker } from "./BufferVersionTracker";
+import { FrameDataSoA } from "./FrameDataSoA";
 import SsogGlobalPackedRenderPass_GPU_INDEX_GATHER_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.gpu-index-gather-source.wgsl?raw";
 import SsogGlobalPackedRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.wgsl-vertex-source.wgsl?raw";
 import SsogGlobalPackedRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.wgsl-fragment-source.wgsl?raw";
@@ -334,6 +335,7 @@ class SsogGlobalPackedRenderPass {
   private readonly dcColorData: Float32Array;
   private readonly shChunks: GlobalPackedShChunk[];
   private readonly shStats: GlobalPackedShStats;
+  private readonly frameData = new FrameDataSoA();
   private readonly updateViewport: () => void;
   private readonly viewport = new Vector2(1, 1);
   private lastViewportWidth = 0;
@@ -747,27 +749,27 @@ class SsogGlobalPackedRenderPass {
 
     const shouldUpdate = this.computeTileFrame === 0;
     this.computeTileFrame = (this.computeTileFrame + 1) % this.computeTileUpdateInterval;
+    const frameData = this.frameData.update(this.scene, this.viewport.x, this.viewport.y, this.numSplats);
     if (shouldUpdate) {
-      const transform = this.scene.getTransformMatrix();
       this.computeTileStatsPass.dispatch(
-        transform,
-        this.viewport.x,
-        this.viewport.y,
-        this.numSplats,
+        frameData.worldViewProjection,
+        frameData.viewportWidth,
+        frameData.viewportHeight,
+        frameData.splatCount,
       );
-      this.computeTileDepthRangePass?.dispatch(transform, this.numSplats);
+      this.computeTileDepthRangePass?.dispatch(frameData.worldViewProjection, frameData.splatCount);
       this.computeTileWorkQueuePass?.dispatch();
       const depthStats = this.computeTileDepthRangePass?.getStats();
       this.computeTileOrderPass?.dispatch(
-        transform,
-        this.viewport.x,
-        this.viewport.y,
-        this.numSplats,
+        frameData.worldViewProjection,
+        frameData.viewportWidth,
+        frameData.viewportHeight,
+        frameData.splatCount,
         depthStats?.minDepth ?? 0,
         depthStats?.maxDepth ?? 1,
       );
     }
-    this.computeTileRasterPreviewPass?.update(this.viewport.x, this.viewport.y);
+    this.computeTileRasterPreviewPass?.update(frameData.viewportWidth, frameData.viewportHeight);
     if (this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass) {
       const previewStats = this.computeTileRasterPreviewPass.getStats();
       const previewDrawable =

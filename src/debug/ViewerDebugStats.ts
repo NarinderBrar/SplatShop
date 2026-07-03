@@ -341,6 +341,7 @@ class ViewerDebugStats {
       prefetchCandidateChunks?: number;
       prefetchFrustumChunks?: number;
       nearPrefetchChunks?: number;
+      candidateSoACapacity?: number;
       prefetchFrustumMargin?: number;
       nearPrefetchDistance?: number;
     };
@@ -468,6 +469,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.prefetchCandidateChunks !== undefined
         ? `Prefetch candidates: ${formatCount(streamingStats.prefetchCandidateChunks)} total / ${formatCount(streamingStats.prefetchFrustumChunks ?? 0)} expanded-frustum / ${formatCount(streamingStats.nearPrefetchChunks ?? 0)} near-camera / margin ${(streamingStats.prefetchFrustumMargin ?? 0).toFixed(2)} / near ${(streamingStats.nearPrefetchDistance ?? 0).toFixed(1)}`
+        : "",
+      streamingStats.candidateSoACapacity !== undefined
+        ? `Candidate SoA: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / capacity ${formatCount(streamingStats.candidateSoACapacity)}`
         : "",
       streamingStats.selectedChunks !== undefined
         ? `Streaming chunks: selected ${formatCount(streamingStats.selectedChunks)} / loaded ${formatCount(streamingStats.loadedChunks ?? 0)} (${formatCount(streamingStats.loadedActiveChunks ?? 0)} active, ${formatCount(streamingStats.loadedInactiveChunks ?? 0)} inactive) / pending ${formatCount(streamingStats.pendingChunks ?? 0)} / upload ${formatCount(streamingStats.pendingUploadChunks ?? 0)} / queued ${formatCount(streamingStats.queuedChunks ?? 0)} / evicted ${formatCount(streamingStats.evictedChunks ?? 0)}`
