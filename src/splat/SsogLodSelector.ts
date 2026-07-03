@@ -18,6 +18,16 @@ type SsogSelectableItem<T> = {
   wasSelected?: boolean;
 };
 
+type SsogLodCandidateSoA = {
+  length: number;
+  nodeIds: Uint32Array;
+  depths: Uint16Array;
+  lods: Uint16Array;
+  counts: Uint32Array;
+  flags: Uint8Array;
+  bounds: Float32Array;
+};
+
 type SsogLodSelectOptions = {
   budget: number;
   cameraPosition: Vec3Like;
@@ -41,6 +51,16 @@ type RankValues = {
   score: number;
   screenRadius: number;
   viewDot: number;
+};
+
+type SsogLodCandidateReader<T> = {
+  length: number;
+  getRank: (index: number) => RankValues;
+  getNodeId: (index: number) => number;
+  getDepth: (index: number) => number;
+  getLod: (index: number) => number;
+  getCount: (index: number) => number;
+  getItem: (index: number) => SsogSelectableItem<T>;
 };
 
 type NodeSelection = {
@@ -154,44 +174,91 @@ const getBoundsRank = <T>(
   };
 };
 
-const selectSsogLod = <T>(
-  items: SsogSelectableItem<T>[],
+const getBoundsRankFromSoA = (
+  candidates: SsogLodCandidateSoA,
+  index: number,
   options: SsogLodSelectOptions,
-  scratch = new SsogLodSelectorScratch<T>(),
+): RankValues => {
+  const boundsOffset = index * 6;
+  const minX = candidates.bounds[boundsOffset + 0];
+  const minY = candidates.bounds[boundsOffset + 1];
+  const minZ = candidates.bounds[boundsOffset + 2];
+  const maxX = candidates.bounds[boundsOffset + 3];
+  const maxY = candidates.bounds[boundsOffset + 4];
+  const maxZ = candidates.bounds[boundsOffset + 5];
+  const centerX = (minX + maxX) * 0.5;
+  const centerY = (minY + maxY) * 0.5;
+  const centerZ = (minZ + maxZ) * 0.5;
+  const radiusX = maxX - centerX;
+  const radiusY = maxY - centerY;
+  const radiusZ = maxZ - centerZ;
+  const radius = Math.max(0.001, Math.hypot(radiusX, radiusY, radiusZ));
+  const toCenterX = centerX - options.cameraPosition.x;
+  const toCenterY = centerY - options.cameraPosition.y;
+  const toCenterZ = centerZ - options.cameraPosition.z;
+  const distanceToCenter = Math.max(0.001, Math.hypot(toCenterX, toCenterY, toCenterZ));
+  const distance = Math.max(0.001, distanceToCenter - radius);
+  const screenRadius = (radius / distance) * options.focalPixels;
+  const range = Math.max(0.000001, options.lodRangeMax - options.lodRangeMin);
+  const normalized = Math.max(0, (screenRadius - options.lodRangeMin) / range);
+  const screenBias = Math.min(4, normalized <= 1 ? normalized : 1 + Math.log2(normalized));
+  const forward = options.cameraForward;
+  const viewDot = forward
+    ? Math.max(
+        0,
+        (toCenterX * forward.x + toCenterY * forward.y + toCenterZ * forward.z) / distanceToCenter,
+      )
+    : 0.5;
+  const viewBias = 0.35 + viewDot * 0.65;
+  const distanceBias = 1 / Math.sqrt(distanceToCenter);
+  const hysteresis = candidates.flags[index] !== 0 ? 1.15 : 1;
+  const depthBias = 1 + candidates.depths[index] * 0.015;
+  return {
+    score: screenBias * viewBias * distanceBias * Math.sqrt(candidates.counts[index]) * hysteresis * depthBias,
+    screenRadius,
+    viewDot,
+  };
+};
+
+const selectSsogLodWithReader = <T>(
+  reader: SsogLodCandidateReader<T>,
+  options: SsogLodSelectOptions,
+  scratch: SsogLodSelectorScratch<T>,
 ): SsogLodSelection<T> => {
-  scratch.reset(items.length);
-  items.forEach((item, index) => {
-    const rank = getBoundsRank(item, options);
+  scratch.reset(reader.length);
+  for (let index = 0; index < reader.length; index++) {
+    const rank = reader.getRank(index);
     scratch.scores[index] = rank.score;
     scratch.screenRadii[index] = rank.screenRadius;
     scratch.viewDots[index] = rank.viewDot;
 
-    let group = scratch.groupsByNode.get(item.nodeId);
+    const nodeId = reader.getNodeId(index);
+    let group = scratch.groupsByNode.get(nodeId);
     if (!group) {
       group = scratch.getGroup();
-      scratch.groupsByNode.set(item.nodeId, group);
+      scratch.groupsByNode.set(nodeId, group);
     }
     group.push(index);
-  });
+  }
 
   const budget = Math.max(0, Math.floor(options.budget));
   const selectedByNode = scratch.selectedByNode;
   let selectedSplats = 0;
 
   for (const group of scratch.groupsByNode.values()) {
-    group.sort((a, b) => items[a].lod - items[b].lod || a - b);
+    group.sort((a, b) => reader.getLod(a) - reader.getLod(b) || a - b);
     const coarsestIndex = group.length - 1;
     const coarsestItemIndex = group[coarsestIndex];
     if (coarsestItemIndex === undefined) {
       continue;
     }
 
-    selectedByNode.set(items[coarsestItemIndex].nodeId, {
+    selectedByNode.set(reader.getNodeId(coarsestItemIndex), {
       rankedIndex: coarsestItemIndex,
       lodIndex: coarsestIndex,
       lods: group,
     });
-    selectedSplats += items[coarsestItemIndex].count;
+    selectedSplats += reader.getCount(coarsestItemIndex);
   }
 
   if (selectedByNode.size === 0) {
@@ -221,7 +288,7 @@ const selectSsogLod = <T>(
       forcedFineUpgrades.push({
         selection,
         finestIndex,
-        addedSplats: items[finestIndex].count - items[selection.rankedIndex].count,
+        addedSplats: reader.getCount(finestIndex) - reader.getCount(selection.rankedIndex),
         priority: scratch.screenRadii[finestIndex] * (0.5 + scratch.viewDots[finestIndex] * 0.5),
       });
     }
@@ -252,13 +319,13 @@ const selectSsogLod = <T>(
           continue;
         }
 
-        const next = items[nextIndex];
-        const addedSplats = next.count - items[selection.rankedIndex].count;
+        const nextLod = reader.getLod(nextIndex);
+        const addedSplats = reader.getCount(nextIndex) - reader.getCount(selection.rankedIndex);
         if (addedSplats < 0) {
           continue;
         }
 
-        const fineDetailBias = 1 + 0.65 / Math.max(1, next.lod + 1);
+        const fineDetailBias = 1 + 0.65 / Math.max(1, nextLod + 1);
         const closeDetailBias = scratch.screenRadii[nextIndex] > options.lodRangeMax ? 1.8 : 1;
         const viewDetailBias = 0.6 + scratch.viewDots[nextIndex] * 0.4;
         const cost = Math.pow(Math.max(1, addedSplats), 0.55);
@@ -273,8 +340,8 @@ const selectSsogLod = <T>(
       upgrades.sort(
         (a, b) =>
           b.score - a.score ||
-          items[b.nextIndex].depth - items[a.nextIndex].depth ||
-          items[a.nextIndex].lod - items[b.nextIndex].lod,
+          reader.getDepth(b.nextIndex) - reader.getDepth(a.nextIndex) ||
+          reader.getLod(a.nextIndex) - reader.getLod(b.nextIndex),
       );
 
       for (const upgrade of upgrades) {
@@ -297,20 +364,20 @@ const selectSsogLod = <T>(
     rankedCoverage.sort(
       (a, b) =>
         scratch.scores[b] - scratch.scores[a] ||
-        items[b].depth - items[a].depth ||
-        items[a].lod - items[b].lod ||
+        reader.getDepth(b) - reader.getDepth(a) ||
+        reader.getLod(a) - reader.getLod(b) ||
         a - b,
     );
     selectedByNode.clear();
     selectedSplats = 0;
     for (const rankedIndex of rankedCoverage) {
-      if (selectedSplats > 0 && selectedSplats + items[rankedIndex].count > budget) {
+      if (selectedSplats > 0 && selectedSplats + reader.getCount(rankedIndex) > budget) {
         continue;
       }
       const group = scratch.getGroup();
       group.push(rankedIndex);
-      selectedByNode.set(items[rankedIndex].nodeId, { rankedIndex, lodIndex: 0, lods: group });
-      selectedSplats += items[rankedIndex].count;
+      selectedByNode.set(reader.getNodeId(rankedIndex), { rankedIndex, lodIndex: 0, lods: group });
+      selectedSplats += reader.getCount(rankedIndex);
       if (selectedSplats >= budget) {
         break;
       }
@@ -320,9 +387,9 @@ const selectSsogLod = <T>(
   const selected = scratch.selected;
   const selectedLodValues = scratch.selectedLodValues;
   for (const selection of selectedByNode.values()) {
-    const item = items[selection.rankedIndex];
+    const item = reader.getItem(selection.rankedIndex);
     selected.push(item);
-    selectedLodValues.add(item.lod);
+    selectedLodValues.add(reader.getLod(selection.rankedIndex));
   }
   selected.sort((a, b) => a.nodeId - b.nodeId || a.lod - b.lod);
 
@@ -334,5 +401,44 @@ const selectSsogLod = <T>(
   };
 };
 
-export { selectSsogLod, SsogLodSelectorScratch };
-export type { SsogSelectableItem, SsogLodSelection, SsogLodSelectOptions };
+const selectSsogLod = <T>(
+  items: SsogSelectableItem<T>[],
+  options: SsogLodSelectOptions,
+  scratch = new SsogLodSelectorScratch<T>(),
+): SsogLodSelection<T> =>
+  selectSsogLodWithReader(
+    {
+      length: items.length,
+      getRank: (index) => getBoundsRank(items[index], options),
+      getNodeId: (index) => items[index].nodeId,
+      getDepth: (index) => items[index].depth,
+      getLod: (index) => items[index].lod,
+      getCount: (index) => items[index].count,
+      getItem: (index) => items[index],
+    },
+    options,
+    scratch,
+  );
+
+const selectSsogLodFromSoA = <T>(
+  candidates: SsogLodCandidateSoA,
+  items: SsogSelectableItem<T>[],
+  options: SsogLodSelectOptions,
+  scratch = new SsogLodSelectorScratch<T>(),
+): SsogLodSelection<T> =>
+  selectSsogLodWithReader(
+    {
+      length: candidates.length,
+      getRank: (index) => getBoundsRankFromSoA(candidates, index, options),
+      getNodeId: (index) => candidates.nodeIds[index],
+      getDepth: (index) => candidates.depths[index],
+      getLod: (index) => candidates.lods[index],
+      getCount: (index) => candidates.counts[index],
+      getItem: (index) => items[index],
+    },
+    options,
+    scratch,
+  );
+
+export { selectSsogLod, selectSsogLodFromSoA, SsogLodSelectorScratch };
+export type { SsogSelectableItem, SsogLodCandidateSoA, SsogLodSelection, SsogLodSelectOptions };

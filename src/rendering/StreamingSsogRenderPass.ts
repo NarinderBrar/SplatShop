@@ -6,7 +6,7 @@ import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
 import { SogBuffers } from "../splat/SogBuffers";
 import { SplatBuffers, type PackedSplatArrays } from "../splat/SplatBuffers";
-import { selectSsogLod, SsogLodSelectorScratch, type SsogSelectableItem } from "../splat/SsogLodSelector";
+import { selectSsogLodFromSoA, SsogLodSelectorScratch, type SsogSelectableItem } from "../splat/SsogLodSelector";
 import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { isAabbInFrustum } from "../splat/SsogFrustumCulling";
 import { SsogDebugBounds } from "../debug/SsogDebugBounds";
@@ -1557,7 +1557,8 @@ class StreamingSsogRenderPass {
       this.visibleEntryIndices,
       false,
     );
-    const selection = selectSsogLod(
+    const selection = selectSsogLodFromSoA(
+      this.visibleCandidateSoA,
       visibleItems,
       {
         budget: this.splatBudget,
@@ -1578,7 +1579,8 @@ class StreamingSsogRenderPass {
         : this.prefetchMultiplier;
     const prefetchSelection =
       this.prefetchEntryIndices.length > this.visibleEntryIndices.length || this.prefetchMultiplier > 1
-          ? selectSsogLod(
+        ? selectSsogLodFromSoA(
+            this.prefetchCandidateSoA,
             this.fillSelectableItems(
               this.prefetchSelectItems,
               this.prefetchCandidateSoA,
