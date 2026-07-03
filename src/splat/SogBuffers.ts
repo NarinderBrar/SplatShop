@@ -49,9 +49,11 @@ class SogBuffers {
   private readonly colorData: Float32Array;
 
   private readonly writer: GpuBufferWriter | undefined;
+  private readonly poolKey: string | undefined;
 
-  constructor(engine: unknown, readonly packed: SogPackedData, writer?: GpuBufferWriter) {
+  constructor(engine: unknown, readonly packed: SogPackedData, writer?: GpuBufferWriter, poolKey?: string) {
     this.writer = writer;
+    this.poolKey = poolKey;
     this.indices = new Uint32Array(packed.numSplats);
     for (let i = 0; i < this.indices.length; i++) {
       this.indices[i] = i;
@@ -75,30 +77,34 @@ class SogBuffers {
   }
 
   dispose(): void {
-    this.storage?.meansL.dispose();
-    this.storage?.meansU.dispose();
-    this.storage?.quats.dispose();
-    this.storage?.scales.dispose();
-    this.storage?.sh0.dispose();
-    this.storage?.color.dispose();
-    this.storage?.state.dispose();
-    this.storage?.scaleCodebook.dispose();
-    this.storage?.sh0Codebook.dispose();
-    this.storage?.centers.dispose();
-    this.storage?.depthKeys.dispose();
-    this.storage?.sortBucketCounts.dispose();
-    this.storage?.sortBucketOffsets.dispose();
-    this.storage?.sortScratchIndices.dispose();
-    this.storage?.indices.dispose();
-    this.storage?.shNCentroids?.dispose();
-    this.storage?.shNLabels?.dispose();
-    this.storage?.shNCodebook?.dispose();
+    if (!this.storage) {
+      return;
+    }
+
+    this.releaseStorageBuffer("SogMeansL", this.storage.meansL);
+    this.releaseStorageBuffer("SogMeansU", this.storage.meansU);
+    this.releaseStorageBuffer("SogQuats", this.storage.quats);
+    this.releaseStorageBuffer("SogScales", this.storage.scales);
+    this.releaseStorageBuffer("SogSh0", this.storage.sh0);
+    this.releaseStorageBuffer("SogColor", this.storage.color);
+    this.releaseStorageBuffer("SogStateDefault", this.storage.state);
+    this.releaseStorageBuffer("SogScaleCodebook", this.storage.scaleCodebook);
+    this.releaseStorageBuffer("SogSh0Codebook", this.storage.sh0Codebook);
+    this.releaseStorageBuffer("SogCenters", this.storage.centers);
+    this.releaseStorageBuffer("SogDepthKeys", this.storage.depthKeys);
+    this.releaseStorageBuffer("SogSortBucketCounts", this.storage.sortBucketCounts);
+    this.releaseStorageBuffer("SogSortBucketOffsets", this.storage.sortBucketOffsets);
+    this.releaseStorageBuffer("SogSortScratchIndices", this.storage.sortScratchIndices);
+    this.releaseStorageBuffer("SogIndices", this.storage.indices);
+    this.releaseOptionalStorageBuffer("SogShNCentroids", this.storage.shNCentroids);
+    this.releaseOptionalStorageBuffer("SogShNLabels", this.storage.shNLabels);
+    this.releaseOptionalStorageBuffer("SogShNCodebook", this.storage.shNCodebook);
   }
 
   private createStorageBuffers(engine: WebGPUEngine): SogStorageBuffers {
     const make = (name: string, data: Uint32Array | Float32Array) => {
       if (this.writer) {
-        return this.writer.createStorageBufferWithFallback(name, data);
+        return this.writer.createStorageBufferWithFallback(name, data, this.poolKey);
       }
       const buffer = new StorageBuffer(engine, data.byteLength, undefined, name);
       buffer.update(data);
@@ -209,6 +215,20 @@ class SogBuffers {
       out[offset + 3] = chan(pixel, 3) / 255;
     }
     return out;
+  }
+
+  private releaseOptionalStorageBuffer(name: string, buffer: StorageBuffer | undefined): void {
+    if (buffer) {
+      this.releaseStorageBuffer(name, buffer);
+    }
+  }
+
+  private releaseStorageBuffer(name: string, buffer: StorageBuffer): void {
+    if (this.writer && this.poolKey) {
+      this.writer.releaseStorageBuffer(name, buffer, this.poolKey);
+    } else {
+      buffer.dispose();
+    }
   }
 }
 

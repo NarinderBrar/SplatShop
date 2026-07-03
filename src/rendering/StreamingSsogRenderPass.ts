@@ -85,6 +85,11 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuBufferWriterTotalUploadCount: number;
   gpuBufferWriterTotalErrorCount: number;
   gpuBufferWriterTotalFallbackCount: number;
+  gpuBufferWriterPooledBufferCount: number;
+  gpuBufferWriterPooledBufferBytes: number;
+  gpuBufferWriterPooledBufferReuses: number;
+  gpuBufferWriterPooledBufferReleases: number;
+  gpuBufferWriterPooledBufferDisposals: number;
   gpuBufferWriterScratchReuseCount: number;
   gpuBufferWriterArenaBufferCount: number;
   gpuBufferWriterArenaTotalBytes: number;
@@ -1380,6 +1385,11 @@ class StreamingSsogRenderPass {
       gpuBufferWriterTotalUploadCount: gpuBufferWriterStats?.totalUploadCount ?? 0,
       gpuBufferWriterTotalErrorCount: gpuBufferWriterStats?.totalErrorCount ?? 0,
       gpuBufferWriterTotalFallbackCount: gpuBufferWriterStats?.totalFallbackCount ?? 0,
+      gpuBufferWriterPooledBufferCount: gpuBufferWriterStats?.pooledBufferCount ?? 0,
+      gpuBufferWriterPooledBufferBytes: gpuBufferWriterStats?.pooledBufferBytes ?? 0,
+      gpuBufferWriterPooledBufferReuses: gpuBufferWriterStats?.pooledBufferReuses ?? 0,
+      gpuBufferWriterPooledBufferReleases: gpuBufferWriterStats?.pooledBufferReleases ?? 0,
+      gpuBufferWriterPooledBufferDisposals: gpuBufferWriterStats?.pooledBufferDisposals ?? 0,
       gpuBufferWriterScratchReuseCount: gpuBufferWriterStats?.scratchReuseCount ?? 0,
       gpuBufferWriterArenaBufferCount: gpuBufferWriterStats?.arenaBufferCount ?? 0,
       gpuBufferWriterArenaTotalBytes: gpuBufferWriterStats?.arenaTotalBytes ?? 0,
@@ -2239,7 +2249,7 @@ class StreamingSsogRenderPass {
     }
 
     this.evictGpuChunksForUpload(decoded);
-    const buffers = new SogBuffers(this.scene.getEngine(), chunk.data, this.gpuBufferWriter);
+    const buffers = new SogBuffers(this.scene.getEngine(), chunk.data, this.gpuBufferWriter, "ssog-streaming-chunk");
     const pass = new PackedSogRenderPass(this.scene, buffers);
     pass.setVizMode(this.activeVizMode);
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
