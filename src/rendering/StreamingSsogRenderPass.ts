@@ -135,6 +135,7 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   prefetchFrustumChunks: number;
   nearPrefetchChunks: number;
   candidateSoACapacity: number;
+  candidateSoAGrows: number;
   prefetchFrustumMargin: number;
   nearPrefetchDistance: number;
 };
@@ -249,6 +250,7 @@ type SsogQualityProfile = {
 class ChunkIndexBuffer {
   data = new Uint32Array(0);
   length = 0;
+  growCount = 0;
 
   reset(): void {
     this.length = 0;
@@ -259,6 +261,7 @@ class ChunkIndexBuffer {
       const next = new Uint32Array(Math.max(16, this.data.length * 2));
       next.set(this.data);
       this.data = next;
+      this.growCount++;
     }
     this.data[this.length++] = value;
   }
@@ -274,6 +277,7 @@ class SsogCandidateSoA {
   flags = new Uint8Array(0);
   bounds = new Float32Array(0);
   length = 0;
+  growCount = 0;
 
   reset(length: number): void {
     this.ensureCapacity(length);
@@ -320,6 +324,7 @@ class SsogCandidateSoA {
     this.counts = new Uint32Array(capacity);
     this.flags = new Uint8Array(capacity);
     this.bounds = new Float32Array(capacity * 6);
+    this.growCount++;
   }
 }
 
@@ -668,6 +673,7 @@ class StreamingSsogRenderPass {
   private readonly pending = new Map<string, Promise<void>>();
   private readonly pendingEntries = new Map<string, SsogChunkEntry>();
   private readonly decodedUploadQueue = new Map<string, DecodedChunk>();
+  private readonly decodedUploadScratch: DecodedChunk[] = [];
   private readonly rendererCommands: RendererCommand[] = [];
   private readonly rendererCommandIndices = new Map<string, number>();
   private readonly queued = new Map<string, SsogChunkEntry>();
@@ -1338,6 +1344,7 @@ class StreamingSsogRenderPass {
       prefetchFrustumChunks: this.prefetchFrustumChunks,
       nearPrefetchChunks: this.nearPrefetchChunks,
       candidateSoACapacity: this.visibleCandidateSoA.entryIndices.length,
+      candidateSoAGrows: this.visibleCandidateSoA.growCount + this.prefetchCandidateSoA.growCount,
       prefetchFrustumMargin: getSsogPrefetchFrustumMargin(),
       nearPrefetchDistance: getSsogNearPrefetchDistance(),
     };
@@ -1476,7 +1483,7 @@ class StreamingSsogRenderPass {
   }
 
   private dropStaleQueuedChunks(): void {
-    for (const key of Array.from(this.queued.keys())) {
+    for (const key of this.queued.keys()) {
       if (this.isChunkWanted(key) || this.generation === 0) {
         continue;
       }
@@ -1490,7 +1497,7 @@ class StreamingSsogRenderPass {
   }
 
   private dropStaleDecodedUploads(): void {
-    for (const key of Array.from(this.decodedUploadQueue.keys())) {
+    for (const key of this.decodedUploadQueue.keys()) {
       if (this.isChunkWanted(key) || this.generation === 0) {
         continue;
       }
@@ -1610,9 +1617,13 @@ class StreamingSsogRenderPass {
       stableSelectedByNode.set(item.nodeId, item);
     }
     this.selectedKeys.clear();
-    renderSelected.forEach((item) => this.selectedKeys.add(item.key));
+    for (let index = 0; index < renderSelected.length; index++) {
+      this.selectedKeys.add(renderSelected[index].key);
+    }
     this.desiredKeys.clear();
-    stableSelected.forEach((item) => this.desiredKeys.add(item.key));
+    for (let index = 0; index < stableSelected.length; index++) {
+      this.desiredKeys.add(stableSelected[index].key);
+    }
     this.fallbackKeys.clear();
     const missingSelectedNodeIds = this.missingSelectedNodeIds;
     missingSelectedNodeIds.clear();
@@ -1631,12 +1642,13 @@ class StreamingSsogRenderPass {
         this.requestChunk(fallback);
       }
     }
-    renderSelected.forEach((item) => {
+    for (let index = 0; index < renderSelected.length; index++) {
+      const item = renderSelected[index];
       const requested = stableSelectedByNode.get(item.nodeId);
       if (requested && requested.key !== item.key) {
         this.fallbackKeys.add(item.key);
       }
-    });
+    }
     this.coarseFallbackNodeIds.clear();
     for (const key of this.fallbackKeys) {
       const nodeId = this.entriesByKey.get(key)?.nodeId;
@@ -1657,12 +1669,13 @@ class StreamingSsogRenderPass {
         this.nearPrefetchKeys.add(key);
       }
     }
-    prefetchSelection.selected.forEach((item) => {
+    for (let index = 0; index < prefetchSelection.selected.length; index++) {
+      const item = prefetchSelection.selected[index];
       if (!this.selectedKeys.has(item.key)) {
         this.prefetchKeys.add(item.key);
         this.desiredKeys.add(item.key);
       }
-    });
+    }
     this.renderSelectedNodeIds.clear();
     this.finestSelectedNodeIds.clear();
     this.selectedLodValues.clear();
@@ -1683,7 +1696,7 @@ class StreamingSsogRenderPass {
     const activeLods = this.activeLodValues;
     activeLods.clear();
     let activeChunks = 0;
-    this.gpuLoaded.forEach((gpu, key) => {
+    for (const [key, gpu] of this.gpuLoaded) {
       const selected = this.selectedKeys.has(key);
       const fallback = this.fallbackKeys.has(key);
       gpu.active = selected || fallback;
@@ -1703,15 +1716,21 @@ class StreamingSsogRenderPass {
           this.debugBounds.ensure(key, cached.entry, "loaded-waiting");
         }
       }
-    });
+    }
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.activeChunks = Math.max(renderSelected.length, activeChunks);
     this.selectedLods = Math.max(this.selectedLodValues.size, activeLods.size);
     this.dropStaleQueuedChunks();
     this.dropStaleDecodedUploads();
-    stableSelected.forEach((item) => this.requestChunk(item.value));
-    selection.selected.forEach((item) => this.requestChunk(item.value));
-    prefetchSelection.selected.forEach((item) => this.requestChunk(item.value));
+    for (let index = 0; index < stableSelected.length; index++) {
+      this.requestChunk(stableSelected[index].value);
+    }
+    for (let index = 0; index < selection.selected.length; index++) {
+      this.requestChunk(selection.selected[index].value);
+    }
+    for (let index = 0; index < prefetchSelection.selected.length; index++) {
+      this.requestChunk(prefetchSelection.selected[index].value);
+    }
     this.pumpChunkQueue();
     this.evictInactiveChunks();
     this.generation++;
@@ -2051,7 +2070,12 @@ class StreamingSsogRenderPass {
     }
 
     const uploadStart = performance.now();
-    const queued = Array.from(this.decodedUploadQueue.values()).sort(
+    const queued = this.decodedUploadScratch;
+    queued.length = 0;
+    for (const decoded of this.decodedUploadQueue.values()) {
+      queued.push(decoded);
+    }
+    queued.sort(
       (a, b) => this.getUploadPriority(a.key) - this.getUploadPriority(b.key) || a.bytes - b.bytes,
     );
     const diagnostics: SsogUploadFrameDiagnostics = {
@@ -2070,6 +2094,7 @@ class StreamingSsogRenderPass {
     for (const decoded of queued) {
       this.processDecodedUpload(decoded, budgetState, diagnostics);
     }
+    queued.length = 0;
 
     this.attemptedUploadChunksThisFrame = diagnostics.attemptedChunks;
     this.uploadedChunksThisFrame = diagnostics.uploadedChunks;
@@ -2125,9 +2150,9 @@ class StreamingSsogRenderPass {
 
   private getDecodedUploadQueueBytes(): number {
     let bytes = 0;
-    this.decodedUploadQueue.forEach((decoded) => {
+    for (const decoded of this.decodedUploadQueue.values()) {
       bytes += decoded.bytes;
-    });
+    }
     return bytes;
   }
 
