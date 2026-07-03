@@ -343,6 +343,11 @@ class ViewerDebugStats {
       nearPrefetchChunks?: number;
       candidateSoACapacity?: number;
       candidateSoAGrows?: number;
+      rendererCommandsPending?: number;
+      rendererCommandsQueued?: number;
+      rendererCommandsDeduped?: number;
+      rendererCommandsFlushed?: number;
+      rendererCommandPoolGrows?: number;
       prefetchFrustumMargin?: number;
       nearPrefetchDistance?: number;
     };
@@ -473,6 +478,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.candidateSoACapacity !== undefined
         ? `Candidate SoA: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / capacity ${formatCount(streamingStats.candidateSoACapacity)} / grows ${formatCount(streamingStats.candidateSoAGrows ?? 0)}`
+        : "",
+      streamingStats.rendererCommandsQueued !== undefined
+        ? `Renderer commands: pending ${formatCount(streamingStats.rendererCommandsPending ?? 0)} / queued ${formatCount(streamingStats.rendererCommandsQueued)} / deduped ${formatCount(streamingStats.rendererCommandsDeduped ?? 0)} / flushed ${formatCount(streamingStats.rendererCommandsFlushed ?? 0)} / pool grows ${formatCount(streamingStats.rendererCommandPoolGrows ?? 0)}`
         : "",
       streamingStats.selectedChunks !== undefined
         ? `Streaming chunks: selected ${formatCount(streamingStats.selectedChunks)} / loaded ${formatCount(streamingStats.loadedChunks ?? 0)} (${formatCount(streamingStats.loadedActiveChunks ?? 0)} active, ${formatCount(streamingStats.loadedInactiveChunks ?? 0)} inactive) / pending ${formatCount(streamingStats.pendingChunks ?? 0)} / upload ${formatCount(streamingStats.pendingUploadChunks ?? 0)} / queued ${formatCount(streamingStats.queuedChunks ?? 0)} / evicted ${formatCount(streamingStats.evictedChunks ?? 0)}`

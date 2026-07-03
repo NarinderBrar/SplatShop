@@ -136,6 +136,11 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   nearPrefetchChunks: number;
   candidateSoACapacity: number;
   candidateSoAGrows: number;
+  rendererCommandsPending: number;
+  rendererCommandsQueued: number;
+  rendererCommandsDeduped: number;
+  rendererCommandsFlushed: number;
+  rendererCommandPoolGrows: number;
   prefetchFrustumMargin: number;
   nearPrefetchDistance: number;
 };
@@ -178,24 +183,16 @@ type SsogUploadBudgetState = {
 
 type CacheClass = "fallback" | "selected" | "desired" | "near-prefetch" | "idle-prefetch" | "inactive";
 
-type RendererCommand =
-  | {
-      type: "chunkLoaded";
-      key: string;
-      entry: SsogChunkEntry;
-      chunk: SsogPackedChunk;
-      loadMs: number;
-    }
-  | {
-      type: "chunkLoadFailed";
-      key: string;
-      entry: SsogChunkEntry;
-      error: unknown;
-    }
-  | {
-      type: "chunkLoadSettled";
-      key: string;
-    };
+type RendererCommandType = "chunkLoaded" | "chunkLoadFailed" | "chunkLoadSettled";
+
+type RendererCommand = {
+  type: RendererCommandType;
+  key: string;
+  entry: SsogChunkEntry | undefined;
+  chunk: SsogPackedChunk | undefined;
+  error: unknown;
+  loadMs: number;
+};
 
 type SelectableSsogEntry = SsogSelectableItem<SsogChunkEntry>;
 
@@ -325,6 +322,103 @@ class SsogCandidateSoA {
     this.flags = new Uint8Array(capacity);
     this.bounds = new Float32Array(capacity * 6);
     this.growCount++;
+  }
+}
+
+class RendererCommandQueue {
+  private readonly commands: RendererCommand[] = [];
+  private readonly indices = new Map<string, number>();
+  private readonly pool: RendererCommand[] = [];
+  queuedTotal = 0;
+  dedupedTotal = 0;
+  flushedTotal = 0;
+  poolGrows = 0;
+
+  get pending(): number {
+    return this.commands.length;
+  }
+
+  enqueueChunkLoaded(key: string, entry: SsogChunkEntry, chunk: SsogPackedChunk, loadMs: number): void {
+    this.enqueue("chunkLoaded", key, (command) => {
+      command.entry = entry;
+      command.chunk = chunk;
+      command.error = undefined;
+      command.loadMs = loadMs;
+    });
+  }
+
+  enqueueChunkLoadFailed(key: string, entry: SsogChunkEntry, error: unknown): void {
+    this.enqueue("chunkLoadFailed", key, (command) => {
+      command.entry = entry;
+      command.chunk = undefined;
+      command.error = error;
+      command.loadMs = 0;
+    });
+  }
+
+  enqueueChunkLoadSettled(key: string): void {
+    this.enqueue("chunkLoadSettled", key, (command) => {
+      command.entry = undefined;
+      command.chunk = undefined;
+      command.error = undefined;
+      command.loadMs = 0;
+    });
+  }
+
+  flush(process: (command: RendererCommand) => boolean): number {
+    let processed = 0;
+    for (let index = 0; index < this.commands.length; index++) {
+      const command = this.commands[index];
+      if (process(command)) {
+        processed++;
+      }
+      this.pool.push(command);
+    }
+    this.flushedTotal += this.commands.length;
+    this.commands.length = 0;
+    this.indices.clear();
+    return processed;
+  }
+
+  clear(): void {
+    for (let index = 0; index < this.commands.length; index++) {
+      this.pool.push(this.commands[index]);
+    }
+    this.commands.length = 0;
+    this.indices.clear();
+  }
+
+  private enqueue(type: RendererCommandType, key: string, write: (command: RendererCommand) => void): void {
+    const dedupeKey = `${type}:${key}`;
+    const existingIndex = this.indices.get(dedupeKey);
+    if (existingIndex !== undefined) {
+      const existing = this.commands[existingIndex];
+      existing.type = type;
+      existing.key = key;
+      write(existing);
+      this.dedupedTotal++;
+      return;
+    }
+
+    const command = this.pool.pop() ?? this.createCommand();
+    command.type = type;
+    command.key = key;
+    write(command);
+    this.indices.set(dedupeKey, this.commands.length);
+    this.commands.push(command);
+    this.queuedTotal++;
+  }
+
+  private createCommand(): RendererCommand {
+    this.poolGrows++;
+    return {
+      type: "chunkLoadSettled",
+      key: "",
+      entry: undefined,
+      chunk: undefined,
+      error: undefined,
+      loadMs: 0,
+    };
   }
 }
 
@@ -674,8 +768,7 @@ class StreamingSsogRenderPass {
   private readonly pendingEntries = new Map<string, SsogChunkEntry>();
   private readonly decodedUploadQueue = new Map<string, DecodedChunk>();
   private readonly decodedUploadScratch: DecodedChunk[] = [];
-  private readonly rendererCommands: RendererCommand[] = [];
-  private readonly rendererCommandIndices = new Map<string, number>();
+  private readonly rendererCommandQueue = new RendererCommandQueue();
   private readonly queued = new Map<string, SsogChunkEntry>();
   private readonly chunkLoadAttempts = new Map<string, number>();
   private readonly chunkRetryReadyFrame = new Map<string, number>();
@@ -878,8 +971,7 @@ class StreamingSsogRenderPass {
     this.pending.clear();
     this.pendingEntries.clear();
     this.decodedUploadQueue.clear();
-    this.rendererCommands.length = 0;
-    this.rendererCommandIndices.clear();
+    this.rendererCommandQueue.clear();
     this.queued.clear();
     this.chunkLoadAttempts.clear();
     this.chunkRetryReadyFrame.clear();
@@ -1345,6 +1437,11 @@ class StreamingSsogRenderPass {
       nearPrefetchChunks: this.nearPrefetchChunks,
       candidateSoACapacity: this.visibleCandidateSoA.entryIndices.length,
       candidateSoAGrows: this.visibleCandidateSoA.growCount + this.prefetchCandidateSoA.growCount,
+      rendererCommandsPending: this.rendererCommandQueue.pending,
+      rendererCommandsQueued: this.rendererCommandQueue.queuedTotal,
+      rendererCommandsDeduped: this.rendererCommandQueue.dedupedTotal,
+      rendererCommandsFlushed: this.rendererCommandQueue.flushedTotal,
+      rendererCommandPoolGrows: this.rendererCommandQueue.poolGrows,
       prefetchFrustumMargin: getSsogPrefetchFrustumMargin(),
       nearPrefetchDistance: getSsogNearPrefetchDistance(),
     };
@@ -1835,38 +1932,18 @@ class StreamingSsogRenderPass {
     return target;
   }
 
-  private enqueueRendererCommand(command: RendererCommand): void {
-    const dedupeKey = `${command.type}:${command.key}`;
-    const existingIndex = this.rendererCommandIndices.get(dedupeKey);
-    if (existingIndex !== undefined) {
-      this.rendererCommands[existingIndex] = command;
-      return;
-    }
-
-    this.rendererCommandIndices.set(dedupeKey, this.rendererCommands.length);
-    this.rendererCommands.push(command);
-  }
-
   private processRendererCommandQueue(): number {
-    if (this.disposed || this.rendererCommands.length === 0) {
+    if (this.disposed || this.rendererCommandQueue.pending === 0) {
       return 0;
     }
 
-    const commands = this.rendererCommands.splice(0);
-    this.rendererCommandIndices.clear();
-    let processed = 0;
-    for (const command of commands) {
-      if (this.processRendererCommand(command)) {
-        processed++;
-      }
-    }
-    return processed;
+    return this.rendererCommandQueue.flush((command) => this.processRendererCommand(command));
   }
 
   private processRendererCommand(command: RendererCommand): boolean {
     switch (command.type) {
       case "chunkLoaded":
-        if (this.gpuLoaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
+        if (!command.entry || !command.chunk || this.gpuLoaded.has(command.key) || this.decodedUploadQueue.has(command.key)) {
           return false;
         }
         if (!this.isChunkWanted(command.key) && this.generation > 0) {
@@ -1887,6 +1964,9 @@ class StreamingSsogRenderPass {
         });
         return true;
       case "chunkLoadFailed":
+        if (!command.entry) {
+          return false;
+        }
         if (!this.isChunkWanted(command.key) && this.generation > 0) {
           this.chunkLoadAttempts.delete(command.key);
           this.chunkRetryReadyFrame.delete(command.key);
@@ -2009,13 +2089,7 @@ class StreamingSsogRenderPass {
     if (cachedDecoded) {
       this.touchDecodedCache(key);
       this.reuploadedChunks++;
-      this.enqueueRendererCommand({
-        type: "chunkLoaded",
-        key,
-        entry: cachedDecoded.entry,
-        chunk: cachedDecoded.chunk,
-        loadMs: 0,
-      });
+      this.rendererCommandQueue.enqueueChunkLoaded(key, cachedDecoded.entry, cachedDecoded.chunk, 0);
       return;
     }
 
@@ -2030,35 +2104,21 @@ class StreamingSsogRenderPass {
           return;
         }
 
-        this.enqueueRendererCommand({
-          type: "chunkLoaded",
-          key,
-          entry,
-          chunk,
-          loadMs: performance.now() - loadStart,
-        });
+        this.rendererCommandQueue.enqueueChunkLoaded(key, entry, chunk, performance.now() - loadStart);
       })
       .catch((error) => {
         if (this.disposed) {
           return;
         }
 
-        this.enqueueRendererCommand({
-          type: "chunkLoadFailed",
-          key,
-          entry,
-          error,
-        });
+        this.rendererCommandQueue.enqueueChunkLoadFailed(key, entry, error);
       })
       .finally(() => {
         if (this.disposed) {
           return;
         }
 
-        this.enqueueRendererCommand({
-          type: "chunkLoadSettled",
-          key,
-        });
+        this.rendererCommandQueue.enqueueChunkLoadSettled(key);
       });
 
     this.pending.set(key, promise);
