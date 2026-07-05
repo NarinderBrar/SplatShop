@@ -292,6 +292,14 @@ class ViewerDebugStats {
       gpuBufferWriterTotalUploadCount?: number;
       gpuBufferWriterTotalErrorCount?: number;
       gpuBufferWriterTotalFallbackCount?: number;
+      gpuBufferWriterTotalValidationErrorCount?: number;
+      gpuBufferWriterScopedOperationCount?: number;
+      gpuBufferWriterUnscopedOperationCount?: number;
+      gpuBufferWriterLastUploadLabel?: string;
+      gpuBufferWriterLastUploadBytes?: number;
+      gpuBufferWriterLastFailureLabel?: string;
+      gpuBufferWriterLastFailureBytes?: number;
+      gpuBufferWriterLastFailurePath?: string;
       gpuBufferWriterPooledBufferCount?: number;
       gpuBufferWriterPooledBufferBytes?: number;
       gpuBufferWriterPooledBufferReuses?: number;
@@ -556,7 +564,13 @@ class ViewerDebugStats {
         ? `SSOG stale drops: queued ${formatCount(streamingStats.staleQueuedChunksDropped ?? 0)} / loaded ${formatCount(streamingStats.stalePendingChunksDropped ?? 0)} / upload ${formatCount(streamingStats.staleUploadChunksDropped ?? 0)}`
         : "",
       streamingStats.gpuBufferWriterTotalUploadCount !== undefined
-        ? `SSOG GPU writer: frame ${formatCount(streamingStats.gpuBufferWriterFrameUploadCount ?? 0)} uploads / ${formatBytes(streamingStats.gpuBufferWriterFrameUploadBytes ?? 0)} / total ${formatCount(streamingStats.gpuBufferWriterTotalUploadCount ?? 0)} uploads ${formatBytes(streamingStats.gpuBufferWriterTotalUploadBytes ?? 0)} / fallback ${formatCount(streamingStats.gpuBufferWriterTotalFallbackCount ?? 0)} / errors ${formatCount(streamingStats.gpuBufferWriterTotalErrorCount ?? 0)}`
+        ? `SSOG GPU writer: frame ${formatCount(streamingStats.gpuBufferWriterFrameUploadCount ?? 0)} uploads / ${formatBytes(streamingStats.gpuBufferWriterFrameUploadBytes ?? 0)} / total ${formatCount(streamingStats.gpuBufferWriterTotalUploadCount ?? 0)} uploads ${formatBytes(streamingStats.gpuBufferWriterTotalUploadBytes ?? 0)} / fallback ${formatCount(streamingStats.gpuBufferWriterTotalFallbackCount ?? 0)} / errors ${formatCount(streamingStats.gpuBufferWriterTotalErrorCount ?? 0)} / validation ${formatCount(streamingStats.gpuBufferWriterTotalValidationErrorCount ?? 0)}`
+        : "",
+      streamingStats.gpuBufferWriterScopedOperationCount !== undefined
+        ? `SSOG GPU writer scopes: scoped ${formatCount(streamingStats.gpuBufferWriterScopedOperationCount ?? 0)} / unscoped ${formatCount(streamingStats.gpuBufferWriterUnscopedOperationCount ?? 0)} / last ${streamingStats.gpuBufferWriterLastUploadLabel || "none"} ${formatBytes(streamingStats.gpuBufferWriterLastUploadBytes ?? 0)}`
+        : "",
+      streamingStats.gpuBufferWriterLastFailureLabel
+        ? `SSOG GPU writer failure: ${streamingStats.gpuBufferWriterLastFailurePath || "unknown"} ${streamingStats.gpuBufferWriterLastFailureLabel} ${formatBytes(streamingStats.gpuBufferWriterLastFailureBytes ?? 0)}`
         : "",
       streamingStats.gpuBufferWriterPooledBufferCount !== undefined
         ? `SSOG GPU pool: ${formatCount(streamingStats.gpuBufferWriterPooledBufferCount)} buffers / ${formatBytes(streamingStats.gpuBufferWriterPooledBufferBytes ?? 0)} free / reuse ${formatCount(streamingStats.gpuBufferWriterPooledBufferReuses ?? 0)} / release ${formatCount(streamingStats.gpuBufferWriterPooledBufferReleases ?? 0)} / dispose ${formatCount(streamingStats.gpuBufferWriterPooledBufferDisposals ?? 0)}`

@@ -7,6 +7,14 @@ type GpuBufferWriterStats = {
   totalUploadCount: number;
   totalErrorCount: number;
   totalFallbackCount: number;
+  totalValidationErrorCount: number;
+  scopedOperationCount: number;
+  unscopedOperationCount: number;
+  lastUploadLabel: string;
+  lastUploadBytes: number;
+  lastFailureLabel: string;
+  lastFailureBytes: number;
+  lastFailurePath: string;
   pooledBufferCount: number;
   pooledBufferBytes: number;
   pooledBufferReuses: number;
@@ -28,6 +36,11 @@ type GpuBufferWriterStats = {
 
 const MAX_ERROR_MESSAGE_LENGTH = 200;
 
+type ErrorScopeCapableDevice = {
+  pushErrorScope?: (filter: "validation" | "out-of-memory" | "internal") => void;
+  popErrorScope?: () => Promise<unknown>;
+};
+
 type PooledStorageBuffer = {
   buffer: StorageBuffer;
   byteLength: number;
@@ -40,6 +53,7 @@ type GpuBufferWriterArenaAllocation = {
   elementLength: number;
   byteOffset: number;
   byteLength: number;
+  standalone?: boolean;
 };
 
 type ArenaFreeRange = {
@@ -65,6 +79,14 @@ class GpuBufferWriter {
   private totalUploadCount = 0;
   private totalErrorCount = 0;
   private totalFallbackCount = 0;
+  private totalValidationErrorCount = 0;
+  private scopedOperationCount = 0;
+  private unscopedOperationCount = 0;
+  private lastUploadLabel = "";
+  private lastUploadBytes = 0;
+  private lastFailureLabel = "";
+  private lastFailureBytes = 0;
+  private lastFailurePath = "";
   private pooledBufferBytes = 0;
   private pooledBufferReuses = 0;
   private pooledBufferReleases = 0;
@@ -77,39 +99,40 @@ class GpuBufferWriter {
   private frameUploadCount = 0;
   private frameErrorCount = 0;
   private lastErrorMessage = "";
+  private readonly device: ErrorScopeCapableDevice | undefined;
 
   constructor(private readonly engine: WebGPUEngine, label: string) {
     this.scratchArena = new GpuBufferArena(engine, `${label}-writer-scratch`);
+    this.device = (engine as unknown as { _device?: ErrorScopeCapableDevice })._device;
   }
 
   createStorageBuffer(name: string, data: Uint32Array | Float32Array, poolKey?: string): StorageBuffer | null {
-    this.totalUploadCount++;
-    this.frameUploadCount++;
-    this.totalUploadBytes += data.byteLength;
-    this.frameUploadBytes += data.byteLength;
+    this.recordUploadAttempt(name, data.byteLength);
 
     const pooled = poolKey ? this.acquirePooledStorageBuffer(poolKey, name, data.byteLength) : undefined;
     if (pooled) {
+      this.pushValidationScope();
       try {
         pooled.update(data, 0, data.byteLength);
+        this.popValidationScope("reuse", name, data.byteLength);
         return pooled;
       } catch (e) {
-        this.totalErrorCount++;
-        this.frameErrorCount++;
-        this.lastErrorMessage = `GpuBufferWriter::reuse(${name}): ${String(e).slice(0, MAX_ERROR_MESSAGE_LENGTH)}`;
+        this.popValidationScope("reuse", name, data.byteLength);
+        this.recordFailure("reuse", name, data.byteLength, e);
         pooled.dispose();
       }
     }
 
+    this.pushValidationScope();
     try {
       const buffer = new StorageBuffer(this.engine, data.byteLength, undefined, name);
       this.storageBufferByteLengths.set(buffer, Math.max(4, data.byteLength));
       buffer.update(data);
+      this.popValidationScope("createStorageBuffer", name, data.byteLength);
       return buffer;
     } catch (e) {
-      this.totalErrorCount++;
-      this.frameErrorCount++;
-      this.lastErrorMessage = `GpuBufferWriter::createStorageBuffer(${name}): ${String(e).slice(0, MAX_ERROR_MESSAGE_LENGTH)}`;
+      this.popValidationScope("createStorageBuffer", name, data.byteLength);
+      this.recordFailure("createStorageBuffer", name, data.byteLength, e);
       return null;
     }
   }
@@ -123,12 +146,13 @@ class GpuBufferWriter {
     this.totalFallbackCount++;
     const fallback = new StorageBuffer(this.engine, Math.max(4, data.byteLength), undefined, `${name}-fallback`);
     this.storageBufferByteLengths.set(fallback, Math.max(4, data.byteLength));
+    this.pushValidationScope();
     try {
       fallback.update(data);
+      this.popValidationScope("fallback", name, data.byteLength);
     } catch (e) {
-      this.totalErrorCount++;
-      this.frameErrorCount++;
-      this.lastErrorMessage = `GpuBufferWriter::fallback(${name}): ${String(e).slice(0, MAX_ERROR_MESSAGE_LENGTH)}`;
+      this.popValidationScope("fallback", name, data.byteLength);
+      this.recordFailure("fallback", name, data.byteLength, e);
     }
     return fallback;
   }
@@ -168,10 +192,7 @@ class GpuBufferWriter {
     data: Uint32Array | Float32Array,
     bytesPerElement: number,
   ): GpuBufferWriterArenaAllocation {
-    this.totalUploadCount++;
-    this.frameUploadCount++;
-    this.totalUploadBytes += data.byteLength;
-    this.frameUploadBytes += data.byteLength;
+    this.recordUploadAttempt(name, data.byteLength);
 
     const byteLength = alignBytes(Math.max(4, data.byteLength));
     const segments = this.arenaSegments.get(key) ?? [];
@@ -180,23 +201,42 @@ class GpuBufferWriter {
     let segment = this.findArenaSegment(segments, byteLength);
     if (!segment) {
       const segmentBytes = roundUpPowerOfTwo(Math.max(DEFAULT_ARENA_SEGMENT_BYTES, byteLength));
-      segment = {
-        buffer: new StorageBuffer(this.engine, segmentBytes, undefined, `${key}:${name}:segment${segments.length}`),
-        byteLength: segmentBytes,
-        usedBytes: 0,
-        freeRanges: [],
-      };
+      const segmentName = `${key}:${name}:segment${segments.length}`;
+      this.pushValidationScope();
+      try {
+        segment = {
+          buffer: new StorageBuffer(this.engine, segmentBytes, undefined, segmentName),
+          byteLength: segmentBytes,
+          usedBytes: 0,
+          freeRanges: [],
+        };
+        this.popValidationScope("arenaSegment", name, segmentBytes);
+      } catch (e) {
+        this.popValidationScope("arenaSegment", name, segmentBytes);
+        this.recordFailure("arenaSegment", name, segmentBytes, e);
+        const buffer = this.createStorageBufferWithFallback(`${name}-arena-fallback`, data);
+        return {
+          key,
+          buffer,
+          elementOffset: 0,
+          elementLength: data.length,
+          byteOffset: 0,
+          byteLength,
+          standalone: true,
+        };
+      }
       segments.push(segment);
       this.arenaTotalBytes += segmentBytes;
     }
 
     const byteOffset = this.allocateArenaRange(segment, byteLength);
+    this.pushValidationScope();
     try {
       segment.buffer.update(data, byteOffset, data.byteLength);
+      this.popValidationScope("arenaWrite", name, data.byteLength);
     } catch (e) {
-      this.totalErrorCount++;
-      this.frameErrorCount++;
-      this.lastErrorMessage = `GpuBufferWriter::arena(${name}): ${String(e).slice(0, MAX_ERROR_MESSAGE_LENGTH)}`;
+      this.popValidationScope("arenaWrite", name, data.byteLength);
+      this.recordFailure("arenaWrite", name, data.byteLength, e);
     }
 
     this.arenaAllocationCount++;
@@ -211,6 +251,11 @@ class GpuBufferWriter {
   }
 
   releaseArenaAllocation(allocation: GpuBufferWriterArenaAllocation): void {
+    if (allocation.standalone) {
+      allocation.buffer.dispose();
+      return;
+    }
+
     const segments = this.arenaSegments.get(allocation.key);
     const segment = segments?.find((item) => item.buffer === allocation.buffer);
     if (!segment) {
@@ -254,6 +299,14 @@ class GpuBufferWriter {
       totalUploadCount: this.totalUploadCount,
       totalErrorCount: this.totalErrorCount,
       totalFallbackCount: this.totalFallbackCount,
+      totalValidationErrorCount: this.totalValidationErrorCount,
+      scopedOperationCount: this.scopedOperationCount,
+      unscopedOperationCount: this.unscopedOperationCount,
+      lastUploadLabel: this.lastUploadLabel,
+      lastUploadBytes: this.lastUploadBytes,
+      lastFailureLabel: this.lastFailureLabel,
+      lastFailureBytes: this.lastFailureBytes,
+      lastFailurePath: this.lastFailurePath,
       pooledBufferCount: this.getPooledBufferCount(),
       pooledBufferBytes: this.pooledBufferBytes,
       pooledBufferReuses: this.pooledBufferReuses,
@@ -391,9 +444,56 @@ class GpuBufferWriter {
     }
     return count;
   }
+
+  private recordUploadAttempt(label: string, byteLength: number): void {
+    this.totalUploadCount++;
+    this.frameUploadCount++;
+    this.totalUploadBytes += byteLength;
+    this.frameUploadBytes += byteLength;
+    this.lastUploadLabel = label;
+    this.lastUploadBytes = byteLength;
+  }
+
+  private recordFailure(path: string, label: string, byteLength: number, error: unknown): void {
+    this.totalErrorCount++;
+    this.frameErrorCount++;
+    this.lastFailurePath = path;
+    this.lastFailureLabel = label;
+    this.lastFailureBytes = byteLength;
+    this.lastErrorMessage = `GpuBufferWriter::${path}(${label}, ${formatBytes(byteLength)}): ${String(error).slice(0, MAX_ERROR_MESSAGE_LENGTH)}`;
+  }
+
+  private pushValidationScope(): void {
+    if (this.device?.pushErrorScope && this.device.popErrorScope) {
+      this.scopedOperationCount++;
+      this.device.pushErrorScope("validation");
+    } else {
+      this.unscopedOperationCount++;
+    }
+  }
+
+  private popValidationScope(path: string, label: string, byteLength: number): void {
+    if (!this.device?.popErrorScope) {
+      return;
+    }
+
+    this.device.popErrorScope()
+      .then((error) => {
+        if (!error) {
+          return;
+        }
+        this.totalValidationErrorCount++;
+        this.recordFailure(path, label, byteLength, error);
+      })
+      .catch((error) => {
+        this.recordFailure("popErrorScope", label, byteLength, error);
+      });
+  }
 }
 
 const alignBytes = (value: number): number => Math.ceil(value / 16) * 16;
+
+const formatBytes = (value: number): string => `${value} bytes`;
 
 const roundUpPowerOfTwo = (value: number): number => {
   let result = 4;

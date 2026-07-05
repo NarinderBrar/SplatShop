@@ -85,6 +85,14 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuBufferWriterTotalUploadCount: number;
   gpuBufferWriterTotalErrorCount: number;
   gpuBufferWriterTotalFallbackCount: number;
+  gpuBufferWriterTotalValidationErrorCount: number;
+  gpuBufferWriterScopedOperationCount: number;
+  gpuBufferWriterUnscopedOperationCount: number;
+  gpuBufferWriterLastUploadLabel: string;
+  gpuBufferWriterLastUploadBytes: number;
+  gpuBufferWriterLastFailureLabel: string;
+  gpuBufferWriterLastFailureBytes: number;
+  gpuBufferWriterLastFailurePath: string;
   gpuBufferWriterPooledBufferCount: number;
   gpuBufferWriterPooledBufferBytes: number;
   gpuBufferWriterPooledBufferReuses: number;
@@ -1390,6 +1398,14 @@ class StreamingSsogRenderPass {
       gpuBufferWriterTotalUploadCount: gpuBufferWriterStats?.totalUploadCount ?? 0,
       gpuBufferWriterTotalErrorCount: gpuBufferWriterStats?.totalErrorCount ?? 0,
       gpuBufferWriterTotalFallbackCount: gpuBufferWriterStats?.totalFallbackCount ?? 0,
+      gpuBufferWriterTotalValidationErrorCount: gpuBufferWriterStats?.totalValidationErrorCount ?? 0,
+      gpuBufferWriterScopedOperationCount: gpuBufferWriterStats?.scopedOperationCount ?? 0,
+      gpuBufferWriterUnscopedOperationCount: gpuBufferWriterStats?.unscopedOperationCount ?? 0,
+      gpuBufferWriterLastUploadLabel: gpuBufferWriterStats?.lastUploadLabel ?? "",
+      gpuBufferWriterLastUploadBytes: gpuBufferWriterStats?.lastUploadBytes ?? 0,
+      gpuBufferWriterLastFailureLabel: gpuBufferWriterStats?.lastFailureLabel ?? "",
+      gpuBufferWriterLastFailureBytes: gpuBufferWriterStats?.lastFailureBytes ?? 0,
+      gpuBufferWriterLastFailurePath: gpuBufferWriterStats?.lastFailurePath ?? "",
       gpuBufferWriterPooledBufferCount: gpuBufferWriterStats?.pooledBufferCount ?? 0,
       gpuBufferWriterPooledBufferBytes: gpuBufferWriterStats?.pooledBufferBytes ?? 0,
       gpuBufferWriterPooledBufferReuses: gpuBufferWriterStats?.pooledBufferReuses ?? 0,
