@@ -27,6 +27,9 @@ type SsogGpuChunkVisibilityStats = {
   chunkCount: number;
   visibleChunks: number;
   culledChunks: number;
+  compactVisibleChunks: number;
+  mismatch: number;
+  resultGeneration: number;
   lastDispatchMs: number;
 };
 
@@ -34,11 +37,14 @@ class SsogGpuChunkVisibilityPass {
   private readonly shader: ComputeShader;
   private readonly bounds: StorageBuffer;
   private readonly visibilityMask: StorageBuffer;
+  private readonly visibleIndices: StorageBuffer;
   private readonly counters: StorageBuffer;
   private readonly params: StorageBuffer;
   private readonly paramsData = new Float32Array(PARAM_FLOAT_COUNT);
   private readonly zeroCounters = new Uint32Array(COUNTER_COUNT);
+  private readonly visibleIndexReadback: Uint32Array;
   private readbackPending = false;
+  private dispatchCpuVisibleChunks = 0;
   private stats: SsogGpuChunkVisibilityStats;
 
   constructor(scene: Scene, entries: SsogChunkEntry[]) {
@@ -63,6 +69,12 @@ class SsogGpuChunkVisibilityPass {
       undefined,
       "SsogGpuChunkVisibilityMask",
     );
+    this.visibleIndices = new StorageBuffer(
+      engine,
+      Math.max(1, entries.length) * Uint32Array.BYTES_PER_ELEMENT,
+      undefined,
+      "SsogGpuChunkVisibleIndices",
+    );
     this.counters = new StorageBuffer(
       engine,
       this.zeroCounters.byteLength,
@@ -78,15 +90,18 @@ class SsogGpuChunkVisibilityPass {
         bindingsMapping: {
           boundsBuffer: { group: 0, binding: 0 },
           visibilityMask: { group: 0, binding: 1 },
-          counters: { group: 0, binding: 2 },
-          paramsBuffer: { group: 0, binding: 3 },
+          visibleIndices: { group: 0, binding: 2 },
+          counters: { group: 0, binding: 3 },
+          paramsBuffer: { group: 0, binding: 4 },
         },
       },
     );
     this.shader.setStorageBuffer("boundsBuffer", this.bounds);
     this.shader.setStorageBuffer("visibilityMask", this.visibilityMask);
+    this.shader.setStorageBuffer("visibleIndices", this.visibleIndices);
     this.shader.setStorageBuffer("counters", this.counters);
     this.shader.setStorageBuffer("paramsBuffer", this.params);
+    this.visibleIndexReadback = new Uint32Array(Math.max(1, entries.length));
     this.stats = {
       supported: true,
       enabled: true,
@@ -95,6 +110,9 @@ class SsogGpuChunkVisibilityPass {
       chunkCount: entries.length,
       visibleChunks: 0,
       culledChunks: 0,
+      compactVisibleChunks: 0,
+      mismatch: 0,
+      resultGeneration: 0,
       lastDispatchMs: 0,
     };
   }
@@ -106,11 +124,12 @@ class SsogGpuChunkVisibilityPass {
   dispose(): void {
     this.bounds.dispose();
     this.visibilityMask.dispose();
+    this.visibleIndices.dispose();
     this.counters.dispose();
     this.params.dispose();
   }
 
-  dispatch(planes: Plane[], margin: number): boolean {
+  dispatch(planes: Plane[], margin: number, cpuVisibleChunks: number): boolean {
     if (this.readbackPending) {
       this.stats = {
         ...this.stats,
@@ -132,6 +151,7 @@ class SsogGpuChunkVisibilityPass {
     this.paramsData[PLANE_FLOATS + 1] = Math.max(0, margin);
     this.params.update(this.paramsData);
     this.counters.update(this.zeroCounters);
+    this.dispatchCpuVisibleChunks = cpuVisibleChunks;
 
     const dispatched = this.shader.dispatch(Math.ceil(Math.max(1, this.stats.chunkCount) / WORKGROUP_SIZE));
     this.stats = {
@@ -154,9 +174,24 @@ class SsogGpuChunkVisibilityPass {
       dispatched: false,
       visibleChunks,
       culledChunks,
+      compactVisibleChunks: visibleChunks,
+      mismatch: 0,
       readbackPending: this.readbackPending,
       lastDispatchMs: 0,
     };
+  }
+
+  hasValidResult(maxMismatch: number): boolean {
+    return (
+      this.stats.resultGeneration > 0 &&
+      !this.readbackPending &&
+      this.stats.compactVisibleChunks === this.stats.visibleChunks &&
+      this.stats.mismatch <= maxMismatch
+    );
+  }
+
+  getVisibleIndices(): Uint32Array {
+    return this.visibleIndexReadback.subarray(0, this.stats.compactVisibleChunks);
   }
 
   getStats(): SsogGpuChunkVisibilityStats {
@@ -176,11 +211,24 @@ class SsogGpuChunkVisibilityPass {
       .then((counterView) => {
         const counters = new Uint32Array(counterView.buffer, counterView.byteOffset, counterView.byteLength / 4);
         const visibleChunks = counters[0] ?? 0;
-        this.stats = {
-          ...this.stats,
-          visibleChunks,
-          culledChunks: counters[1] ?? Math.max(0, this.stats.chunkCount - visibleChunks),
-        };
+        const compactVisibleChunks = Math.min(visibleChunks, this.stats.chunkCount);
+        return this.visibleIndices
+          .read(
+            0,
+            Math.max(1, compactVisibleChunks) * Uint32Array.BYTES_PER_ELEMENT,
+            this.visibleIndexReadback,
+            true,
+          )
+          .then(() => {
+            this.stats = {
+              ...this.stats,
+              visibleChunks,
+              culledChunks: counters[1] ?? Math.max(0, this.stats.chunkCount - visibleChunks),
+              compactVisibleChunks,
+              mismatch: Math.abs(visibleChunks - this.dispatchCpuVisibleChunks),
+              resultGeneration: this.stats.resultGeneration + 1,
+            };
+          });
       })
       .finally(() => {
         this.readbackPending = false;

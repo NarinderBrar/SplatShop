@@ -154,10 +154,14 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuChunkVisibilityEnabled: boolean;
   gpuChunkVisibilityDispatched: boolean;
   gpuChunkVisibilityPending: boolean;
+  gpuChunkVisibilityMode: SsogGpuChunkVisibilityMode;
+  gpuChunkVisibilityDriving: boolean;
   gpuChunkVisibilityChunks: number;
   gpuChunkVisibilityVisibleChunks: number;
   gpuChunkVisibilityCulledChunks: number;
+  gpuChunkVisibilityCompactChunks: number;
   gpuChunkVisibilityMismatch: number;
+  gpuChunkVisibilityResultGeneration: number;
   lastGpuChunkVisibilityMs: number;
   prefetchCandidateChunks: number;
   prefetchFrustumChunks: number;
@@ -247,6 +251,7 @@ type ExpandedRuntime = {
 
 type SsogGlobalSortMode = "off" | "packed" | "expanded";
 type SsogChunkSortMode = "near" | "center" | "far";
+type SsogGpuChunkVisibilityMode = "off" | "debug" | "drive";
 type SsogQualityPreset = SplatQualityPreset;
 type SsogDeviceTier = SplatDeviceTier;
 type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4 | 5;
@@ -289,6 +294,15 @@ class ChunkIndexBuffer {
       this.growCount++;
     }
     this.data[this.length++] = value;
+  }
+
+  replaceFrom(values: Uint32Array): void {
+    if (this.data.length < values.length) {
+      this.data = new Uint32Array(Math.max(16, values.length));
+      this.growCount++;
+    }
+    this.data.set(values.subarray(0, values.length), 0);
+    this.length = values.length;
   }
 }
 
@@ -738,6 +752,17 @@ const getSsogSelectionStableFrames = (): number => {
 const isSsogProgressiveGlobalBuildEnabled = (): boolean =>
   new URLSearchParams(window.location.search).get("ssogProgressiveGlobalBuild") === "true";
 
+const getSsogGpuChunkVisibilityMode = (): SsogGpuChunkVisibilityMode => {
+  const value = new URLSearchParams(window.location.search).get("ssogGpuChunkVisibility");
+  if (value === "false" || value === "off") {
+    return "off";
+  }
+  if (value === "drive") {
+    return "drive";
+  }
+  return "debug";
+};
+
 const getSsogUploadBudgetBytes = (): number => {
   const raw = new URLSearchParams(window.location.search).get("ssogUploadBudgetBytes");
   if (raw === "all") {
@@ -845,6 +870,7 @@ class StreamingSsogRenderPass {
   private readonly gpuPagePool: SsogGpuPagePool;
   private readonly gpuBufferWriter: GpuBufferWriter | undefined;
   private readonly gpuChunkVisibilityPass?: SsogGpuChunkVisibilityPass;
+  private readonly gpuChunkVisibilityMode = getSsogGpuChunkVisibilityMode();
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 220);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
@@ -928,6 +954,7 @@ class StreamingSsogRenderPass {
   private candidateChunks = 0;
   private frustumVisibleChunks = 0;
   private frustumCulledChunks = 0;
+  private gpuChunkVisibilityDriving = false;
   private prefetchCandidateChunks = 0;
   private prefetchFrustumChunks = 0;
   private nearPrefetchChunks = 0;
@@ -977,7 +1004,7 @@ class StreamingSsogRenderPass {
     );
     const engine = this.scene.getEngine();
     this.gpuBufferWriter = engine instanceof WebGPUEngine ? new GpuBufferWriter(engine, "ssog-streaming") : undefined;
-    this.gpuChunkVisibilityPass = SsogGpuChunkVisibilityPass.isSupported(scene)
+    this.gpuChunkVisibilityPass = this.gpuChunkVisibilityMode !== "off" && SsogGpuChunkVisibilityPass.isSupported(scene)
       ? new SsogGpuChunkVisibilityPass(scene, entries)
       : undefined;
     this.updateObserver = () => this.updateLodSelection();
@@ -1514,7 +1541,25 @@ class StreamingSsogRenderPass {
       this.gpuChunkVisibilityPass.markSkipped(this.entries.length, 0);
       return;
     }
-    this.gpuChunkVisibilityPass.dispatch(frustumPlanes, frustumMargin);
+    this.gpuChunkVisibilityPass.dispatch(frustumPlanes, frustumMargin, this.frustumVisibleChunks);
+  }
+
+  private applyGpuDrivenVisibility(cameraStable: boolean): void {
+    if (
+      this.gpuChunkVisibilityMode !== "drive" ||
+      !cameraStable ||
+      !this.gpuChunkVisibilityPass ||
+      !this.gpuChunkVisibilityPass.hasValidResult(0)
+    ) {
+      this.gpuChunkVisibilityDriving = false;
+      return;
+    }
+
+    const visibleIndices = this.gpuChunkVisibilityPass.getVisibleIndices();
+    this.visibleEntryIndices.replaceFrom(visibleIndices);
+    this.frustumVisibleChunks = this.visibleEntryIndices.length;
+    this.frustumCulledChunks = this.entries.length - this.visibleEntryIndices.length;
+    this.gpuChunkVisibilityDriving = true;
   }
 
   private getGpuChunkVisibilityStats(): Pick<
@@ -1523,10 +1568,14 @@ class StreamingSsogRenderPass {
     | "gpuChunkVisibilityEnabled"
     | "gpuChunkVisibilityDispatched"
     | "gpuChunkVisibilityPending"
+    | "gpuChunkVisibilityMode"
+    | "gpuChunkVisibilityDriving"
     | "gpuChunkVisibilityChunks"
     | "gpuChunkVisibilityVisibleChunks"
     | "gpuChunkVisibilityCulledChunks"
+    | "gpuChunkVisibilityCompactChunks"
     | "gpuChunkVisibilityMismatch"
+    | "gpuChunkVisibilityResultGeneration"
     | "lastGpuChunkVisibilityMs"
   > {
     const stats: SsogGpuChunkVisibilityStats | undefined = this.gpuChunkVisibilityPass?.getStats();
@@ -1536,10 +1585,14 @@ class StreamingSsogRenderPass {
       gpuChunkVisibilityEnabled: stats?.enabled ?? false,
       gpuChunkVisibilityDispatched: stats?.dispatched ?? false,
       gpuChunkVisibilityPending: stats?.readbackPending ?? false,
+      gpuChunkVisibilityMode: this.gpuChunkVisibilityMode,
+      gpuChunkVisibilityDriving: this.gpuChunkVisibilityDriving,
       gpuChunkVisibilityChunks: stats?.chunkCount ?? this.entries.length,
       gpuChunkVisibilityVisibleChunks: visibleChunks,
       gpuChunkVisibilityCulledChunks: stats?.culledChunks ?? 0,
-      gpuChunkVisibilityMismatch: stats?.dispatched ? Math.abs(visibleChunks - this.frustumVisibleChunks) : 0,
+      gpuChunkVisibilityCompactChunks: stats?.compactVisibleChunks ?? 0,
+      gpuChunkVisibilityMismatch: stats?.mismatch ?? 0,
+      gpuChunkVisibilityResultGeneration: stats?.resultGeneration ?? 0,
       lastGpuChunkVisibilityMs: stats?.lastDispatchMs ?? 0,
     };
   }
@@ -1745,6 +1798,7 @@ class StreamingSsogRenderPass {
     this.candidateChunks = this.entries.length;
     this.frustumVisibleChunks = this.visibleEntryIndices.length;
     this.frustumCulledChunks = this.entries.length - this.visibleEntryIndices.length;
+    this.applyGpuDrivenVisibility(!initial && !moved && !turned);
     this.updateGpuChunkVisibility(frustumPlanes, frustumMargin);
     this.prefetchFrustumChunks = this.prefetchFrustumEntryIndices.length;
     this.nearPrefetchChunks = this.nearPrefetchEntryIndices.length;

@@ -360,10 +360,14 @@ class ViewerDebugStats {
       gpuChunkVisibilityEnabled?: boolean;
       gpuChunkVisibilityDispatched?: boolean;
       gpuChunkVisibilityPending?: boolean;
+      gpuChunkVisibilityMode?: string;
+      gpuChunkVisibilityDriving?: boolean;
       gpuChunkVisibilityChunks?: number;
       gpuChunkVisibilityVisibleChunks?: number;
       gpuChunkVisibilityCulledChunks?: number;
+      gpuChunkVisibilityCompactChunks?: number;
       gpuChunkVisibilityMismatch?: number;
+      gpuChunkVisibilityResultGeneration?: number;
       lastGpuChunkVisibilityMs?: number;
       prefetchCandidateChunks?: number;
       prefetchFrustumChunks?: number;
@@ -501,7 +505,7 @@ class ViewerDebugStats {
         ? `Frustum: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.frustumCulledChunks ?? 0)} culled / ${formatCount(streamingStats.candidateChunks)} candidates / margin ${(streamingStats.frustumMargin ?? 1).toFixed(2)}`
         : "",
       streamingStats.gpuChunkVisibilitySupported
-        ? `GPU chunk visibility: ${streamingStats.gpuChunkVisibilityDispatched ? "yes" : streamingStats.gpuChunkVisibilityEnabled ? "pending" : "off"}${streamingStats.gpuChunkVisibilityPending ? " / readback" : ""} / ${formatCount(streamingStats.gpuChunkVisibilityVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.gpuChunkVisibilityCulledChunks ?? 0)} culled / ${formatCount(streamingStats.gpuChunkVisibilityChunks ?? 0)} chunks / mismatch ${formatCount(streamingStats.gpuChunkVisibilityMismatch ?? 0)} / ${formatMs(streamingStats.lastGpuChunkVisibilityMs ?? 0)} ms`
+        ? `GPU chunk visibility: ${streamingStats.gpuChunkVisibilityMode ?? "debug"}${streamingStats.gpuChunkVisibilityDriving ? " driving" : ""} / ${streamingStats.gpuChunkVisibilityDispatched ? "yes" : streamingStats.gpuChunkVisibilityEnabled ? "pending" : "off"}${streamingStats.gpuChunkVisibilityPending ? " / readback" : ""} / ${formatCount(streamingStats.gpuChunkVisibilityVisibleChunks ?? 0)} visible / compact ${formatCount(streamingStats.gpuChunkVisibilityCompactChunks ?? 0)} / ${formatCount(streamingStats.gpuChunkVisibilityCulledChunks ?? 0)} culled / ${formatCount(streamingStats.gpuChunkVisibilityChunks ?? 0)} chunks / mismatch ${formatCount(streamingStats.gpuChunkVisibilityMismatch ?? 0)} / gen ${formatCount(streamingStats.gpuChunkVisibilityResultGeneration ?? 0)} / ${formatMs(streamingStats.lastGpuChunkVisibilityMs ?? 0)} ms`
         : "",
       streamingStats.prefetchCandidateChunks !== undefined
         ? `Prefetch candidates: ${formatCount(streamingStats.prefetchCandidateChunks)} total / ${formatCount(streamingStats.prefetchFrustumChunks ?? 0)} expanded-frustum / ${formatCount(streamingStats.nearPrefetchChunks ?? 0)} near-camera / margin ${(streamingStats.prefetchFrustumMargin ?? 0).toFixed(2)} / near ${(streamingStats.nearPrefetchDistance ?? 0).toFixed(1)}`

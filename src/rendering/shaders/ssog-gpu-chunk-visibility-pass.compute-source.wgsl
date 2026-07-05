@@ -1,7 +1,8 @@
 @group(0) @binding(0) var<storage, read> boundsBuffer: array<vec4f>;
 @group(0) @binding(1) var<storage, read_write> visibilityMask: array<u32>;
-@group(0) @binding(2) var<storage, read_write> counters: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read> paramsBuffer: array<f32>;
+@group(0) @binding(2) var<storage, read_write> visibleIndices: array<u32>;
+@group(0) @binding(3) var<storage, read_write> counters: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read> paramsBuffer: array<f32>;
 
 fn aabbVisible(index: u32) -> bool {
   let minBounds = boundsBuffer[index * 2u].xyz;
@@ -31,7 +32,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
 
   if (aabbVisible(index)) {
     visibilityMask[index] = 1u;
-    atomicAdd(&counters[0], 1u);
+    let visibleSlot = atomicAdd(&counters[0], 1u);
+    visibleIndices[visibleSlot] = index;
   } else {
     visibilityMask[index] = 0u;
     atomicAdd(&counters[1], 1u);
