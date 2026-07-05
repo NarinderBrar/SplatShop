@@ -297,9 +297,14 @@ class ViewerDebugStats {
       gpuBufferWriterPooledBufferReuses?: number;
       gpuBufferWriterPooledBufferReleases?: number;
       gpuBufferWriterPooledBufferDisposals?: number;
-      gpuBufferWriterScratchReuseCount?: number;
-      gpuBufferWriterArenaBufferCount?: number;
+      gpuBufferWriterArenaAllocationCount?: number;
+      gpuBufferWriterArenaReuseCount?: number;
+      gpuBufferWriterArenaFreeRangeCount?: number;
+      gpuBufferWriterArenaSegmentCount?: number;
       gpuBufferWriterArenaTotalBytes?: number;
+      gpuBufferWriterScratchReuseCount?: number;
+      gpuBufferWriterScratchArenaBufferCount?: number;
+      gpuBufferWriterScratchArenaTotalBytes?: number;
       gpuBufferWriterFrameUploadBytes?: number;
       gpuBufferWriterFrameUploadCount?: number;
       gpuBufferWriterFrameErrorCount?: number;
@@ -556,8 +561,11 @@ class ViewerDebugStats {
       streamingStats.gpuBufferWriterPooledBufferCount !== undefined
         ? `SSOG GPU pool: ${formatCount(streamingStats.gpuBufferWriterPooledBufferCount)} buffers / ${formatBytes(streamingStats.gpuBufferWriterPooledBufferBytes ?? 0)} free / reuse ${formatCount(streamingStats.gpuBufferWriterPooledBufferReuses ?? 0)} / release ${formatCount(streamingStats.gpuBufferWriterPooledBufferReleases ?? 0)} / dispose ${formatCount(streamingStats.gpuBufferWriterPooledBufferDisposals ?? 0)}`
         : "",
-      streamingStats.gpuBufferWriterArenaBufferCount !== undefined && streamingStats.gpuBufferWriterArenaBufferCount > 0
-        ? `SSOG GPU writer scratch: ${formatCount(streamingStats.gpuBufferWriterArenaBufferCount)} buffers / ${formatBytes(streamingStats.gpuBufferWriterArenaTotalBytes ?? 0)} / reuse ${formatCount(streamingStats.gpuBufferWriterScratchReuseCount ?? 0)}`
+      streamingStats.gpuBufferWriterArenaSegmentCount !== undefined && streamingStats.gpuBufferWriterArenaSegmentCount > 0
+        ? `SSOG GPU arena: ${formatCount(streamingStats.gpuBufferWriterArenaSegmentCount)} segments / ${formatBytes(streamingStats.gpuBufferWriterArenaTotalBytes ?? 0)} / alloc ${formatCount(streamingStats.gpuBufferWriterArenaAllocationCount ?? 0)} / reuse ${formatCount(streamingStats.gpuBufferWriterArenaReuseCount ?? 0)} / free ranges ${formatCount(streamingStats.gpuBufferWriterArenaFreeRangeCount ?? 0)}`
+        : "",
+      streamingStats.gpuBufferWriterScratchArenaBufferCount !== undefined && streamingStats.gpuBufferWriterScratchArenaBufferCount > 0
+        ? `SSOG GPU writer scratch: ${formatCount(streamingStats.gpuBufferWriterScratchArenaBufferCount)} buffers / ${formatBytes(streamingStats.gpuBufferWriterScratchArenaTotalBytes ?? 0)} / reuse ${formatCount(streamingStats.gpuBufferWriterScratchReuseCount ?? 0)}`
         : "",
       streamingStats.gpuBufferWriterLastErrorMessage
         ? `SSOG GPU writer error: ${streamingStats.gpuBufferWriterLastErrorMessage}`

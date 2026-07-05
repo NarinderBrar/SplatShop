@@ -3,7 +3,7 @@ import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Nullable } from "@babylonjs/core/types";
 
 import { BufferVersionTracker } from "../rendering/BufferVersionTracker";
-import type { GpuBufferWriter } from "../rendering/GpuBufferWriter";
+import type { GpuBufferWriter, GpuBufferWriterArenaAllocation } from "../rendering/GpuBufferWriter";
 import type { SogPackedData } from "./SplatAsset";
 
 type SogStorageBuffers = {
@@ -27,6 +27,10 @@ type SogStorageBuffers = {
   shNCodebook?: StorageBuffer;
 };
 
+type SogStorageBufferOffsets = {
+  scaleCodebook: number;
+};
+
 type SogBufferStats = {
   numSplats: number;
   boundsMin: [number, number, number];
@@ -44,12 +48,16 @@ class SogBuffers {
   readonly indices: Uint32Array;
   readonly stats: SogBufferStats;
   readonly storage: Nullable<SogStorageBuffers>;
+  readonly storageOffsets: SogStorageBufferOffsets = {
+    scaleCodebook: 0,
+  };
   readonly bufferVersions = new BufferVersionTracker();
   private readonly dcColorData: Float32Array;
   private readonly colorData: Float32Array;
 
   private readonly writer: GpuBufferWriter | undefined;
   private readonly poolKey: string | undefined;
+  private scaleCodebookArenaAllocation: GpuBufferWriterArenaAllocation | undefined;
 
   constructor(engine: unknown, readonly packed: SogPackedData, writer?: GpuBufferWriter, poolKey?: string) {
     this.writer = writer;
@@ -88,7 +96,7 @@ class SogBuffers {
     this.releaseStorageBuffer("SogSh0", this.storage.sh0);
     this.releaseStorageBuffer("SogColor", this.storage.color);
     this.releaseStorageBuffer("SogStateDefault", this.storage.state);
-    this.releaseStorageBuffer("SogScaleCodebook", this.storage.scaleCodebook);
+    this.releaseScaleCodebookBuffer(this.storage.scaleCodebook);
     this.releaseStorageBuffer("SogSh0Codebook", this.storage.sh0Codebook);
     this.releaseStorageBuffer("SogCenters", this.storage.centers);
     this.releaseStorageBuffer("SogDepthKeys", this.storage.depthKeys);
@@ -131,7 +139,7 @@ class SogBuffers {
       sh0: make("SogSh0", this.packed.sh0),
       color: make("SogColor", this.colorData),
       state: make("SogStateDefault", state),
-      scaleCodebook: make("SogScaleCodebook", this.packed.scaleCodebook),
+      scaleCodebook: this.makeScaleCodebookBuffer(make),
       sh0Codebook: make("SogSh0Codebook", this.packed.sh0Codebook),
       centers: make("SogCenters", centers),
       depthKeys: make("SogDepthKeys", depthKeys),
@@ -148,6 +156,21 @@ class SogBuffers {
 
     this.bufferVersions.trackAll(buffers as unknown as Record<string, StorageBuffer | undefined>);
     return buffers;
+  }
+
+  private makeScaleCodebookBuffer(make: (name: string, data: Uint32Array | Float32Array) => StorageBuffer): StorageBuffer {
+    if (this.writer && this.poolKey) {
+      this.scaleCodebookArenaAllocation = this.writer.allocateFloat32ArenaBuffer(
+        `${this.poolKey}:scaleCodebook`,
+        "SogScaleCodebook",
+        this.packed.scaleCodebook,
+      );
+      this.storageOffsets.scaleCodebook = this.scaleCodebookArenaAllocation.elementOffset;
+      return this.scaleCodebookArenaAllocation.buffer;
+    }
+
+    this.storageOffsets.scaleCodebook = 0;
+    return make("SogScaleCodebook", this.packed.scaleCodebook);
   }
 
   updateCpuShColors(cameraPosition: { x: number; y: number; z: number }): number {
@@ -230,6 +253,15 @@ class SogBuffers {
       buffer.dispose();
     }
   }
+
+  private releaseScaleCodebookBuffer(buffer: StorageBuffer): void {
+    if (this.writer && this.scaleCodebookArenaAllocation) {
+      this.writer.releaseArenaAllocation(this.scaleCodebookArenaAllocation);
+      this.scaleCodebookArenaAllocation = undefined;
+      return;
+    }
+    this.releaseStorageBuffer("SogScaleCodebook", buffer);
+  }
 }
 
 const SH_C0 = 0.28209479177387814;
@@ -280,4 +312,4 @@ const evalShBasis = (x: number, y: number, z: number, coeffs: number): number[] 
 };
 
 export { SogBuffers };
-export type { SogBufferStats, SogStorageBuffers };
+export type { SogBufferStats, SogStorageBufferOffsets, SogStorageBuffers };

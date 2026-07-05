@@ -603,6 +603,7 @@ class PackedSogRenderPass {
         colorBuffer: storage.color,
         sogScalesBuffer: storage.scales,
         sogScaleCodebookBuffer: storage.scaleCodebook,
+        sogScaleCodebookOffset: this.sogBuffers.storageOffsets.scaleCodebook,
         splatRadiusScale: 2.0,
       },
       this.computeTileStatsPass,
@@ -629,6 +630,7 @@ class PackedSogRenderPass {
         colorBuffer: storage.color,
         sogScalesBuffer: storage.scales,
         sogScaleCodebookBuffer: storage.scaleCodebook,
+        sogScaleCodebookOffset: this.sogBuffers.storageOffsets.scaleCodebook,
         splatRadiusScale: 2.0,
         coverageMode: "bounded",
         shapeMode:
@@ -1222,6 +1224,7 @@ class PackedSogRenderPass {
           "vizMode",
           "meansMin",
           "meansMax",
+          "scaleCodebookOffset",
         ],
         storageBuffers: [
           "meansLBuffer",
@@ -1248,6 +1251,7 @@ class PackedSogRenderPass {
     material.setFloat("vizMode", 0);
     material.setVector3("meansMin", Vector3.FromArray(this.sogBuffers.packed.meansMins));
     material.setVector3("meansMax", Vector3.FromArray(this.sogBuffers.packed.meansMaxs));
+    material.setFloat("scaleCodebookOffset", this.sogBuffers.storageOffsets.scaleCodebook);
     return material;
   }
 
@@ -1266,6 +1270,7 @@ class PackedSogRenderPass {
     }
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", storage.state);
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "scaleCodebookBuffer", storage.scaleCodebook);
+    this.material.setFloat("scaleCodebookOffset", this.sogBuffers.storageOffsets.scaleCodebook);
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", storage.indices);
   }
 

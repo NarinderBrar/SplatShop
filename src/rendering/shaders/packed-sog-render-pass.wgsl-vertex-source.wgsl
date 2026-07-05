@@ -11,6 +11,7 @@ uniform renderSplatCount: f32;
 uniform vizMode: f32;
 uniform meansMin: vec3f;
 uniform meansMax: vec3f;
+uniform scaleCodebookOffset: f32;
 
 var<storage, read> meansLBuffer: array<u32>;
 var<storage, read> meansUBuffer: array<u32>;
@@ -74,10 +75,11 @@ fn decodeRotation(index: u32) -> vec4f {
 
 fn decodeScale(index: u32) -> vec3f {
   let pixel = scalesBuffer[index];
+  let scaleOffset = u32(uniforms.scaleCodebookOffset);
   return vec3f(
-    scaleCodebookBuffer[chan(pixel, 0u)],
-    scaleCodebookBuffer[chan(pixel, 1u)],
-    scaleCodebookBuffer[chan(pixel, 2u)]
+    scaleCodebookBuffer[scaleOffset + chan(pixel, 0u)],
+    scaleCodebookBuffer[scaleOffset + chan(pixel, 1u)],
+    scaleCodebookBuffer[scaleOffset + chan(pixel, 2u)]
   );
 }
 

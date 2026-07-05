@@ -90,9 +90,14 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuBufferWriterPooledBufferReuses: number;
   gpuBufferWriterPooledBufferReleases: number;
   gpuBufferWriterPooledBufferDisposals: number;
-  gpuBufferWriterScratchReuseCount: number;
-  gpuBufferWriterArenaBufferCount: number;
+  gpuBufferWriterArenaAllocationCount: number;
+  gpuBufferWriterArenaReuseCount: number;
+  gpuBufferWriterArenaFreeRangeCount: number;
+  gpuBufferWriterArenaSegmentCount: number;
   gpuBufferWriterArenaTotalBytes: number;
+  gpuBufferWriterScratchReuseCount: number;
+  gpuBufferWriterScratchArenaBufferCount: number;
+  gpuBufferWriterScratchArenaTotalBytes: number;
   gpuBufferWriterFrameUploadBytes: number;
   gpuBufferWriterFrameUploadCount: number;
   gpuBufferWriterFrameErrorCount: number;
@@ -1390,9 +1395,14 @@ class StreamingSsogRenderPass {
       gpuBufferWriterPooledBufferReuses: gpuBufferWriterStats?.pooledBufferReuses ?? 0,
       gpuBufferWriterPooledBufferReleases: gpuBufferWriterStats?.pooledBufferReleases ?? 0,
       gpuBufferWriterPooledBufferDisposals: gpuBufferWriterStats?.pooledBufferDisposals ?? 0,
-      gpuBufferWriterScratchReuseCount: gpuBufferWriterStats?.scratchReuseCount ?? 0,
-      gpuBufferWriterArenaBufferCount: gpuBufferWriterStats?.arenaBufferCount ?? 0,
+      gpuBufferWriterArenaAllocationCount: gpuBufferWriterStats?.arenaAllocationCount ?? 0,
+      gpuBufferWriterArenaReuseCount: gpuBufferWriterStats?.arenaReuseCount ?? 0,
+      gpuBufferWriterArenaFreeRangeCount: gpuBufferWriterStats?.arenaFreeRangeCount ?? 0,
+      gpuBufferWriterArenaSegmentCount: gpuBufferWriterStats?.arenaSegmentCount ?? 0,
       gpuBufferWriterArenaTotalBytes: gpuBufferWriterStats?.arenaTotalBytes ?? 0,
+      gpuBufferWriterScratchReuseCount: gpuBufferWriterStats?.scratchReuseCount ?? 0,
+      gpuBufferWriterScratchArenaBufferCount: gpuBufferWriterStats?.scratchArenaBufferCount ?? 0,
+      gpuBufferWriterScratchArenaTotalBytes: gpuBufferWriterStats?.scratchArenaTotalBytes ?? 0,
       gpuBufferWriterFrameUploadBytes: gpuBufferWriterStats?.frameUploadBytes ?? 0,
       gpuBufferWriterFrameUploadCount: gpuBufferWriterStats?.frameUploadCount ?? 0,
       gpuBufferWriterFrameErrorCount: gpuBufferWriterStats?.frameErrorCount ?? 0,

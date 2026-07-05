@@ -278,6 +278,7 @@ type ComputeTileSplatPreviewOptions = {
   sogQuatBuffer?: StorageBuffer;
   sogScalesBuffer?: StorageBuffer;
   sogScaleCodebookBuffer?: StorageBuffer;
+  sogScaleCodebookOffset?: number;
   splatRadiusScale?: number;
   coverageMode?: "sampled" | "bounded";
   shapeMode?: "gaussian" | "marker";
@@ -495,8 +496,9 @@ uniform coverageMode: f32;
 uniform splatRadiusScale: f32;
 uniform maxMarkerPixels: f32;
 uniform useGaussianShape: f32;
-uniform sampleAlphaCompensation: f32;
-uniform samplePassCount: f32;
+  uniform sampleAlphaCompensation: f32;
+  uniform samplePassCount: f32;
+  uniform sogScaleCodebookOffset: f32;
 
 var<storage, read> centerBuffer: array<vec4f>;
 var<storage, read> tileSplatList: array<u32>;
@@ -550,7 +552,7 @@ ${mode !== "globalSog" ? "  return splatEntry;" : ""}
 fn scaleCodebookOffset(splatEntry: u32) -> u32 {
 ${mode === "globalSog" ? `  let chunk = splatEntry >> 24u;
   return u32(chunkInfoBuffer[chunk * 2u + 1u].w);` : ""}
-${mode !== "globalSog" ? "  return 0u;" : ""}
+${mode !== "globalSog" ? "  return u32(uniforms.sogScaleCodebookOffset);" : ""}
 }
 
 fn decodeLogRadius(index: u32, fallback: f32, splatEntry: u32) -> f32 {
@@ -903,6 +905,7 @@ class ComputeTileSplatPreviewPass {
           "useGaussianShape",
           "sampleAlphaCompensation",
           "samplePassCount",
+          "sogScaleCodebookOffset",
           "minAlpha",
           "maxAlpha",
           "alphaClip",
@@ -989,6 +992,7 @@ class ComputeTileSplatPreviewPass {
     this.material.setFloat("useGaussianShape", this.shapeMode === "gaussian" ? 1.0 : 0.0);
     this.material.setFloat("sampleAlphaCompensation", this.sampleAlphaCompensation);
     this.material.setFloat("samplePassCount", this.staticSamplePasses);
+    this.material.setFloat("sogScaleCodebookOffset", options.sogScaleCodebookOffset ?? 0);
     this.material.setFloat("minAlpha", this.alphaMode === "splat" ? 0.0 : 0.08);
     this.material.setFloat("maxAlpha", this.alphaMode === "splat" ? 1.0 : 0.92);
     this.material.setFloat("alphaClip", this.alphaMode === "splat" ? 1 / 255 : 0.0);
