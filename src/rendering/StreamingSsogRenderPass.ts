@@ -14,6 +14,7 @@ import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRende
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
 import { SsogGpuChunkVisibilityPass, type SsogGpuChunkVisibilityStats } from "./SsogGpuChunkVisibilityPass";
+import { SsogHiZOcclusionPass, type SsogHiZOcclusionStats } from "./SsogHiZOcclusionPass";
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 import { GpuBufferWriter } from "./GpuBufferWriter";
 import {
@@ -163,6 +164,22 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuChunkVisibilityMismatch: number;
   gpuChunkVisibilityResultGeneration: number;
   lastGpuChunkVisibilityMs: number;
+  hiZOcclusionSupported: boolean;
+  hiZOcclusionEnabled: boolean;
+  hiZOcclusionDispatched: boolean;
+  hiZOcclusionPending: boolean;
+  hiZOcclusionMode: SsogHiZOcclusionMode;
+  hiZOcclusionDriving: boolean;
+  hiZOcclusionChunks: number;
+  hiZOcclusionOccluderChunks: number;
+  hiZOcclusionTestedChunks: number;
+  hiZOcclusionVisibleChunks: number;
+  hiZOcclusionOccludedChunks: number;
+  hiZOcclusionCompactChunks: number;
+  hiZOcclusionResultGeneration: number;
+  hiZOcclusionGridWidth: number;
+  hiZOcclusionGridHeight: number;
+  lastHiZOcclusionMs: number;
   prefetchCandidateChunks: number;
   prefetchFrustumChunks: number;
   nearPrefetchChunks: number;
@@ -252,6 +269,7 @@ type ExpandedRuntime = {
 type SsogGlobalSortMode = "off" | "packed" | "expanded";
 type SsogChunkSortMode = "near" | "center" | "far";
 type SsogGpuChunkVisibilityMode = "off" | "debug" | "drive";
+type SsogHiZOcclusionMode = "off" | "debug" | "drive";
 type SsogQualityPreset = SplatQualityPreset;
 type SsogDeviceTier = SplatDeviceTier;
 type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4 | 5;
@@ -766,6 +784,23 @@ const getSsogGpuChunkVisibilityMode = (): SsogGpuChunkVisibilityMode => {
   return "debug";
 };
 
+const getSsogHiZOcclusionMode = (): SsogHiZOcclusionMode => {
+  const value = new URLSearchParams(window.location.search).get("ssogHiZOcclusion");
+  if (value === "false" || value === "off") {
+    return "off";
+  }
+  if (value === "drive") {
+    return "drive";
+  }
+  if (value === "true" || value === "debug") {
+    return "debug";
+  }
+  return "off";
+};
+
+const getSsogHiZGridSize = (name: string, fallback: number): number =>
+  Math.max(8, Math.min(512, Math.floor(getPositiveNumberParam(name, fallback))));
+
 const getSsogUploadBudgetBytes = (): number => {
   const raw = new URLSearchParams(window.location.search).get("ssogUploadBudgetBytes");
   if (raw === "all") {
@@ -874,6 +909,12 @@ class StreamingSsogRenderPass {
   private readonly gpuBufferWriter: GpuBufferWriter | undefined;
   private readonly gpuChunkVisibilityPass?: SsogGpuChunkVisibilityPass;
   private readonly gpuChunkVisibilityMode = getSsogGpuChunkVisibilityMode();
+  private readonly hiZOcclusionPass?: SsogHiZOcclusionPass;
+  private readonly hiZOcclusionMode = getSsogHiZOcclusionMode();
+  private readonly hiZOcclusionBias = getNonNegativeNumberParam("ssogHiZOcclusionBias", 4);
+  private readonly hiZOccluderMask: Uint32Array;
+  private readonly hiZVisibleMarks: Uint32Array;
+  private hiZVisibleMark = 1;
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 220);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
@@ -958,6 +999,7 @@ class StreamingSsogRenderPass {
   private frustumVisibleChunks = 0;
   private frustumCulledChunks = 0;
   private gpuChunkVisibilityDriving = false;
+  private hiZOcclusionDriving = false;
   private prefetchCandidateChunks = 0;
   private prefetchFrustumChunks = 0;
   private nearPrefetchChunks = 0;
@@ -979,6 +1021,8 @@ class StreamingSsogRenderPass {
     this.debugBounds = new SsogDebugBounds(scene);
     this.entryKeys = entries.map((entry) => chunkKey(entry));
     this.prefetchEntryMarks = new Uint32Array(entries.length);
+    this.hiZOccluderMask = new Uint32Array(entries.length);
+    this.hiZVisibleMarks = new Uint32Array(entries.length);
     entries.forEach((entry, index) => {
       this.entriesByKey.set(this.entryKeys[index], entry);
       const finestLod = this.finestLodByNode.get(entry.nodeId);
@@ -1010,6 +1054,14 @@ class StreamingSsogRenderPass {
     this.gpuChunkVisibilityPass = this.gpuChunkVisibilityMode !== "off" && SsogGpuChunkVisibilityPass.isSupported(scene)
       ? new SsogGpuChunkVisibilityPass(scene, entries)
       : undefined;
+    this.hiZOcclusionPass = this.hiZOcclusionMode !== "off" && SsogHiZOcclusionPass.isSupported(scene)
+      ? new SsogHiZOcclusionPass(
+          scene,
+          entries,
+          getSsogHiZGridSize("ssogHiZGridWidth", 96),
+          getSsogHiZGridSize("ssogHiZGridHeight", 54),
+        )
+      : undefined;
     this.updateObserver = () => this.updateLodSelection();
     scene.registerBeforeRender(this.updateObserver);
     this.updateLodSelection(true);
@@ -1029,6 +1081,7 @@ class StreamingSsogRenderPass {
     this.debugBounds.disposeAll();
     this.gpuBufferWriter?.dispose();
     this.gpuChunkVisibilityPass?.dispose();
+    this.hiZOcclusionPass?.dispose();
     this.gpuLoaded.clear();
     this.decodedCache.clear();
     this.pending.clear();
@@ -1084,6 +1137,7 @@ class StreamingSsogRenderPass {
     const gpuPagePoolStats = this.gpuPagePool.getStats();
     const gpuBufferWriterStats = this.gpuBufferWriter?.getStats();
     const gpuChunkVisibilityStats = this.getGpuChunkVisibilityStats();
+    const hiZOcclusionStats = this.getHiZOcclusionStats();
     const selectedKeys = Array.from(this.selectedKeys);
     const gpuActiveChunks = Array.from(this.gpuLoaded.values()).filter((gpu) => gpu.active).length;
     const activeStats = [
@@ -1521,6 +1575,7 @@ class StreamingSsogRenderPass {
       frustumCulledChunks: this.frustumCulledChunks,
       frustumMargin: getPositiveNumberParam("frustumMargin", 1),
       ...gpuChunkVisibilityStats,
+      ...hiZOcclusionStats,
       prefetchCandidateChunks: this.prefetchCandidateChunks,
       prefetchFrustumChunks: this.prefetchFrustumChunks,
       nearPrefetchChunks: this.nearPrefetchChunks,
@@ -1547,6 +1602,38 @@ class StreamingSsogRenderPass {
     this.gpuChunkVisibilityPass.dispatch(frustumPlanes, frustumMargin, this.frustumVisibleChunks);
   }
 
+  private updateHiZOcclusion(): void {
+    if (!this.hiZOcclusionPass) {
+      return;
+    }
+
+    this.hiZOccluderMask.fill(0);
+    let occluderChunks = 0;
+    for (let index = 0; index < this.entries.length; index++) {
+      const key = this.entryKeys[index];
+      const gpu = key ? this.gpuLoaded.get(key) : undefined;
+      if (gpu?.active && this.isChunkRepresentedByReadyRenderPath(key)) {
+        this.hiZOccluderMask[index] = 1;
+        occluderChunks++;
+      }
+    }
+
+    if (occluderChunks === 0) {
+      this.hiZOcclusionPass.markSkipped();
+      return;
+    }
+
+    const engine = this.scene.getEngine();
+    this.hiZOcclusionPass.dispatch(
+      this.scene.getTransformMatrix(),
+      engine.getRenderWidth(true),
+      engine.getRenderHeight(true),
+      this.hiZOccluderMask,
+      occluderChunks,
+      this.hiZOcclusionBias,
+    );
+  }
+
   private applyGpuDrivenVisibility(cameraStable: boolean): void {
     if (
       this.gpuChunkVisibilityMode !== "drive" ||
@@ -1563,6 +1650,40 @@ class StreamingSsogRenderPass {
     this.frustumVisibleChunks = this.visibleEntryIndices.length;
     this.frustumCulledChunks = this.entries.length - this.visibleEntryIndices.length;
     this.gpuChunkVisibilityDriving = true;
+  }
+
+  private applyHiZDrivenOcclusion(cameraStable: boolean): void {
+    if (
+      this.hiZOcclusionMode !== "drive" ||
+      !cameraStable ||
+      !this.hiZOcclusionPass ||
+      !this.hiZOcclusionPass.hasValidResult()
+    ) {
+      this.hiZOcclusionDriving = false;
+      return;
+    }
+
+    this.hiZVisibleMark++;
+    if (this.hiZVisibleMark >= 0xffffffff) {
+      this.hiZVisibleMarks.fill(0);
+      this.hiZVisibleMark = 1;
+    }
+    const mark = this.hiZVisibleMark;
+    const visibleIndices = this.hiZOcclusionPass.getVisibleIndices();
+    for (let index = 0; index < visibleIndices.length; index++) {
+      this.hiZVisibleMarks[visibleIndices[index]] = mark;
+    }
+
+    let write = 0;
+    const visibleEntryIndices = this.visibleEntryIndices.data;
+    for (let read = 0; read < this.visibleEntryIndices.length; read++) {
+      const entryIndex = visibleEntryIndices[read];
+      if (this.hiZVisibleMarks[entryIndex] === mark) {
+        visibleEntryIndices[write++] = entryIndex;
+      }
+    }
+    this.visibleEntryIndices.length = write;
+    this.hiZOcclusionDriving = true;
   }
 
   private getGpuChunkVisibilityStats(): Pick<
@@ -1597,6 +1718,46 @@ class StreamingSsogRenderPass {
       gpuChunkVisibilityMismatch: stats?.mismatch ?? 0,
       gpuChunkVisibilityResultGeneration: stats?.resultGeneration ?? 0,
       lastGpuChunkVisibilityMs: stats?.lastDispatchMs ?? 0,
+    };
+  }
+
+  private getHiZOcclusionStats(): Pick<
+    StreamingSsogRenderStats,
+    | "hiZOcclusionSupported"
+    | "hiZOcclusionEnabled"
+    | "hiZOcclusionDispatched"
+    | "hiZOcclusionPending"
+    | "hiZOcclusionMode"
+    | "hiZOcclusionDriving"
+    | "hiZOcclusionChunks"
+    | "hiZOcclusionOccluderChunks"
+    | "hiZOcclusionTestedChunks"
+    | "hiZOcclusionVisibleChunks"
+    | "hiZOcclusionOccludedChunks"
+    | "hiZOcclusionCompactChunks"
+    | "hiZOcclusionResultGeneration"
+    | "hiZOcclusionGridWidth"
+    | "hiZOcclusionGridHeight"
+    | "lastHiZOcclusionMs"
+  > {
+    const stats: SsogHiZOcclusionStats | undefined = this.hiZOcclusionPass?.getStats();
+    return {
+      hiZOcclusionSupported: !!this.hiZOcclusionPass,
+      hiZOcclusionEnabled: stats?.enabled ?? false,
+      hiZOcclusionDispatched: stats?.dispatched ?? false,
+      hiZOcclusionPending: stats?.readbackPending ?? false,
+      hiZOcclusionMode: this.hiZOcclusionMode,
+      hiZOcclusionDriving: this.hiZOcclusionDriving,
+      hiZOcclusionChunks: stats?.chunkCount ?? this.entries.length,
+      hiZOcclusionOccluderChunks: stats?.occluderChunks ?? 0,
+      hiZOcclusionTestedChunks: stats?.testedChunks ?? 0,
+      hiZOcclusionVisibleChunks: stats?.visibleChunks ?? 0,
+      hiZOcclusionOccludedChunks: stats?.occludedChunks ?? 0,
+      hiZOcclusionCompactChunks: stats?.compactVisibleChunks ?? 0,
+      hiZOcclusionResultGeneration: stats?.resultGeneration ?? 0,
+      hiZOcclusionGridWidth: stats?.gridWidth ?? 0,
+      hiZOcclusionGridHeight: stats?.gridHeight ?? 0,
+      lastHiZOcclusionMs: stats?.lastDispatchMs ?? 0,
     };
   }
 
@@ -1802,6 +1963,7 @@ class StreamingSsogRenderPass {
     this.frustumVisibleChunks = this.visibleEntryIndices.length;
     this.frustumCulledChunks = this.entries.length - this.visibleEntryIndices.length;
     this.applyGpuDrivenVisibility(!initial && !moved && !turned);
+    this.applyHiZDrivenOcclusion(!initial && !moved && !turned);
     this.updateGpuChunkVisibility(frustumPlanes, frustumMargin);
     this.prefetchFrustumChunks = this.prefetchFrustumEntryIndices.length;
     this.nearPrefetchChunks = this.nearPrefetchEntryIndices.length;
@@ -1972,6 +2134,7 @@ class StreamingSsogRenderPass {
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.activeChunks = Math.max(renderSelected.length, activeChunks);
     this.selectedLods = Math.max(this.selectedLodValues.size, activeLods.size);
+    this.updateHiZOcclusion();
     this.dropStaleQueuedChunks();
     this.dropStaleDecodedUploads();
     for (let index = 0; index < stableSelected.length; index++) {

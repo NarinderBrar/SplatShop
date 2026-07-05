@@ -38,6 +38,7 @@ const DEBUG_GROUPS: Array<Omit<DebugGroup, "lines">> = [
 const getDebugGroupKey = (line: string): DebugGroupKey => {
   if (
     line.startsWith("Frustum:") ||
+    line.startsWith("Hi-Z occlusion:") ||
     line.startsWith("Prefetch candidates:") ||
     line.startsWith("Streaming chunks:") ||
     line.startsWith("Selected residency:") ||
@@ -369,6 +370,22 @@ class ViewerDebugStats {
       gpuChunkVisibilityMismatch?: number;
       gpuChunkVisibilityResultGeneration?: number;
       lastGpuChunkVisibilityMs?: number;
+      hiZOcclusionSupported?: boolean;
+      hiZOcclusionEnabled?: boolean;
+      hiZOcclusionDispatched?: boolean;
+      hiZOcclusionPending?: boolean;
+      hiZOcclusionMode?: string;
+      hiZOcclusionDriving?: boolean;
+      hiZOcclusionChunks?: number;
+      hiZOcclusionOccluderChunks?: number;
+      hiZOcclusionTestedChunks?: number;
+      hiZOcclusionVisibleChunks?: number;
+      hiZOcclusionOccludedChunks?: number;
+      hiZOcclusionCompactChunks?: number;
+      hiZOcclusionResultGeneration?: number;
+      hiZOcclusionGridWidth?: number;
+      hiZOcclusionGridHeight?: number;
+      lastHiZOcclusionMs?: number;
       prefetchCandidateChunks?: number;
       prefetchFrustumChunks?: number;
       nearPrefetchChunks?: number;
@@ -506,6 +523,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.gpuChunkVisibilitySupported
         ? `GPU chunk visibility: ${streamingStats.gpuChunkVisibilityMode ?? "debug"}${streamingStats.gpuChunkVisibilityDriving ? " driving" : ""} / ${streamingStats.gpuChunkVisibilityDispatched ? "yes" : streamingStats.gpuChunkVisibilityEnabled ? "pending" : "off"}${streamingStats.gpuChunkVisibilityPending ? " / readback" : ""} / ${formatCount(streamingStats.gpuChunkVisibilityVisibleChunks ?? 0)} visible / compact ${formatCount(streamingStats.gpuChunkVisibilityCompactChunks ?? 0)} / ${formatCount(streamingStats.gpuChunkVisibilityCulledChunks ?? 0)} culled / ${formatCount(streamingStats.gpuChunkVisibilityChunks ?? 0)} chunks / mismatch ${formatCount(streamingStats.gpuChunkVisibilityMismatch ?? 0)} / gen ${formatCount(streamingStats.gpuChunkVisibilityResultGeneration ?? 0)} / ${formatMs(streamingStats.lastGpuChunkVisibilityMs ?? 0)} ms`
+        : "",
+      streamingStats.hiZOcclusionSupported
+        ? `Hi-Z occlusion: ${streamingStats.hiZOcclusionMode ?? "debug"}${streamingStats.hiZOcclusionDriving ? " driving" : ""} / ${streamingStats.hiZOcclusionDispatched ? "yes" : streamingStats.hiZOcclusionEnabled ? "pending" : "off"}${streamingStats.hiZOcclusionPending ? " / readback" : ""} / ${formatCount(streamingStats.hiZOcclusionVisibleChunks ?? 0)} visible / compact ${formatCount(streamingStats.hiZOcclusionCompactChunks ?? 0)} / ${formatCount(streamingStats.hiZOcclusionOccludedChunks ?? 0)} occluded / occluders ${formatCount(streamingStats.hiZOcclusionOccluderChunks ?? 0)} / tested ${formatCount(streamingStats.hiZOcclusionTestedChunks ?? 0)} / grid ${formatCount(streamingStats.hiZOcclusionGridWidth ?? 0)}x${formatCount(streamingStats.hiZOcclusionGridHeight ?? 0)} / gen ${formatCount(streamingStats.hiZOcclusionResultGeneration ?? 0)} / ${formatMs(streamingStats.lastHiZOcclusionMs ?? 0)} ms`
         : "",
       streamingStats.prefetchCandidateChunks !== undefined
         ? `Prefetch candidates: ${formatCount(streamingStats.prefetchCandidateChunks)} total / ${formatCount(streamingStats.prefetchFrustumChunks ?? 0)} expanded-frustum / ${formatCount(streamingStats.nearPrefetchChunks ?? 0)} near-camera / margin ${(streamingStats.prefetchFrustumMargin ?? 0).toFixed(2)} / near ${(streamingStats.nearPrefetchDistance ?? 0).toFixed(1)}`
