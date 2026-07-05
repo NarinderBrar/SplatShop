@@ -1,5 +1,6 @@
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
+import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
@@ -17,6 +18,7 @@ import { ComputeTileSplatPreviewPass, type ComputeTileSplatPreviewStats } from "
 import { ComputeTileStatsPass, type ComputeTileStats } from "./ComputeTileStatsPass";
 import { ComputeTileWorkQueuePass, type ComputeTileWorkQueueStats } from "./ComputeTileWorkQueuePass";
 import { canCreateComputeShader, GpuDepthKeyPass, type GpuDepthKeyStats } from "./GpuDepthKeyPass";
+import { GpuUniformArena } from "./GpuUniformArena";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
 import { GpuSortHistogramPass, type GpuSortHistogramStats } from "./GpuSortHistogramPass";
 import { GpuSortPrefixSumPass, type GpuSortPrefixSumStats } from "./GpuSortPrefixSumPass";
@@ -255,6 +257,12 @@ type PackedSogRenderStats = {
   gpuBufferArenaAllocations: number;
   gpuBufferArenaReuses: number;
   gpuBufferArenaGrows: number;
+  gpuUniformArenaBytes: number;
+  gpuUniformArenaCapacityBytes: number;
+  gpuUniformArenaAllocations: number;
+  gpuUniformArenaUpdates: number;
+  gpuUniformArenaFrameUpdates: number;
+  gpuUniformArenaFrameUpdateBytes: number;
   bindGroupGeneration: number;
 };
 
@@ -266,6 +274,7 @@ class PackedSogRenderPass {
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 0.15);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly rendererBackend: RendererBackend;
+  private readonly uniformArena?: GpuUniformArena;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
   private readonly gpuSortPrefixSumPass?: GpuSortPrefixSumPass;
@@ -325,6 +334,9 @@ class PackedSogRenderPass {
 
     this.mesh = new Mesh("PackedSogRenderPassQuads", scene);
     this.rendererBackend = resolveRendererBackend(scene);
+    this.uniformArena = scene.getEngine() instanceof WebGPUEngine
+      ? new GpuUniformArena(scene.getEngine() as WebGPUEngine, "PackedSogUniformArena")
+      : undefined;
     this.mesh.isPickable = false;
     this.mesh.hasVertexAlpha = true;
     this.mesh.material = this.material = this.createMaterial(scene);
@@ -351,6 +363,7 @@ class PackedSogRenderPass {
 
     this.updateViewport = () => {
       const engine = scene.getEngine();
+      this.uniformArena?.beginFrame();
       const w = engine.getRenderWidth(true);
       const h = engine.getRenderHeight(true);
       if (w !== this.lastViewportWidth || h !== this.lastViewportHeight) {
@@ -389,9 +402,10 @@ class PackedSogRenderPass {
 		this.computeTilePreviewPass?.dispose();
 		this.computeTileSplatPreviewPass?.dispose();
 		this.computeTileRasterPreviewPass?.dispose();
-		this.computeTileDensityOverlayPass?.dispose();
-		this.colorSegmentationPass?.dispose();
-		this.mesh.getScene().unregisterBeforeRender(this.updateViewport);
+    this.computeTileDensityOverlayPass?.dispose();
+    this.colorSegmentationPass?.dispose();
+    this.uniformArena?.dispose();
+    this.mesh.getScene().unregisterBeforeRender(this.updateViewport);
 		this.mesh.dispose();
 		this.material.dispose();
 	}
@@ -475,6 +489,7 @@ class PackedSogRenderPass {
       ...this.getGpuSortPrefixSumStats(),
       ...this.getGpuSortScatterStats(),
       ...this.getGpuRadixSortStats(),
+      ...this.getGpuUniformArenaStats(),
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.getGpuSortVisibleEffective(),
       bindGroupGeneration: this.sogBuffers.bufferVersions.bindGroupGeneration,
@@ -511,6 +526,7 @@ class PackedSogRenderPass {
       this.sogBuffers.packed.boundsMax,
       20,
       this.sogBuffers.storageOffsets.centers,
+      this.uniformArena,
     );
   }
 
@@ -525,6 +541,7 @@ class PackedSogRenderPass {
       this.sogBuffers.packed.numSplats,
       undefined,
       this.sogBuffers.storageOffsets.centers,
+      this.uniformArena,
     );
   }
 
@@ -1178,6 +1195,26 @@ class PackedSogRenderPass {
       gpuBufferArenaAllocations: stats?.gpuBufferArenaAllocations ?? 0,
       gpuBufferArenaReuses: stats?.gpuBufferArenaReuses ?? 0,
       gpuBufferArenaGrows: stats?.gpuBufferArenaGrows ?? 0,
+    };
+  }
+
+  private getGpuUniformArenaStats(): Pick<
+    PackedSogRenderStats,
+    | "gpuUniformArenaBytes"
+    | "gpuUniformArenaCapacityBytes"
+    | "gpuUniformArenaAllocations"
+    | "gpuUniformArenaUpdates"
+    | "gpuUniformArenaFrameUpdates"
+    | "gpuUniformArenaFrameUpdateBytes"
+  > {
+    const stats = this.uniformArena?.getStats();
+    return {
+      gpuUniformArenaBytes: stats?.usedBytes ?? 0,
+      gpuUniformArenaCapacityBytes: stats?.capacityBytes ?? 0,
+      gpuUniformArenaAllocations: stats?.allocationCount ?? 0,
+      gpuUniformArenaUpdates: stats?.updateCount ?? 0,
+      gpuUniformArenaFrameUpdates: stats?.frameUpdateCount ?? 0,
+      gpuUniformArenaFrameUpdateBytes: stats?.frameUpdateBytes ?? 0,
     };
   }
 

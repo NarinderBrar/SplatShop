@@ -6,6 +6,7 @@ import type { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import type { GpuUniformArena, GpuUniformArenaFloatSlice } from "./GpuUniformArena";
 import ComputeTileStatsPass_CLEAR_SOURCE_raw from "./shaders/compute-tile-stats-pass.clear-source.wgsl?raw";
 import ComputeTileStatsPass_BIN_SOURCE_raw from "./shaders/compute-tile-stats-pass.bin-source.wgsl?raw";
 import ComputeTileStatsPass_PREFIX_SOURCE_raw from "./shaders/compute-tile-stats-pass.prefix-source.wgsl?raw";
@@ -19,15 +20,47 @@ const STATS_OFFSET = MAX_TILES;
 const COUNTER_COUNT = MAX_TILES + 4;
 const OFFSET_COUNT = MAX_TILES + 1;
 
-const CLEAR_SOURCE = ComputeTileStatsPass_CLEAR_SOURCE_raw.replaceAll("__CLEAR_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
+const withParamsBase = (source: string, paramsBase: number): string =>
+  source.replaceAll("paramsBuffer[", `paramsBuffer[${paramsBase} + `);
 
-const BIN_SOURCE = ComputeTileStatsPass_BIN_SOURCE_raw.replaceAll("__BIN_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__BIN_SOURCE_EXPR_1__", String(STATS_OFFSET + 1)).replaceAll("__BIN_SOURCE_EXPR_2__", String(STATS_OFFSET + 2)).replaceAll("__BIN_SOURCE_EXPR_3__", String(MAX_TILES)).replaceAll("__BIN_SOURCE_EXPR_4__", String(STATS_OFFSET + 3)).replaceAll("__BIN_SOURCE_EXPR_5__", String(STATS_OFFSET));
+const getClearSource = (paramsBase: number): string =>
+  withParamsBase(
+    ComputeTileStatsPass_CLEAR_SOURCE_raw.replaceAll("__CLEAR_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)),
+    paramsBase,
+  );
 
-const PREFIX_SOURCE = ComputeTileStatsPass_PREFIX_SOURCE_raw;
+const getBinSource = (paramsBase: number): string =>
+  withParamsBase(
+    ComputeTileStatsPass_BIN_SOURCE_raw
+      .replaceAll("__BIN_SOURCE_EXPR_0__", String(WORKGROUP_SIZE))
+      .replaceAll("__BIN_SOURCE_EXPR_1__", String(STATS_OFFSET + 1))
+      .replaceAll("__BIN_SOURCE_EXPR_2__", String(STATS_OFFSET + 2))
+      .replaceAll("__BIN_SOURCE_EXPR_3__", String(MAX_TILES))
+      .replaceAll("__BIN_SOURCE_EXPR_4__", String(STATS_OFFSET + 3))
+      .replaceAll("__BIN_SOURCE_EXPR_5__", String(STATS_OFFSET)),
+    paramsBase,
+  );
 
-const CLEAR_CURSORS_SOURCE = ComputeTileStatsPass_CLEAR_CURSORS_SOURCE_raw.replaceAll("__CLEAR_CURSORS_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
+const getPrefixSource = (paramsBase: number): string =>
+  withParamsBase(ComputeTileStatsPass_PREFIX_SOURCE_raw, paramsBase);
 
-const SCATTER_SOURCE = ComputeTileStatsPass_SCATTER_SOURCE_raw.replaceAll("__SCATTER_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__SCATTER_SOURCE_EXPR_1__", String(MAX_TILES)).replaceAll("__SCATTER_SOURCE_EXPR_2__", String(STATS_OFFSET + 3));
+const getClearCursorsSource = (paramsBase: number): string =>
+  withParamsBase(
+    ComputeTileStatsPass_CLEAR_CURSORS_SOURCE_raw.replaceAll(
+      "__CLEAR_CURSORS_SOURCE_EXPR_0__",
+      String(WORKGROUP_SIZE),
+    ),
+    paramsBase,
+  );
+
+const getScatterSource = (paramsBase: number): string =>
+  withParamsBase(
+    ComputeTileStatsPass_SCATTER_SOURCE_raw
+      .replaceAll("__SCATTER_SOURCE_EXPR_0__", String(WORKGROUP_SIZE))
+      .replaceAll("__SCATTER_SOURCE_EXPR_1__", String(MAX_TILES))
+      .replaceAll("__SCATTER_SOURCE_EXPR_2__", String(STATS_OFFSET + 3)),
+    paramsBase,
+  );
 
 type ComputeTileStats = {
   enabled: boolean;
@@ -68,6 +101,7 @@ class ComputeTileStatsPass {
   private readonly tileCursors: StorageBuffer;
   private readonly tileSplatList: StorageBuffer;
   private readonly params: StorageBuffer;
+  private readonly paramsSlice?: GpuUniformArenaFloatSlice;
   private readonly paramsData = new Float32Array(25);
   private readPending = false;
   private stats: ComputeTileStats;
@@ -78,6 +112,7 @@ class ComputeTileStatsPass {
     private readonly splatCount: number,
     private readonly tileSize = DEFAULT_TILE_SIZE,
     private readonly centerOffset = 0,
+    paramsArena?: GpuUniformArena,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     const countersData = new Uint32Array(COUNTER_COUNT);
@@ -97,12 +132,15 @@ class ComputeTileStatsPass {
       "ComputeTileSplatList",
     );
     this.tileSplatList.update(tileSplatListData);
-    this.params = new StorageBuffer(engine, this.paramsData.byteLength, undefined, "ComputeTileStatsParams");
+    this.paramsSlice = paramsArena?.allocateFloat32("ComputeTileStatsParams", this.paramsData.length);
+    this.params =
+      this.paramsSlice?.buffer ?? new StorageBuffer(engine, this.paramsData.byteLength, undefined, "ComputeTileStatsParams");
+    const paramsBase = this.paramsSlice?.floatOffset ?? 0;
 
     this.clearShader = new ComputeShader(
       "ComputeTileStatsClear",
       engine,
-      { computeSource: CLEAR_SOURCE },
+      { computeSource: getClearSource(paramsBase) },
       {
         bindingsMapping: {
           counters: { group: 0, binding: 0 },
@@ -116,7 +154,7 @@ class ComputeTileStatsPass {
     this.binShader = new ComputeShader(
       "ComputeTileStatsBin",
       engine,
-      { computeSource: BIN_SOURCE },
+      { computeSource: getBinSource(paramsBase) },
       {
         bindingsMapping: {
           centerBuffer: { group: 0, binding: 0 },
@@ -132,7 +170,7 @@ class ComputeTileStatsPass {
     this.prefixShader = new ComputeShader(
       "ComputeTilePrefix",
       engine,
-      { computeSource: PREFIX_SOURCE },
+      { computeSource: getPrefixSource(paramsBase) },
       {
         bindingsMapping: {
           counters: { group: 0, binding: 0 },
@@ -148,7 +186,7 @@ class ComputeTileStatsPass {
     this.clearCursorsShader = new ComputeShader(
       "ComputeTileCursorClear",
       engine,
-      { computeSource: CLEAR_CURSORS_SOURCE },
+      { computeSource: getClearCursorsSource(paramsBase) },
       {
         bindingsMapping: {
           tileCursors: { group: 0, binding: 0 },
@@ -162,7 +200,7 @@ class ComputeTileStatsPass {
     this.scatterShader = new ComputeShader(
       "ComputeTileScatter",
       engine,
-      { computeSource: SCATTER_SOURCE },
+      { computeSource: getScatterSource(paramsBase) },
       {
         bindingsMapping: {
           centerBuffer: { group: 0, binding: 0 },
@@ -218,7 +256,9 @@ class ComputeTileStatsPass {
     this.tileOffsets.dispose();
     this.tileCursors.dispose();
     this.tileSplatList.dispose();
-    this.params.dispose();
+    if (!this.paramsSlice) {
+      this.params.dispose();
+    }
   }
 
   dispatch(transform: Matrix, viewportWidth: number, viewportHeight: number, splatCount = this.splatCount): boolean {
@@ -239,7 +279,7 @@ class ComputeTileStatsPass {
     this.paramsData[22] = COUNTER_COUNT;
     this.paramsData[23] = tileCount;
     this.paramsData[24] = this.centerOffset;
-    this.params.update(this.paramsData);
+    this.updateParams();
 
     const cleared = this.clearShader.dispatch(Math.ceil(COUNTER_COUNT / WORKGROUP_SIZE));
     const dispatched = cleared && this.binShader.dispatch(Math.ceil(this.paramsData[21] / WORKGROUP_SIZE));
@@ -283,6 +323,14 @@ class ComputeTileStatsPass {
 
   getTileSplatListBuffer(): StorageBuffer {
     return this.tileSplatList;
+  }
+
+  private updateParams(): void {
+    if (this.paramsSlice) {
+      this.paramsSlice.update(this.paramsData);
+      return;
+    }
+    this.params.update(this.paramsData);
   }
 
   private scheduleReadback(tileCount: number): void {

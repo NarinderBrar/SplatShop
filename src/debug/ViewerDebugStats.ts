@@ -655,6 +655,9 @@ class ViewerDebugStats {
       renderStats.gpuBufferArenaBuffers > 0
         ? `GPU arena: ${formatCount(renderStats.gpuBufferArenaBuffers)} buffers / ${formatBytes(renderStats.gpuBufferArenaBytes)} live / peak ${formatBytes(renderStats.gpuBufferArenaPeakBytes)} / alloc ${formatCount(renderStats.gpuBufferArenaAllocations)} reuse ${formatCount(renderStats.gpuBufferArenaReuses)} grow ${formatCount(renderStats.gpuBufferArenaGrows)}`
         : "",
+      renderStats.gpuUniformArenaCapacityBytes > 0
+        ? `GPU uniform arena: ${formatBytes(renderStats.gpuUniformArenaBytes)} / ${formatBytes(renderStats.gpuUniformArenaCapacityBytes)} / alloc ${formatCount(renderStats.gpuUniformArenaAllocations)} / frame writes ${formatCount(renderStats.gpuUniformArenaFrameUpdates)} ${formatBytes(renderStats.gpuUniformArenaFrameUpdateBytes)}`
+        : "",
       renderStats.gpuRadixValidationEnabled
         ? `GPU radix validation: ${renderStats.gpuRadixValidationPending ? "pending" : "ready"}`
         : "",

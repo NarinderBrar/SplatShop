@@ -323,6 +323,12 @@ class CompositeSplatRenderPass {
       gpuBufferArenaAllocations: stats.reduce((sum, item) => sum + item.gpuBufferArenaAllocations, 0),
       gpuBufferArenaReuses: stats.reduce((sum, item) => sum + item.gpuBufferArenaReuses, 0),
       gpuBufferArenaGrows: stats.reduce((sum, item) => sum + item.gpuBufferArenaGrows, 0),
+      gpuUniformArenaBytes: stats.reduce((sum, item) => sum + item.gpuUniformArenaBytes, 0),
+      gpuUniformArenaCapacityBytes: stats.reduce((sum, item) => sum + item.gpuUniformArenaCapacityBytes, 0),
+      gpuUniformArenaAllocations: stats.reduce((sum, item) => sum + item.gpuUniformArenaAllocations, 0),
+      gpuUniformArenaUpdates: stats.reduce((sum, item) => sum + item.gpuUniformArenaUpdates, 0),
+      gpuUniformArenaFrameUpdates: stats.reduce((sum, item) => sum + item.gpuUniformArenaFrameUpdates, 0),
+      gpuUniformArenaFrameUpdateBytes: stats.reduce((sum, item) => sum + item.gpuUniformArenaFrameUpdateBytes, 0),
       bindGroupGeneration: stats.reduce((sum, item) => sum + item.bindGroupGeneration, 0),
     };
   }

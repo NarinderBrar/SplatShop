@@ -4,11 +4,15 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
+import type { GpuUniformArena, GpuUniformArenaFloatSlice } from "./GpuUniformArena";
 import GpuDepthKeyPass_COMPUTE_SOURCE_raw from "./shaders/gpu-depth-key-pass.compute-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 256;
 
-const COMPUTE_SOURCE = GpuDepthKeyPass_COMPUTE_SOURCE_raw.replaceAll("__COMPUTE_SOURCE_EXPR_0__", String(WORKGROUP_SIZE));
+const getComputeSource = (paramsBase: number): string =>
+  GpuDepthKeyPass_COMPUTE_SOURCE_raw
+    .replaceAll("__COMPUTE_SOURCE_EXPR_0__", String(WORKGROUP_SIZE))
+    .replaceAll("paramsBuffer[", `paramsBuffer[${paramsBase} + `);
 
 type GpuDepthKeyStats = {
   enabled: boolean;
@@ -37,6 +41,7 @@ const canCreateComputeShader = (scene: Scene): boolean => {
 class GpuDepthKeyPass {
   private readonly shader: ComputeShader;
   private readonly params: StorageBuffer;
+  private readonly paramsSlice?: GpuUniformArenaFloatSlice;
   private readonly paramsData = new Float32Array(13);
   private lastDispatchMs = 0;
   private lastDispatchSplats = 0;
@@ -50,13 +55,15 @@ class GpuDepthKeyPass {
     private readonly boundsMax: readonly [number, number, number],
     private readonly keyBits = 20,
     private readonly centerOffset = 0,
+    paramsArena?: GpuUniformArena,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
-    this.params = new StorageBuffer(engine, this.paramsData.byteLength, undefined, "GpuDepthKeyParams");
+    this.paramsSlice = paramsArena?.allocateFloat32("GpuDepthKeyParams", this.paramsData.length);
+    this.params = this.paramsSlice?.buffer ?? new StorageBuffer(engine, this.paramsData.byteLength, undefined, "GpuDepthKeyParams");
     this.shader = new ComputeShader(
       "GpuDepthKeyPass",
       engine,
-      { computeSource: COMPUTE_SOURCE },
+      { computeSource: getComputeSource(this.paramsSlice?.floatOffset ?? 0) },
       {
         bindingsMapping: {
           centerBuffer: { group: 0, binding: 0 },
@@ -71,7 +78,9 @@ class GpuDepthKeyPass {
   }
 
   dispose(): void {
-    this.params.dispose();
+    if (!this.paramsSlice) {
+      this.params.dispose();
+    }
   }
 
   dispatch(cameraPosition: Vector3, cameraForward: Vector3): boolean {
@@ -93,7 +102,7 @@ class GpuDepthKeyPass {
     this.paramsData[10] = invDepthRange;
     this.paramsData[11] = 2 ** this.keyBits - 1;
     this.paramsData[12] = this.centerOffset;
-    this.params.update(this.paramsData);
+    this.updateParams();
 
     const dispatched = this.shader.dispatch(Math.ceil(this.splatCount / WORKGROUP_SIZE));
     if (dispatched) {
@@ -110,6 +119,14 @@ class GpuDepthKeyPass {
       lastDispatchMs: this.lastDispatchMs,
       lastDispatchSplats: this.lastDispatchSplats,
     };
+  }
+
+  private updateParams(): void {
+    if (this.paramsSlice) {
+      this.paramsSlice.update(this.paramsData);
+      return;
+    }
+    this.params.update(this.paramsData);
   }
 
   private projectBounds(

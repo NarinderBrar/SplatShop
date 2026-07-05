@@ -246,6 +246,12 @@ type SplatRenderStats = {
   gpuBufferArenaAllocations: number;
   gpuBufferArenaReuses: number;
   gpuBufferArenaGrows: number;
+  gpuUniformArenaBytes: number;
+  gpuUniformArenaCapacityBytes: number;
+  gpuUniformArenaAllocations: number;
+  gpuUniformArenaUpdates: number;
+  gpuUniformArenaFrameUpdates: number;
+  gpuUniformArenaFrameUpdateBytes: number;
   bindGroupGeneration: number;
 };
 
@@ -467,6 +473,12 @@ class SplatRenderPass {
       ...this.getGpuSortPrefixSumStats(),
       ...this.getGpuSortScatterStats(),
       ...this.getGpuRadixSortStats(),
+      gpuUniformArenaBytes: 0,
+      gpuUniformArenaCapacityBytes: 0,
+      gpuUniformArenaAllocations: 0,
+      gpuUniformArenaUpdates: 0,
+      gpuUniformArenaFrameUpdates: 0,
+      gpuUniformArenaFrameUpdateBytes: 0,
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.getGpuSortVisibleEffective(),
       bindGroupGeneration: this.splatBuffers.bufferVersions.bindGroupGeneration,

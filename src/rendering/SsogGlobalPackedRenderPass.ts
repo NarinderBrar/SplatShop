@@ -222,6 +222,12 @@ type SsogGlobalPackedStats = {
   gpuBufferArenaAllocations: number;
   gpuBufferArenaReuses: number;
   gpuBufferArenaGrows: number;
+  gpuUniformArenaBytes: number;
+  gpuUniformArenaCapacityBytes: number;
+  gpuUniformArenaAllocations: number;
+  gpuUniformArenaUpdates: number;
+  gpuUniformArenaFrameUpdates: number;
+  gpuUniformArenaFrameUpdateBytes: number;
   bindGroupGeneration: number;
 };
 
@@ -667,6 +673,12 @@ class SsogGlobalPackedRenderPass {
       ...this.getGpuRadixSortStats(),
       gpuRadixSortIntervalFrames: this.gpuRadixSortIntervalFrames,
       gpuRadixSortSkippedReason: this.lastGpuSortSkippedReason,
+      gpuUniformArenaBytes: 0,
+      gpuUniformArenaCapacityBytes: 0,
+      gpuUniformArenaAllocations: 0,
+      gpuUniformArenaUpdates: 0,
+      gpuUniformArenaFrameUpdates: 0,
+      gpuUniformArenaFrameUpdateBytes: 0,
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.gpuVisibleActive ? "radix" : "cpu",
       bindGroupGeneration: this.bufferVersions.bindGroupGeneration,
