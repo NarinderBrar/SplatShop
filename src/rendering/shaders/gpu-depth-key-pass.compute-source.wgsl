@@ -10,7 +10,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
     return;
   }
 
-  let center = centerBuffer[index].xyz;
+  let centerOffset = u32(paramsBuffer[12]);
+  let center = centerBuffer[centerOffset + index].xyz;
   let cameraPosition = vec3f(paramsBuffer[0], paramsBuffer[1], paramsBuffer[2]);
   let cameraForward = vec3f(paramsBuffer[4], paramsBuffer[5], paramsBuffer[6]);
   let minDepth = paramsBuffer[9];

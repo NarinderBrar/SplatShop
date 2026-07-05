@@ -37,7 +37,7 @@ const canCreateComputeShader = (scene: Scene): boolean => {
 class GpuDepthKeyPass {
   private readonly shader: ComputeShader;
   private readonly params: StorageBuffer;
-  private readonly paramsData = new Float32Array(12);
+  private readonly paramsData = new Float32Array(13);
   private lastDispatchMs = 0;
   private lastDispatchSplats = 0;
 
@@ -49,6 +49,7 @@ class GpuDepthKeyPass {
     private readonly boundsMin: readonly [number, number, number],
     private readonly boundsMax: readonly [number, number, number],
     private readonly keyBits = 20,
+    private readonly centerOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     this.params = new StorageBuffer(engine, this.paramsData.byteLength, undefined, "GpuDepthKeyParams");
@@ -91,6 +92,7 @@ class GpuDepthKeyPass {
     this.paramsData[9] = minDepth;
     this.paramsData[10] = invDepthRange;
     this.paramsData[11] = 2 ** this.keyBits - 1;
+    this.paramsData[12] = this.centerOffset;
     this.params.update(this.paramsData);
 
     const dispatched = this.shader.dispatch(Math.ceil(this.splatCount / WORKGROUP_SIZE));

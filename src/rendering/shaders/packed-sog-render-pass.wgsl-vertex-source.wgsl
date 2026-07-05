@@ -11,6 +11,10 @@ uniform renderSplatCount: f32;
 uniform vizMode: f32;
 uniform meansMin: vec3f;
 uniform meansMax: vec3f;
+uniform meansLOffset: f32;
+uniform meansUOffset: f32;
+uniform quatsOffset: f32;
+uniform scalesOffset: f32;
 uniform scaleCodebookOffset: f32;
 
 var<storage, read> meansLBuffer: array<u32>;
@@ -43,8 +47,10 @@ fn chanf(pixel: u32, component: u32) -> f32 {
 }
 
 fn decodeCenter(index: u32) -> vec3f {
-  let lo = meansLBuffer[index];
-  let hi = meansUBuffer[index];
+  let meansLIndex = u32(uniforms.meansLOffset) + index;
+  let meansUIndex = u32(uniforms.meansUOffset) + index;
+  let lo = meansLBuffer[meansLIndex];
+  let hi = meansUBuffer[meansUIndex];
   let q = vec3f(
     f32((chan(hi, 0u) << 8u) + chan(lo, 0u)) / 65535.0,
     f32((chan(hi, 1u) << 8u) + chan(lo, 1u)) / 65535.0,
@@ -55,7 +61,8 @@ fn decodeCenter(index: u32) -> vec3f {
 }
 
 fn decodeRotation(index: u32) -> vec4f {
-  let pixel = quatsBuffer[index];
+  let quatIndex = u32(uniforms.quatsOffset) + index;
+  let pixel = quatsBuffer[quatIndex];
   let a = (chanf(pixel, 0u) / 255.0 - 0.5) * SQRT2;
   let b = (chanf(pixel, 1u) / 255.0 - 0.5) * SQRT2;
   let c = (chanf(pixel, 2u) / 255.0 - 0.5) * SQRT2;
@@ -74,7 +81,8 @@ fn decodeRotation(index: u32) -> vec4f {
 }
 
 fn decodeScale(index: u32) -> vec3f {
-  let pixel = scalesBuffer[index];
+  let scaleIndex = u32(uniforms.scalesOffset) + index;
+  let pixel = scalesBuffer[scaleIndex];
   let scaleOffset = u32(uniforms.scaleCodebookOffset);
   return vec3f(
     scaleCodebookBuffer[scaleOffset + chan(pixel, 0u)],

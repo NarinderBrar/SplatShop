@@ -19,7 +19,7 @@ const DEFAULT_BUCKET_COUNT = 16;
 const DEFAULT_RASTER_PREVIEW_BUCKET_COUNT = 64;
 const MAX_BUCKET_COUNT = 256;
 const MAX_TILES = 8192;
-const PARAM_FLOAT_COUNT = 28;
+const PARAM_FLOAT_COUNT = 29;
 
 const getRasterPreviewQuality = (): "fast" | "balanced" | "quality" => {
   const value = new URLSearchParams(window.location.search).get("computeTileRasterQuality");
@@ -108,6 +108,7 @@ class ComputeTileOrderPass {
     private readonly tileStatsPass: ComputeTileStatsPass,
     private readonly splatCount: number,
     private readonly ordinalToPackedBuffer?: StorageBuffer,
+    private readonly centerOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     const bucketValueCount = MAX_TILES * this.bucketCount;
@@ -243,6 +244,7 @@ class ComputeTileOrderPass {
     this.paramsData[25] = this.bucketCount;
     this.paramsData[26] = Number.isFinite(minDepth) ? minDepth : 0;
     this.paramsData[27] = Number.isFinite(maxDepth) && maxDepth > minDepth ? maxDepth : minDepth + 1;
+    this.paramsData[28] = this.centerOffset;
     this.params.update(this.paramsData);
 
     const bucketValueCount = tileStats.tileCount * this.bucketCount;

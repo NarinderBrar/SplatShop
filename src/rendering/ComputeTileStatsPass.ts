@@ -68,7 +68,7 @@ class ComputeTileStatsPass {
   private readonly tileCursors: StorageBuffer;
   private readonly tileSplatList: StorageBuffer;
   private readonly params: StorageBuffer;
-  private readonly paramsData = new Float32Array(24);
+  private readonly paramsData = new Float32Array(25);
   private readPending = false;
   private stats: ComputeTileStats;
 
@@ -77,6 +77,7 @@ class ComputeTileStatsPass {
     private readonly centerBuffer: StorageBuffer,
     private readonly splatCount: number,
     private readonly tileSize = DEFAULT_TILE_SIZE,
+    private readonly centerOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     const countersData = new Uint32Array(COUNTER_COUNT);
@@ -237,6 +238,7 @@ class ComputeTileStatsPass {
     this.paramsData[21] = Math.min(this.splatCount, Math.max(0, Math.floor(splatCount)));
     this.paramsData[22] = COUNTER_COUNT;
     this.paramsData[23] = tileCount;
+    this.paramsData[24] = this.centerOffset;
     this.params.update(this.paramsData);
 
     const cleared = this.clearShader.dispatch(Math.ceil(COUNTER_COUNT / WORKGROUP_SIZE));

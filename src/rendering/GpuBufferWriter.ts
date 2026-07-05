@@ -155,6 +155,19 @@ class GpuBufferWriter {
   }
 
   allocateFloat32ArenaBuffer(key: string, name: string, data: Float32Array): GpuBufferWriterArenaAllocation {
+    return this.allocateArenaBuffer(key, name, data, Float32Array.BYTES_PER_ELEMENT);
+  }
+
+  allocateUint32ArenaBuffer(key: string, name: string, data: Uint32Array): GpuBufferWriterArenaAllocation {
+    return this.allocateArenaBuffer(key, name, data, Uint32Array.BYTES_PER_ELEMENT);
+  }
+
+  private allocateArenaBuffer(
+    key: string,
+    name: string,
+    data: Uint32Array | Float32Array,
+    bytesPerElement: number,
+  ): GpuBufferWriterArenaAllocation {
     this.totalUploadCount++;
     this.frameUploadCount++;
     this.totalUploadBytes += data.byteLength;
@@ -190,7 +203,7 @@ class GpuBufferWriter {
     return {
       key,
       buffer: segment.buffer,
-      elementOffset: byteOffset / Float32Array.BYTES_PER_ELEMENT,
+      elementOffset: byteOffset / bytesPerElement,
       elementLength: data.length,
       byteOffset,
       byteLength,

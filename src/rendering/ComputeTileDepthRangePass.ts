@@ -11,7 +11,7 @@ import ComputeTileDepthRangePass_DEPTH_RANGE_SOURCE_raw from "./shaders/compute-
 
 const WORKGROUP_SIZE = 64;
 const MAX_TILES = 8192;
-const PARAM_FLOAT_COUNT = 24;
+const PARAM_FLOAT_COUNT = 25;
 const MAX_TILE_DEPTH_SAMPLES = 4096;
 
 const DEPTH_RANGE_SOURCE = ComputeTileDepthRangePass_DEPTH_RANGE_SOURCE_raw.replaceAll("__DEPTH_RANGE_SOURCE_EXPR_0__", String(WORKGROUP_SIZE)).replaceAll("__DEPTH_RANGE_SOURCE_EXPR_1__", String(MAX_TILES)).replaceAll("__DEPTH_RANGE_SOURCE_EXPR_2__", String(MAX_TILE_DEPTH_SAMPLES)).replaceAll("__DEPTH_RANGE_SOURCE_EXPR_3__", String(MAX_TILE_DEPTH_SAMPLES));
@@ -64,6 +64,7 @@ class ComputeTileDepthRangePass {
     private readonly centerBuffer: StorageBuffer,
     private readonly tileStatsPass: ComputeTileStatsPass,
     private readonly splatCount: number,
+    private readonly centerOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     const depthRangeData = new Float32Array(MAX_TILES * 4);
@@ -117,6 +118,7 @@ class ComputeTileDepthRangePass {
     }
     this.paramsData[21] = Math.min(this.splatCount, Math.max(0, Math.floor(splatCount)));
     this.paramsData[23] = tileStats.tileCount;
+    this.paramsData[24] = this.centerOffset;
     this.params.update(this.paramsData);
 
     const dispatched = this.shader.dispatch(Math.ceil(tileStats.tileCount / WORKGROUP_SIZE));

@@ -15,7 +15,8 @@ fn transformCenter(center: vec3f) -> vec4f {
 }
 
 fn tileAndBucket(index: u32) -> vec2u {
-  let clip = transformCenter(centerBuffer[index].xyz);
+  let centerOffset = u32(paramsBuffer[28]);
+  let clip = transformCenter(centerBuffer[centerOffset + index].xyz);
   if (clip.w <= 0.000001) {
     return vec2u(4294967295u);
   }

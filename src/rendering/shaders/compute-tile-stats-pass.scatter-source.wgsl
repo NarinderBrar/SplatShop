@@ -22,7 +22,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
     return;
   }
 
-  let clip = transformCenter(centerBuffer[index].xyz);
+  let centerOffset = u32(paramsBuffer[24]);
+  let clip = transformCenter(centerBuffer[centerOffset + index].xyz);
   if (clip.w <= 0.000001) {
     return;
   }

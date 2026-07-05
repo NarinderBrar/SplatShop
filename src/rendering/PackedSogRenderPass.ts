@@ -509,6 +509,8 @@ class PackedSogRenderPass {
       this.sogBuffers.packed.numSplats,
       this.sogBuffers.packed.boundsMin,
       this.sogBuffers.packed.boundsMax,
+      20,
+      this.sogBuffers.storageOffsets.centers,
     );
   }
 
@@ -517,7 +519,13 @@ class PackedSogRenderPass {
     if (!storage || this.rendererBackend.effective !== "compute" || !ComputeTileStatsPass.isSupported(scene)) {
       return undefined;
     }
-    return new ComputeTileStatsPass(scene, storage.centers, this.sogBuffers.packed.numSplats);
+    return new ComputeTileStatsPass(
+      scene,
+      storage.centers,
+      this.sogBuffers.packed.numSplats,
+      undefined,
+      this.sogBuffers.storageOffsets.centers,
+    );
   }
 
   private createComputeTileDensityOverlayPass(scene: Scene): ComputeTileDensityOverlayPass | undefined {
@@ -543,6 +551,7 @@ class PackedSogRenderPass {
       storage.centers,
       this.computeTileStatsPass,
       this.sogBuffers.packed.numSplats,
+      this.sogBuffers.storageOffsets.centers,
     );
   }
 
@@ -575,6 +584,8 @@ class PackedSogRenderPass {
       storage.centers,
       this.computeTileStatsPass,
       this.sogBuffers.packed.numSplats,
+      undefined,
+      this.sogBuffers.storageOffsets.centers,
     );
   }
 
@@ -599,9 +610,12 @@ class PackedSogRenderPass {
       scene,
       {
         centerBuffer: storage.centers,
+        sogCenterOffset: this.sogBuffers.storageOffsets.centers,
         sogQuatBuffer: storage.quats,
         colorBuffer: storage.color,
         sogScalesBuffer: storage.scales,
+        sogQuatOffset: this.sogBuffers.storageOffsets.quats,
+        sogScalesOffset: this.sogBuffers.storageOffsets.scales,
         sogScaleCodebookBuffer: storage.scaleCodebook,
         sogScaleCodebookOffset: this.sogBuffers.storageOffsets.scaleCodebook,
         splatRadiusScale: 2.0,
@@ -625,10 +639,13 @@ class PackedSogRenderPass {
       scene,
       {
         centerBuffer: storage.centers,
+        sogCenterOffset: this.sogBuffers.storageOffsets.centers,
         tileSplatListBuffer: this.computeTileOrderPass?.getOrderedTileSplatListBuffer(),
         sogQuatBuffer: storage.quats,
         colorBuffer: storage.color,
         sogScalesBuffer: storage.scales,
+        sogQuatOffset: this.sogBuffers.storageOffsets.quats,
+        sogScalesOffset: this.sogBuffers.storageOffsets.scales,
         sogScaleCodebookBuffer: storage.scaleCodebook,
         sogScaleCodebookOffset: this.sogBuffers.storageOffsets.scaleCodebook,
         splatRadiusScale: 2.0,
@@ -1224,6 +1241,10 @@ class PackedSogRenderPass {
           "vizMode",
           "meansMin",
           "meansMax",
+          "meansLOffset",
+          "meansUOffset",
+          "quatsOffset",
+          "scalesOffset",
           "scaleCodebookOffset",
         ],
         storageBuffers: [
@@ -1251,7 +1272,7 @@ class PackedSogRenderPass {
     material.setFloat("vizMode", 0);
     material.setVector3("meansMin", Vector3.FromArray(this.sogBuffers.packed.meansMins));
     material.setVector3("meansMax", Vector3.FromArray(this.sogBuffers.packed.meansMaxs));
-    material.setFloat("scaleCodebookOffset", this.sogBuffers.storageOffsets.scaleCodebook);
+    this.setStorageOffsetUniforms(material);
     return material;
   }
 
@@ -1270,8 +1291,16 @@ class PackedSogRenderPass {
     }
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", storage.state);
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "scaleCodebookBuffer", storage.scaleCodebook);
-    this.material.setFloat("scaleCodebookOffset", this.sogBuffers.storageOffsets.scaleCodebook);
+    this.setStorageOffsetUniforms(this.material);
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "indexBuffer", storage.indices);
+  }
+
+  private setStorageOffsetUniforms(material: ShaderMaterial): void {
+    material.setFloat("meansLOffset", this.sogBuffers.storageOffsets.meansL);
+    material.setFloat("meansUOffset", this.sogBuffers.storageOffsets.meansU);
+    material.setFloat("quatsOffset", this.sogBuffers.storageOffsets.quats);
+    material.setFloat("scalesOffset", this.sogBuffers.storageOffsets.scales);
+    material.setFloat("scaleCodebookOffset", this.sogBuffers.storageOffsets.scaleCodebook);
   }
 
   private buildGeometry(): void {

@@ -28,6 +28,11 @@ type SogStorageBuffers = {
 };
 
 type SogStorageBufferOffsets = {
+  centers: number;
+  meansL: number;
+  meansU: number;
+  quats: number;
+  scales: number;
   scaleCodebook: number;
 };
 
@@ -49,6 +54,11 @@ class SogBuffers {
   readonly stats: SogBufferStats;
   readonly storage: Nullable<SogStorageBuffers>;
   readonly storageOffsets: SogStorageBufferOffsets = {
+    centers: 0,
+    meansL: 0,
+    meansU: 0,
+    quats: 0,
+    scales: 0,
     scaleCodebook: 0,
   };
   readonly bufferVersions = new BufferVersionTracker();
@@ -57,6 +67,7 @@ class SogBuffers {
 
   private readonly writer: GpuBufferWriter | undefined;
   private readonly poolKey: string | undefined;
+  private readonly arenaAllocations = new Map<keyof SogStorageBufferOffsets, GpuBufferWriterArenaAllocation>();
   private scaleCodebookArenaAllocation: GpuBufferWriterArenaAllocation | undefined;
 
   constructor(engine: unknown, readonly packed: SogPackedData, writer?: GpuBufferWriter, poolKey?: string) {
@@ -89,16 +100,16 @@ class SogBuffers {
       return;
     }
 
-    this.releaseStorageBuffer("SogMeansL", this.storage.meansL);
-    this.releaseStorageBuffer("SogMeansU", this.storage.meansU);
-    this.releaseStorageBuffer("SogQuats", this.storage.quats);
-    this.releaseStorageBuffer("SogScales", this.storage.scales);
+    this.releaseArenaStorageBuffer("meansL", "SogMeansL", this.storage.meansL);
+    this.releaseArenaStorageBuffer("meansU", "SogMeansU", this.storage.meansU);
+    this.releaseArenaStorageBuffer("quats", "SogQuats", this.storage.quats);
+    this.releaseArenaStorageBuffer("scales", "SogScales", this.storage.scales);
     this.releaseStorageBuffer("SogSh0", this.storage.sh0);
     this.releaseStorageBuffer("SogColor", this.storage.color);
     this.releaseStorageBuffer("SogStateDefault", this.storage.state);
     this.releaseScaleCodebookBuffer(this.storage.scaleCodebook);
     this.releaseStorageBuffer("SogSh0Codebook", this.storage.sh0Codebook);
-    this.releaseStorageBuffer("SogCenters", this.storage.centers);
+    this.releaseArenaStorageBuffer("centers", "SogCenters", this.storage.centers);
     this.releaseStorageBuffer("SogDepthKeys", this.storage.depthKeys);
     this.releaseStorageBuffer("SogSortBucketCounts", this.storage.sortBucketCounts);
     this.releaseStorageBuffer("SogSortBucketOffsets", this.storage.sortBucketOffsets);
@@ -132,16 +143,16 @@ class SogBuffers {
     const sortScratchIndices = new Uint32Array(this.packed.numSplats);
 
     const buffers: SogStorageBuffers = {
-      meansL: make("SogMeansL", this.packed.meansL),
-      meansU: make("SogMeansU", this.packed.meansU),
-      quats: make("SogQuats", this.packed.quats),
-      scales: make("SogScales", this.packed.scales),
+      meansL: this.makeArenaStorageBuffer("meansL", "SogMeansL", this.packed.meansL, make),
+      meansU: this.makeArenaStorageBuffer("meansU", "SogMeansU", this.packed.meansU, make),
+      quats: this.makeArenaStorageBuffer("quats", "SogQuats", this.packed.quats, make),
+      scales: this.makeArenaStorageBuffer("scales", "SogScales", this.packed.scales, make),
       sh0: make("SogSh0", this.packed.sh0),
       color: make("SogColor", this.colorData),
       state: make("SogStateDefault", state),
       scaleCodebook: this.makeScaleCodebookBuffer(make),
       sh0Codebook: make("SogSh0Codebook", this.packed.sh0Codebook),
-      centers: make("SogCenters", centers),
+      centers: this.makeFloat32ArenaStorageBuffer("centers", "SogCenters", centers, make),
       depthKeys: make("SogDepthKeys", depthKeys),
       sortBucketCounts: make("SogSortBucketCounts", sortBucketCounts),
       sortBucketOffsets: make("SogSortBucketOffsets", sortBucketOffsets),
@@ -156,6 +167,40 @@ class SogBuffers {
 
     this.bufferVersions.trackAll(buffers as unknown as Record<string, StorageBuffer | undefined>);
     return buffers;
+  }
+
+  private makeArenaStorageBuffer(
+    offsetKey: keyof SogStorageBufferOffsets,
+    name: string,
+    data: Uint32Array,
+    make: (name: string, data: Uint32Array | Float32Array) => StorageBuffer,
+  ): StorageBuffer {
+    if (this.writer && this.poolKey) {
+      const allocation = this.writer.allocateUint32ArenaBuffer(`${this.poolKey}:${offsetKey}`, name, data);
+      this.arenaAllocations.set(offsetKey, allocation);
+      this.storageOffsets[offsetKey] = allocation.elementOffset;
+      return allocation.buffer;
+    }
+
+    this.storageOffsets[offsetKey] = 0;
+    return make(name, data);
+  }
+
+  private makeFloat32ArenaStorageBuffer(
+    offsetKey: keyof SogStorageBufferOffsets,
+    name: string,
+    data: Float32Array,
+    make: (name: string, data: Uint32Array | Float32Array) => StorageBuffer,
+  ): StorageBuffer {
+    if (this.writer && this.poolKey) {
+      const allocation = this.writer.allocateFloat32ArenaBuffer(`${this.poolKey}:${offsetKey}`, name, data);
+      this.arenaAllocations.set(offsetKey, allocation);
+      this.storageOffsets[offsetKey] = allocation.elementOffset;
+      return allocation.buffer;
+    }
+
+    this.storageOffsets[offsetKey] = 0;
+    return make(name, data);
   }
 
   private makeScaleCodebookBuffer(make: (name: string, data: Uint32Array | Float32Array) => StorageBuffer): StorageBuffer {
@@ -252,6 +297,16 @@ class SogBuffers {
     } else {
       buffer.dispose();
     }
+  }
+
+  private releaseArenaStorageBuffer(offsetKey: keyof SogStorageBufferOffsets, name: string, buffer: StorageBuffer): void {
+    const allocation = this.arenaAllocations.get(offsetKey);
+    if (this.writer && allocation) {
+      this.writer.releaseArenaAllocation(allocation);
+      this.arenaAllocations.delete(offsetKey);
+      return;
+    }
+    this.releaseStorageBuffer(name, buffer);
   }
 
   private releaseScaleCodebookBuffer(buffer: StorageBuffer): void {

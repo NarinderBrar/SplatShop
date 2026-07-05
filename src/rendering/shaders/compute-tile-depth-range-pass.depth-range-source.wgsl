@@ -40,7 +40,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
     if (splatIndex >= splatCount) {
       continue;
     }
-    let clip = transformCenter(centerBuffer[splatIndex].xyz);
+    let centerOffset = u32(paramsBuffer[24]);
+    let clip = transformCenter(centerBuffer[centerOffset + splatIndex].xyz);
     if (clip.w <= 0.000001) {
       continue;
     }

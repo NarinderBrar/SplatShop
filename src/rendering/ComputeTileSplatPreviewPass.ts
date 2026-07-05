@@ -270,6 +270,7 @@ type ComputeTileSplatPreviewStats = {
 
 type ComputeTileSplatPreviewOptions = {
   centerBuffer: StorageBuffer;
+  sogCenterOffset?: number;
   tileSplatListBuffer?: StorageBuffer;
   sogChunkInfoBuffer?: StorageBuffer;
   scaleBuffer?: StorageBuffer;
@@ -277,6 +278,8 @@ type ComputeTileSplatPreviewOptions = {
   colorBuffer?: StorageBuffer;
   sogQuatBuffer?: StorageBuffer;
   sogScalesBuffer?: StorageBuffer;
+  sogQuatOffset?: number;
+  sogScalesOffset?: number;
   sogScaleCodebookBuffer?: StorageBuffer;
   sogScaleCodebookOffset?: number;
   splatRadiusScale?: number;
@@ -498,6 +501,9 @@ uniform maxMarkerPixels: f32;
 uniform useGaussianShape: f32;
   uniform sampleAlphaCompensation: f32;
   uniform samplePassCount: f32;
+  uniform sogCenterOffset: f32;
+  uniform sogQuatOffset: f32;
+  uniform sogScalesOffset: f32;
   uniform sogScaleCodebookOffset: f32;
 
 var<storage, read> centerBuffer: array<vec4f>;
@@ -549,14 +555,29 @@ ${mode === "globalSog" ? `  let chunk = splatEntry >> 24u;
 ${mode !== "globalSog" ? "  return splatEntry;" : ""}
 }
 
+fn centerBufferIndex(splatEntry: u32) -> u32 {
+${mode === "globalSog" ? "  return sourceIndex(splatEntry);" : ""}
+${mode !== "globalSog" ? "  return u32(uniforms.sogCenterOffset) + splatEntry;" : ""}
+}
+
 fn scaleCodebookOffset(splatEntry: u32) -> u32 {
 ${mode === "globalSog" ? `  let chunk = splatEntry >> 24u;
   return u32(chunkInfoBuffer[chunk * 2u + 1u].w);` : ""}
 ${mode !== "globalSog" ? "  return u32(uniforms.sogScaleCodebookOffset);" : ""}
 }
 
+fn quatBufferIndex(index: u32) -> u32 {
+${mode === "globalSog" ? "  return index;" : ""}
+${mode !== "globalSog" ? "  return u32(uniforms.sogQuatOffset) + index;" : ""}
+}
+
+fn scalesBufferIndex(index: u32) -> u32 {
+${mode === "globalSog" ? "  return index;" : ""}
+${mode !== "globalSog" ? "  return u32(uniforms.sogScalesOffset) + index;" : ""}
+}
+
 fn decodeLogRadius(index: u32, fallback: f32, splatEntry: u32) -> f32 {
-${mode === "sog" || mode === "globalSog" ? `  let pixel = scalesBuffer[index];
+${mode === "sog" || mode === "globalSog" ? `  let pixel = scalesBuffer[scalesBufferIndex(index)];
   let scaleOffset = scaleCodebookOffset(splatEntry);
   return max(
     max(scaleCodebookBuffer[scaleOffset + chan(pixel, 0u)], scaleCodebookBuffer[scaleOffset + chan(pixel, 1u)]),
@@ -567,7 +588,7 @@ ${mode !== "sog" && mode !== "globalSog" ? "  return fallback;" : ""}
 
 ${shape === "gaussian" ? `fn decodeScale(index: u32, fallback: f32, splatEntry: u32) -> vec3f {
 ${mode === "expanded" ? "  return exp(scaleBuffer[index].xyz);" : ""}
-${mode === "sog" || mode === "globalSog" ? `  let pixel = scalesBuffer[index];
+${mode === "sog" || mode === "globalSog" ? `  let pixel = scalesBuffer[scalesBufferIndex(index)];
   let scaleOffset = scaleCodebookOffset(splatEntry);
   return exp(vec3f(
     scaleCodebookBuffer[scaleOffset + chan(pixel, 0u)],
@@ -579,7 +600,7 @@ ${mode === "debug" ? "  let scale = exp(fallback); return vec3f(scale);" : ""}
 
 fn decodeRotation(index: u32) -> vec4f {
 ${mode === "expanded" ? "  return normalize(rotationBuffer[index]);" : ""}
-${mode === "sog" || mode === "globalSog" ? `  let pixel = quatsBuffer[index];
+${mode === "sog" || mode === "globalSog" ? `  let pixel = quatsBuffer[quatBufferIndex(index)];
   let a = (chanf(pixel, 0u) / 255.0 - 0.5) * SQRT2;
   let b = (chanf(pixel, 1u) / 255.0 - 0.5) * SQRT2;
   let c = (chanf(pixel, 2u) / 255.0 - 0.5) * SQRT2;
@@ -703,7 +724,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   );
   let splatEntry = tileSplatList[tileOffset + local];
   let splatIndex = sourceIndex(splatEntry);
-  let centerAndScale = centerBuffer[splatIndex];
+  let centerAndScale = centerBuffer[centerBufferIndex(splatEntry)];
   let clip = uniforms.worldViewProjection * vec4f(centerAndScale.xyz, 1.0);
   if (clip.w <= 0.000001) {
     vertexOutputs.position = vec4f(0.0, 0.0, 2.0, 1.0);
@@ -905,6 +926,9 @@ class ComputeTileSplatPreviewPass {
           "useGaussianShape",
           "sampleAlphaCompensation",
           "samplePassCount",
+          "sogCenterOffset",
+          "sogQuatOffset",
+          "sogScalesOffset",
           "sogScaleCodebookOffset",
           "minAlpha",
           "maxAlpha",
@@ -992,6 +1016,9 @@ class ComputeTileSplatPreviewPass {
     this.material.setFloat("useGaussianShape", this.shapeMode === "gaussian" ? 1.0 : 0.0);
     this.material.setFloat("sampleAlphaCompensation", this.sampleAlphaCompensation);
     this.material.setFloat("samplePassCount", this.staticSamplePasses);
+    this.material.setFloat("sogCenterOffset", options.sogCenterOffset ?? 0);
+    this.material.setFloat("sogQuatOffset", options.sogQuatOffset ?? 0);
+    this.material.setFloat("sogScalesOffset", options.sogScalesOffset ?? 0);
     this.material.setFloat("sogScaleCodebookOffset", options.sogScaleCodebookOffset ?? 0);
     this.material.setFloat("minAlpha", this.alphaMode === "splat" ? 0.0 : 0.08);
     this.material.setFloat("maxAlpha", this.alphaMode === "splat" ? 1.0 : 0.92);
