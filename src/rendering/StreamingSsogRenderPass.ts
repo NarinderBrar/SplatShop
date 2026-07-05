@@ -757,6 +757,9 @@ const getSsogGpuChunkVisibilityMode = (): SsogGpuChunkVisibilityMode => {
   if (value === "false" || value === "off") {
     return "off";
   }
+  if (value === "true" || value === "debug") {
+    return "debug";
+  }
   if (value === "drive") {
     return "drive";
   }

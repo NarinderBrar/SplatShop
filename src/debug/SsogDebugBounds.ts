@@ -1,14 +1,39 @@
-import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Material } from "@babylonjs/core/Materials/material";
+import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
+import { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
-import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
-import "@babylonjs/core/Rendering/edgesRenderer";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 
 import type { SsogChunkEntry } from "../splat/SplatAsset";
 
 type DebugChunkBoundStyle = "unloaded" | "loaded-waiting";
+
+const VERTEX_SOURCE = `
+attribute position: vec3f;
+attribute color: vec4f;
+
+uniform worldViewProjection: mat4x4f;
+
+varying vColor: vec4f;
+
+@vertex
+fn main(input: VertexInputs) -> FragmentInputs {
+  vertexOutputs.position = uniforms.worldViewProjection * vec4f(vertexInputs.position, 1.0);
+  vertexOutputs.vColor = vertexInputs.color;
+}
+`;
+
+const FRAGMENT_SOURCE = `
+varying vColor: vec4f;
+
+@fragment
+fn main(input: FragmentInputs) -> FragmentOutputs {
+  fragmentOutputs.color = input.vColor;
+}
+`;
 
 const getColor = (key: string): Color3 => {
   let hash = 2166136261;
@@ -46,27 +71,32 @@ const getBoundLines = (entry: SsogChunkEntry): Vector3[][] => {
   return edges.map(([start, end]) => [corners[start], corners[end]]);
 };
 
-const getBoundBox = (
-  entry: SsogChunkEntry,
-): { center: Vector3; width: number; height: number; depth: number } => {
-  const min = entry.bound.min;
-  const max = entry.bound.max;
-  return {
-    center: new Vector3((min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, (min[2] + max[2]) * 0.5),
-    width: Math.max(0.001, max[0] - min[0]),
-    height: Math.max(0.001, max[1] - min[1]),
-    depth: Math.max(0.001, max[2] - min[2]),
-  };
-};
-
 class SsogDebugBounds {
   private readonly bounds = new Map<string, AbstractMesh>();
   private readonly styles = new Map<string, DebugChunkBoundStyle>();
+  private readonly material: ShaderMaterial;
   private visible = false;
 
   constructor(
     private readonly scene: Scene,
-  ) {}
+  ) {
+    this.material = new ShaderMaterial(
+      "SsogDebugBoundsMaterial",
+      scene,
+      {
+        vertexSource: VERTEX_SOURCE,
+        fragmentSource: FRAGMENT_SOURCE,
+      },
+      {
+        attributes: ["position", "color"],
+        uniforms: ["worldViewProjection"],
+        needAlphaBlending: true,
+        shaderLanguage: ShaderLanguage.WGSL,
+      },
+    );
+    this.material.fillMode = Material.LineListDrawMode;
+    this.material.disableDepthWrite = true;
+  }
 
   get isVisible(): boolean {
     return this.visible;
@@ -96,7 +126,6 @@ class SsogDebugBounds {
       return;
     }
 
-    mesh.material?.dispose();
     mesh.dispose();
     this.bounds.delete(key);
     this.styles.delete(key);
@@ -108,47 +137,42 @@ class SsogDebugBounds {
 
   disposeAll(): void {
     this.bounds.forEach((mesh) => {
-      mesh.material?.dispose();
       mesh.dispose();
     });
     this.bounds.clear();
     this.styles.clear();
+    this.material.dispose();
   }
 
   private create(key: string, entry: SsogChunkEntry, style: DebugChunkBoundStyle): void {
     this.styles.set(key, style);
-    const color = getColor(key);
-
-    if (style === "unloaded") {
-      const mesh = MeshBuilder.CreateLineSystem(
-        `ssog-debug-bound-${key}`,
-        { lines: getBoundLines(entry) },
-        this.scene,
-      );
-      mesh.color = color;
-      mesh.isPickable = false;
-      mesh.alwaysSelectAsActiveMesh = true;
-      mesh.setEnabled(this.visible);
-      this.bounds.set(key, mesh);
-      return;
+    const baseColor = getColor(key);
+    const color = style === "loaded-waiting" ? baseColor.scale(0.65) : baseColor;
+    const lines = getBoundLines(entry);
+    const positions = new Float32Array(lines.length * 2 * 3);
+    const colors = new Float32Array(lines.length * 2 * 4);
+    const indices = new Uint32Array(lines.length * 2);
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex];
+      for (let pointIndex = 0; pointIndex < 2; pointIndex++) {
+        const vertexIndex = lineIndex * 2 + pointIndex;
+        const point = line[pointIndex];
+        positions[vertexIndex * 3 + 0] = point.x;
+        positions[vertexIndex * 3 + 1] = point.y;
+        positions[vertexIndex * 3 + 2] = point.z;
+        colors[vertexIndex * 4 + 0] = color.r;
+        colors[vertexIndex * 4 + 1] = color.g;
+        colors[vertexIndex * 4 + 2] = color.b;
+        colors[vertexIndex * 4 + 3] = style === "loaded-waiting" ? 0.65 : 1;
+        indices[vertexIndex] = vertexIndex;
+      }
     }
 
-    const box = getBoundBox(entry);
-    const mesh = MeshBuilder.CreateBox(
-      `ssog-debug-loaded-bound-${key}`,
-      { width: box.width, height: box.height, depth: box.depth },
-      this.scene,
-    );
-    mesh.position.copyFrom(box.center);
-    const material = new StandardMaterial(`ssog-debug-loaded-bound-material-${key}`, this.scene);
-    material.diffuseColor = color;
-    material.emissiveColor = color.scale(0.45);
-    material.alpha = 0.08;
-    material.disableLighting = true;
-    mesh.material = material;
-    mesh.enableEdgesRendering();
-    mesh.edgesWidth = 6;
-    mesh.edgesColor = new Color4(color.r, color.g, color.b, 0.9);
+    const mesh = new Mesh(`ssog-debug-bound-${style}-${key}`, this.scene);
+    mesh.setVerticesData("position", positions, false, 3);
+    mesh.setVerticesData("color", colors, false, 4);
+    mesh.setIndices(indices);
+    mesh.material = this.material;
     mesh.isPickable = false;
     mesh.alwaysSelectAsActiveMesh = true;
     mesh.setEnabled(this.visible);
