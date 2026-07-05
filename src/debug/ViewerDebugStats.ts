@@ -356,6 +356,15 @@ class ViewerDebugStats {
       frustumVisibleChunks?: number;
       frustumCulledChunks?: number;
       frustumMargin?: number;
+      gpuChunkVisibilitySupported?: boolean;
+      gpuChunkVisibilityEnabled?: boolean;
+      gpuChunkVisibilityDispatched?: boolean;
+      gpuChunkVisibilityPending?: boolean;
+      gpuChunkVisibilityChunks?: number;
+      gpuChunkVisibilityVisibleChunks?: number;
+      gpuChunkVisibilityCulledChunks?: number;
+      gpuChunkVisibilityMismatch?: number;
+      lastGpuChunkVisibilityMs?: number;
       prefetchCandidateChunks?: number;
       prefetchFrustumChunks?: number;
       nearPrefetchChunks?: number;
@@ -490,6 +499,9 @@ class ViewerDebugStats {
       `Chunks: ${formatCount(renderStats.activeChunks)} / ${formatCount(renderStats.chunkCount)}`,
       streamingStats.candidateChunks !== undefined
         ? `Frustum: ${formatCount(streamingStats.frustumVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.frustumCulledChunks ?? 0)} culled / ${formatCount(streamingStats.candidateChunks)} candidates / margin ${(streamingStats.frustumMargin ?? 1).toFixed(2)}`
+        : "",
+      streamingStats.gpuChunkVisibilitySupported
+        ? `GPU chunk visibility: ${streamingStats.gpuChunkVisibilityDispatched ? "yes" : streamingStats.gpuChunkVisibilityEnabled ? "pending" : "off"}${streamingStats.gpuChunkVisibilityPending ? " / readback" : ""} / ${formatCount(streamingStats.gpuChunkVisibilityVisibleChunks ?? 0)} visible / ${formatCount(streamingStats.gpuChunkVisibilityCulledChunks ?? 0)} culled / ${formatCount(streamingStats.gpuChunkVisibilityChunks ?? 0)} chunks / mismatch ${formatCount(streamingStats.gpuChunkVisibilityMismatch ?? 0)} / ${formatMs(streamingStats.lastGpuChunkVisibilityMs ?? 0)} ms`
         : "",
       streamingStats.prefetchCandidateChunks !== undefined
         ? `Prefetch candidates: ${formatCount(streamingStats.prefetchCandidateChunks)} total / ${formatCount(streamingStats.prefetchFrustumChunks ?? 0)} expanded-frustum / ${formatCount(streamingStats.nearPrefetchChunks ?? 0)} near-camera / margin ${(streamingStats.prefetchFrustumMargin ?? 0).toFixed(2)} / near ${(streamingStats.nearPrefetchDistance ?? 0).toFixed(1)}`

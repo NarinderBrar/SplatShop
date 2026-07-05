@@ -13,6 +13,7 @@ import { SsogDebugBounds } from "../debug/SsogDebugBounds";
 import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRenderPass";
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
+import { SsogGpuChunkVisibilityPass, type SsogGpuChunkVisibilityStats } from "./SsogGpuChunkVisibilityPass";
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 import { GpuBufferWriter } from "./GpuBufferWriter";
 import {
@@ -149,6 +150,15 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   frustumVisibleChunks: number;
   frustumCulledChunks: number;
   frustumMargin: number;
+  gpuChunkVisibilitySupported: boolean;
+  gpuChunkVisibilityEnabled: boolean;
+  gpuChunkVisibilityDispatched: boolean;
+  gpuChunkVisibilityPending: boolean;
+  gpuChunkVisibilityChunks: number;
+  gpuChunkVisibilityVisibleChunks: number;
+  gpuChunkVisibilityCulledChunks: number;
+  gpuChunkVisibilityMismatch: number;
+  lastGpuChunkVisibilityMs: number;
   prefetchCandidateChunks: number;
   prefetchFrustumChunks: number;
   nearPrefetchChunks: number;
@@ -834,6 +844,7 @@ class StreamingSsogRenderPass {
   private readonly decodedCacheSplatLimit: number;
   private readonly gpuPagePool: SsogGpuPagePool;
   private readonly gpuBufferWriter: GpuBufferWriter | undefined;
+  private readonly gpuChunkVisibilityPass?: SsogGpuChunkVisibilityPass;
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 220);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
@@ -966,6 +977,9 @@ class StreamingSsogRenderPass {
     );
     const engine = this.scene.getEngine();
     this.gpuBufferWriter = engine instanceof WebGPUEngine ? new GpuBufferWriter(engine, "ssog-streaming") : undefined;
+    this.gpuChunkVisibilityPass = SsogGpuChunkVisibilityPass.isSupported(scene)
+      ? new SsogGpuChunkVisibilityPass(scene, entries)
+      : undefined;
     this.updateObserver = () => this.updateLodSelection();
     scene.registerBeforeRender(this.updateObserver);
     this.updateLodSelection(true);
@@ -984,6 +998,7 @@ class StreamingSsogRenderPass {
     this.disposeExpandedRuntime();
     this.debugBounds.disposeAll();
     this.gpuBufferWriter?.dispose();
+    this.gpuChunkVisibilityPass?.dispose();
     this.gpuLoaded.clear();
     this.decodedCache.clear();
     this.pending.clear();
@@ -1038,6 +1053,7 @@ class StreamingSsogRenderPass {
     const packedMetadata = this.getActivePackedMetadataStats();
     const gpuPagePoolStats = this.gpuPagePool.getStats();
     const gpuBufferWriterStats = this.gpuBufferWriter?.getStats();
+    const gpuChunkVisibilityStats = this.getGpuChunkVisibilityStats();
     const selectedKeys = Array.from(this.selectedKeys);
     const gpuActiveChunks = Array.from(this.gpuLoaded.values()).filter((gpu) => gpu.active).length;
     const activeStats = [
@@ -1474,6 +1490,7 @@ class StreamingSsogRenderPass {
       frustumVisibleChunks: this.frustumVisibleChunks,
       frustumCulledChunks: this.frustumCulledChunks,
       frustumMargin: getPositiveNumberParam("frustumMargin", 1),
+      ...gpuChunkVisibilityStats,
       prefetchCandidateChunks: this.prefetchCandidateChunks,
       prefetchFrustumChunks: this.prefetchFrustumChunks,
       nearPrefetchChunks: this.nearPrefetchChunks,
@@ -1486,6 +1503,44 @@ class StreamingSsogRenderPass {
       rendererCommandPoolGrows: this.rendererCommandQueue.poolGrows,
       prefetchFrustumMargin: getSsogPrefetchFrustumMargin(),
       nearPrefetchDistance: getSsogNearPrefetchDistance(),
+    };
+  }
+
+  private updateGpuChunkVisibility(frustumPlanes: Plane[] | undefined, frustumMargin: number): void {
+    if (!this.gpuChunkVisibilityPass) {
+      return;
+    }
+    if (!frustumPlanes) {
+      this.gpuChunkVisibilityPass.markSkipped(this.entries.length, 0);
+      return;
+    }
+    this.gpuChunkVisibilityPass.dispatch(frustumPlanes, frustumMargin);
+  }
+
+  private getGpuChunkVisibilityStats(): Pick<
+    StreamingSsogRenderStats,
+    | "gpuChunkVisibilitySupported"
+    | "gpuChunkVisibilityEnabled"
+    | "gpuChunkVisibilityDispatched"
+    | "gpuChunkVisibilityPending"
+    | "gpuChunkVisibilityChunks"
+    | "gpuChunkVisibilityVisibleChunks"
+    | "gpuChunkVisibilityCulledChunks"
+    | "gpuChunkVisibilityMismatch"
+    | "lastGpuChunkVisibilityMs"
+  > {
+    const stats: SsogGpuChunkVisibilityStats | undefined = this.gpuChunkVisibilityPass?.getStats();
+    const visibleChunks = stats?.visibleChunks ?? 0;
+    return {
+      gpuChunkVisibilitySupported: !!this.gpuChunkVisibilityPass,
+      gpuChunkVisibilityEnabled: stats?.enabled ?? false,
+      gpuChunkVisibilityDispatched: stats?.dispatched ?? false,
+      gpuChunkVisibilityPending: stats?.readbackPending ?? false,
+      gpuChunkVisibilityChunks: stats?.chunkCount ?? this.entries.length,
+      gpuChunkVisibilityVisibleChunks: visibleChunks,
+      gpuChunkVisibilityCulledChunks: stats?.culledChunks ?? 0,
+      gpuChunkVisibilityMismatch: stats?.dispatched ? Math.abs(visibleChunks - this.frustumVisibleChunks) : 0,
+      lastGpuChunkVisibilityMs: stats?.lastDispatchMs ?? 0,
     };
   }
 
@@ -1690,6 +1745,7 @@ class StreamingSsogRenderPass {
     this.candidateChunks = this.entries.length;
     this.frustumVisibleChunks = this.visibleEntryIndices.length;
     this.frustumCulledChunks = this.entries.length - this.visibleEntryIndices.length;
+    this.updateGpuChunkVisibility(frustumPlanes, frustumMargin);
     this.prefetchFrustumChunks = this.prefetchFrustumEntryIndices.length;
     this.nearPrefetchChunks = this.nearPrefetchEntryIndices.length;
     this.prefetchCandidateChunks = this.prefetchEntryIndices.length;
