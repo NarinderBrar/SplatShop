@@ -17,7 +17,7 @@ class LoadingProgress {
   private visible = false;
   private lastProgress = 0;
 
-  constructor() {
+  constructor(container: HTMLElement = document.body) {
     this.root = document.createElement("div");
     this.root.id = "loading-progress";
     this.root.innerHTML = [
@@ -29,7 +29,7 @@ class LoadingProgress {
       '  <div class="loading-progress__fill"></div>',
       "</div>",
     ].join("");
-    document.body.appendChild(this.root);
+    container.appendChild(this.root);
 
     this.title = this.root.querySelector(".loading-progress__title") as HTMLDivElement;
     this.detail = this.root.querySelector(".loading-progress__detail") as HTMLDivElement;

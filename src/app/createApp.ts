@@ -73,7 +73,18 @@ const toNdcPoint = (canvas: HTMLCanvasElement, point: ScreenPoint): ScreenPoint 
   };
 };
 
-const createSelectionOverlay = (tool: DragSelectionTool, start: ScreenPoint): SelectionGesture["overlay"] => {
+const createDomOverlayRoot = (): HTMLDivElement => {
+  const root = document.createElement("div");
+  root.id = "viewer-dom-overlays";
+  document.body.appendChild(root);
+  return root;
+};
+
+const createSelectionOverlay = (
+  tool: DragSelectionTool,
+  start: ScreenPoint,
+  overlayRoot: HTMLElement,
+): SelectionGesture["overlay"] => {
   if (tool === "lassoSelect") {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
@@ -81,13 +92,13 @@ const createSelectionOverlay = (tool: DragSelectionTool, start: ScreenPoint): Se
     polyline.classList.add("selection-lasso-overlay__path");
     polyline.setAttribute("points", `${start.x},${start.y}`);
     svg.appendChild(polyline);
-    document.body.appendChild(svg);
+    overlayRoot.appendChild(svg);
     return svg;
   }
 
   const overlay = document.createElement("div");
   overlay.className = `selection-gesture-overlay selection-gesture-overlay--${tool === "circleSelect" ? "circle" : "rect"}`;
-  document.body.appendChild(overlay);
+  overlayRoot.appendChild(overlay);
   return overlay;
 };
 
@@ -126,9 +137,10 @@ export async function createApp(
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.03, 0.035, 0.04, 1);
   const cameraManager = new CameraManager(canvas, scene);
+  const overlayRoot = createDomOverlayRoot();
 
-  const debugStats = new ViewerDebugStats(mode);
-  const loadingProgress = new LoadingProgress();
+  const debugStats = new ViewerDebugStats(mode, overlayRoot);
+  const loadingProgress = new LoadingProgress(overlayRoot);
   let currentSplatCloud: SplatCloud | undefined;
   status.textContent = `${mode} active. Loading SuperSplat-compatible splat path.`;
 
@@ -216,7 +228,7 @@ export async function createApp(
     }
 
     const start = toScreenPoint(event);
-    const overlay = createSelectionOverlay(activeTool, start);
+    const overlay = createSelectionOverlay(activeTool, start, overlayRoot);
     selectionGesture = {
       tool: activeTool,
       pointerId: event.pointerId,

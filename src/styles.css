@@ -27,6 +27,13 @@ body {
   touch-action: none;
 }
 
+#viewer-dom-overlays {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
 #status {
   position: fixed;
   left: 16px;

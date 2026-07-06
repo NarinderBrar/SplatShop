@@ -101,7 +101,7 @@ class ViewerDebugStats {
       this.tileOverlay = document.createElement("canvas");
       this.tileOverlay.id = "compute-tile-overlay";
       this.tileOverlayContext = this.tileOverlay.getContext("2d") ?? undefined;
-      document.body.appendChild(this.tileOverlay);
+      (container ?? document.body).appendChild(this.tileOverlay);
     }
   }
 
