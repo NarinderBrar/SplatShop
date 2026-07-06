@@ -37,6 +37,7 @@ import {
   type GpuSortVisibleMode,
   type SortMode,
 } from "./renderControls";
+import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getQualitySplatBudget } from "./qualityProfiles";
 import SplatRenderPass_GLSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.glsl-vertex-source.glsl?raw";
 import SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw from "./shaders/splat-render-pass.glsl-fragment-source.glsl?raw";
@@ -92,6 +93,15 @@ type SplatRenderStats = {
   rendererRequested: RequestedRendererMode;
   rendererEffective: EffectiveRendererMode;
   rendererFallbackReason: string;
+  reverseDepthRequested: ReverseDepthStats["reverseDepthRequested"];
+  reverseDepthActive: boolean;
+  reverseDepthSupported: boolean;
+  reverseDepthFallbackReason: string;
+  reverseDepthClearValue: number;
+  reverseDepthCompare: ReverseDepthStats["reverseDepthCompare"];
+  reverseDepthNear: number;
+  reverseDepthFar: number;
+  reverseDepthFarToNearRatio: number;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   colorMode: "dc" | "sh";
@@ -267,6 +277,7 @@ class SplatRenderPass {
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 0.15);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly rendererBackend: RendererBackend;
+  private readonly reverseDepthStats: ReverseDepthStats;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
   private readonly gpuSortPrefixSumPass?: GpuSortPrefixSumPass;
@@ -345,6 +356,11 @@ class SplatRenderPass {
     } else {
       this.buildExpandedQuadGeometry(splatBuffers);
     }
+    this.reverseDepthStats = configureReverseDepth(scene, {
+      passName: "splat",
+      depthWriteDisabled: true,
+      usesComputeDepthRanges: !!this.computeTileDepthRangePass,
+    });
 
     this.updateViewport = () => {
       const engine = scene.getEngine();
@@ -443,6 +459,7 @@ class SplatRenderPass {
       rendererRequested: this.rendererBackend.requested,
       rendererEffective: this.rendererBackend.effective,
       rendererFallbackReason: this.rendererBackend.fallbackReason,
+      ...this.reverseDepthStats,
       computeRendererEnabled: this.rendererBackend.effective === "compute",
         computeRendererPhase:
           this.rendererBackend.effective === "compute"

@@ -22,6 +22,7 @@ import { getQualityPreset } from "./qualityProfiles";
 import { getRequestedRendererMode, type EffectiveRendererMode, type RequestedRendererMode } from "./renderControls";
 import { BufferVersionTracker } from "./BufferVersionTracker";
 import { FrameDataSoA } from "./FrameDataSoA";
+import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import SsogGlobalPackedRenderPass_GPU_INDEX_GATHER_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.gpu-index-gather-source.wgsl?raw";
 import SsogGlobalPackedRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.wgsl-vertex-source.wgsl?raw";
 import SsogGlobalPackedRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.wgsl-fragment-source.wgsl?raw";
@@ -60,6 +61,15 @@ type SsogGlobalPackedStats = {
   rendererRequested: RequestedRendererMode;
   rendererEffective: EffectiveRendererMode;
   rendererFallbackReason: string;
+  reverseDepthRequested: ReverseDepthStats["reverseDepthRequested"];
+  reverseDepthActive: boolean;
+  reverseDepthSupported: boolean;
+  reverseDepthFallbackReason: string;
+  reverseDepthClearValue: number;
+  reverseDepthCompare: ReverseDepthStats["reverseDepthCompare"];
+  reverseDepthNear: number;
+  reverseDepthFar: number;
+  reverseDepthFarToNearRatio: number;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   computeRendererVisibility: string;
@@ -401,6 +411,7 @@ class SsogGlobalPackedRenderPass {
     effective: EffectiveRendererMode;
     fallbackReason: string;
   };
+  private readonly reverseDepthStats: ReverseDepthStats;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuRadixSortPass?: GpuRadixSortPass;
   private readonly gpuIndexGatherPass?: SsogGlobalPackedIndexGatherPass;
@@ -559,6 +570,12 @@ class SsogGlobalPackedRenderPass {
       }
     }
     this.colorSegmentationPass = this.createColorSegmentationPass(scene);
+    this.reverseDepthStats = configureReverseDepth(scene, {
+      passName: "ssog-global-packed",
+      depthWriteDisabled: true,
+      usesComputeDepthRanges: !!this.computeTileDepthRangePass,
+      usesHiZOcclusion: new URLSearchParams(window.location.search).get("ssogHiZOcclusion") === "drive",
+    });
     this.buildGeometry();
     this.bindStorageBuffers();
     this.setRenderCount(this.numSplats);
@@ -636,6 +653,7 @@ class SsogGlobalPackedRenderPass {
           ? "gpu"
           : this.rendererBackend.effective,
       rendererFallbackReason: this.getRendererFallbackReason(),
+      ...this.reverseDepthStats,
       computeRendererEnabled: this.rendererBackend.requested === "compute",
       computeRendererPhase: this.getComputeRendererPhase(),
       computeRendererVisibility: this.getComputeRendererVisibility(),

@@ -448,6 +448,12 @@ class ViewerDebugStats {
       `Renderer requested: ${renderStats.rendererRequested}`,
       `Renderer effective: ${renderStats.rendererEffective}`,
       renderStats.rendererFallbackReason ? `Renderer fallback: ${renderStats.rendererFallbackReason}` : "",
+      "reverseDepthRequested" in renderStats
+        ? `Reverse-Z: ${String(renderStats.reverseDepthRequested)}${renderStats.reverseDepthActive ? " active" : ""} / ${renderStats.reverseDepthSupported ? "supported" : "unsupported"} / clear ${String(renderStats.reverseDepthClearValue)} / ${String(renderStats.reverseDepthCompare)} / near ${Number(renderStats.reverseDepthNear ?? 0).toFixed(3)} far ${Number(renderStats.reverseDepthFar ?? 0).toFixed(1)} ratio ${formatCount(Number(renderStats.reverseDepthFarToNearRatio ?? 0))}`
+        : "",
+      "reverseDepthFallbackReason" in renderStats && renderStats.reverseDepthFallbackReason
+        ? `Reverse-Z fallback: ${String(renderStats.reverseDepthFallbackReason)}`
+        : "",
       renderStats.computeRendererEnabled
         ? `Compute renderer: ${renderStats.computeRendererPhase}${previewLimiterStats.computeRendererVisibility ? ` / ${previewLimiterStats.computeRendererVisibility}` : ""}`
         : "",

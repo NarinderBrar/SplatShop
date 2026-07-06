@@ -39,6 +39,7 @@ import {
   type GpuSortVisibleMode,
   type SortMode,
 } from "./renderControls";
+import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getQualitySplatBudget } from "./qualityProfiles";
 import PackedSogRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-vertex-source.wgsl?raw";
 import PackedSogRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-fragment-source.wgsl?raw";
@@ -103,6 +104,15 @@ type PackedSogRenderStats = {
   rendererRequested: RequestedRendererMode;
   rendererEffective: EffectiveRendererMode;
   rendererFallbackReason: string;
+  reverseDepthRequested: ReverseDepthStats["reverseDepthRequested"];
+  reverseDepthActive: boolean;
+  reverseDepthSupported: boolean;
+  reverseDepthFallbackReason: string;
+  reverseDepthClearValue: number;
+  reverseDepthCompare: ReverseDepthStats["reverseDepthCompare"];
+  reverseDepthNear: number;
+  reverseDepthFar: number;
+  reverseDepthFarToNearRatio: number;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   colorMode: "dc" | "sh";
@@ -274,6 +284,7 @@ class PackedSogRenderPass {
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 0.15);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly rendererBackend: RendererBackend;
+  private readonly reverseDepthStats: ReverseDepthStats;
   private readonly uniformArena?: GpuUniformArena;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
@@ -356,6 +367,11 @@ class PackedSogRenderPass {
     this.computeTileRasterPreviewPass = this.createComputeTileRasterPreviewPass(scene);
     this.computeTileDensityOverlayPass = this.createComputeTileDensityOverlayPass(scene);
     this.colorSegmentationPass = this.createColorSegmentationPass(scene);
+    this.reverseDepthStats = configureReverseDepth(scene, {
+      passName: "packed-sog",
+      depthWriteDisabled: true,
+      usesComputeDepthRanges: !!this.computeTileDepthRangePass,
+    });
 
     this.buildGeometry();
     this.bindStorageBuffers();
@@ -459,6 +475,7 @@ class PackedSogRenderPass {
       rendererRequested: this.rendererBackend.requested,
       rendererEffective: this.rendererBackend.effective,
       rendererFallbackReason: this.rendererBackend.fallbackReason,
+      ...this.reverseDepthStats,
       computeRendererEnabled: this.rendererBackend.effective === "compute",
       computeRendererPhase:
         this.rendererBackend.effective === "compute"
