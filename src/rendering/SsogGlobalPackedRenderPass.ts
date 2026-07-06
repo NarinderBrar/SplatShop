@@ -24,6 +24,7 @@ import { BufferVersionTracker } from "./BufferVersionTracker";
 import { FrameDataSoA } from "./FrameDataSoA";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
+import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import SsogGlobalPackedRenderPass_GPU_INDEX_GATHER_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.gpu-index-gather-source.wgsl?raw";
 import SsogGlobalPackedRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.wgsl-vertex-source.wgsl?raw";
 import SsogGlobalPackedRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.wgsl-fragment-source.wgsl?raw";
@@ -82,6 +83,18 @@ type SsogGlobalPackedStats = {
   frameTargetsSamples: number;
   frameTargetsVersion: number;
   frameTargetsFallbackReason: string;
+  temporalMode: SplatTemporalStats["temporalMode"];
+  temporalEnabled: boolean;
+  temporalStable: boolean;
+  temporalStableFrames: number;
+  temporalSampleIndex: number;
+  temporalMaxSamples: number;
+  temporalJitterX: number;
+  temporalJitterY: number;
+  temporalJitterPixelsX: number;
+  temporalJitterPixelsY: number;
+  temporalResetCount: number;
+  temporalResetReason: string;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   computeRendererVisibility: string;
@@ -425,6 +438,7 @@ class SsogGlobalPackedRenderPass {
   };
   private readonly reverseDepthStats: ReverseDepthStats;
   private readonly frameTargets: ReturnType<typeof getSplatFrameTargets>;
+  private readonly temporalAccumulation: ReturnType<typeof getSplatTemporalAccumulation>;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuRadixSortPass?: GpuRadixSortPass;
   private readonly gpuIndexGatherPass?: SsogGlobalPackedIndexGatherPass;
@@ -460,6 +474,7 @@ class SsogGlobalPackedRenderPass {
     this.numSplats = chunks.reduce((sum, chunk) => sum + chunk.data.numSplats, 0);
     this.rendererBackend = resolveSsogGlobalPackedRendererBackend();
     this.frameTargets = getSplatFrameTargets(scene);
+    this.temporalAccumulation = getSplatTemporalAccumulation(scene);
     this.gpuSortVisibleMode = getSsogGpuSortVisibleMode(this.rendererBackend.requested, this.numSplats);
     this.cpuSortWorkerEnabled = this.gpuSortVisibleMode !== "radix" || !isSsogGpuSortForceVisible();
 
@@ -609,6 +624,7 @@ class SsogGlobalPackedRenderPass {
         this.lastViewportHeight = h;
       }
       this.frameTargets.update();
+      this.temporalAccumulation.update();
       this.updateComputeTilePipeline();
       this.updateSort();
     };
@@ -670,6 +686,7 @@ class SsogGlobalPackedRenderPass {
       rendererFallbackReason: this.getRendererFallbackReason(),
       ...this.reverseDepthStats,
       ...this.frameTargets.getStats(),
+      ...this.temporalAccumulation.getStats(),
       computeRendererEnabled: this.rendererBackend.requested === "compute",
       computeRendererPhase: this.getComputeRendererPhase(),
       computeRendererVisibility: this.getComputeRendererVisibility(),

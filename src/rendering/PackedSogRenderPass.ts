@@ -41,6 +41,7 @@ import {
 } from "./renderControls";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
+import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import { getQualitySplatBudget } from "./qualityProfiles";
 import PackedSogRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-vertex-source.wgsl?raw";
 import PackedSogRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-fragment-source.wgsl?raw";
@@ -125,6 +126,18 @@ type PackedSogRenderStats = {
   frameTargetsSamples: number;
   frameTargetsVersion: number;
   frameTargetsFallbackReason: string;
+  temporalMode: SplatTemporalStats["temporalMode"];
+  temporalEnabled: boolean;
+  temporalStable: boolean;
+  temporalStableFrames: number;
+  temporalSampleIndex: number;
+  temporalMaxSamples: number;
+  temporalJitterX: number;
+  temporalJitterY: number;
+  temporalJitterPixelsX: number;
+  temporalJitterPixelsY: number;
+  temporalResetCount: number;
+  temporalResetReason: string;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   colorMode: "dc" | "sh";
@@ -298,6 +311,7 @@ class PackedSogRenderPass {
   private readonly rendererBackend: RendererBackend;
   private readonly reverseDepthStats: ReverseDepthStats;
   private readonly frameTargets: ReturnType<typeof getSplatFrameTargets>;
+  private readonly temporalAccumulation: ReturnType<typeof getSplatTemporalAccumulation>;
   private readonly uniformArena?: GpuUniformArena;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
@@ -359,6 +373,7 @@ class PackedSogRenderPass {
     this.mesh = new Mesh("PackedSogRenderPassQuads", scene);
     this.rendererBackend = resolveRendererBackend(scene);
     this.frameTargets = getSplatFrameTargets(scene);
+    this.temporalAccumulation = getSplatTemporalAccumulation(scene);
     this.uniformArena = scene.getEngine() instanceof WebGPUEngine
       ? new GpuUniformArena(scene.getEngine() as WebGPUEngine, "PackedSogUniformArena")
       : undefined;
@@ -404,6 +419,7 @@ class PackedSogRenderPass {
       }
       this.updateComputeTilePipeline(scene);
       this.frameTargets.update();
+      this.temporalAccumulation.update();
       this.computeTilePreviewPass?.update();
       this.computeTileSplatPreviewPass?.update(this.viewport.x, this.viewport.y);
       this.computeTileRasterPreviewPass?.update(this.viewport.x, this.viewport.y);
@@ -492,6 +508,7 @@ class PackedSogRenderPass {
       rendererFallbackReason: this.rendererBackend.fallbackReason,
       ...this.reverseDepthStats,
       ...this.frameTargets.getStats(),
+      ...this.temporalAccumulation.getStats(),
       computeRendererEnabled: this.rendererBackend.effective === "compute",
       computeRendererPhase:
         this.rendererBackend.effective === "compute"

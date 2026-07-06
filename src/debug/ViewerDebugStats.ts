@@ -463,6 +463,9 @@ class ViewerDebugStats {
       "frameTargetsFallbackReason" in renderStats && renderStats.frameTargetsFallbackReason
         ? `Frame target fallback: ${String(renderStats.frameTargetsFallbackReason)}`
         : "",
+      "temporalMode" in renderStats
+        ? `Temporal: ${String(renderStats.temporalMode)}${renderStats.temporalStable ? " stable" : ""} / frames ${formatCount(Number(renderStats.temporalStableFrames ?? 0))} / sample ${formatCount(Number(renderStats.temporalSampleIndex ?? 0))}/${formatCount(Number(renderStats.temporalMaxSamples ?? 0))} / jitter ${Number(renderStats.temporalJitterX ?? 0).toFixed(3)}, ${Number(renderStats.temporalJitterY ?? 0).toFixed(3)} / resets ${formatCount(Number(renderStats.temporalResetCount ?? 0))} ${String(renderStats.temporalResetReason ?? "")}`
+        : "",
       renderStats.computeRendererEnabled
         ? `Compute renderer: ${renderStats.computeRendererPhase}${previewLimiterStats.computeRendererVisibility ? ` / ${previewLimiterStats.computeRendererVisibility}` : ""}`
         : "",

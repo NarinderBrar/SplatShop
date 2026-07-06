@@ -39,6 +39,7 @@ import {
 } from "./renderControls";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
+import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import { getQualitySplatBudget } from "./qualityProfiles";
 import SplatRenderPass_GLSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.glsl-vertex-source.glsl?raw";
 import SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw from "./shaders/splat-render-pass.glsl-fragment-source.glsl?raw";
@@ -114,6 +115,18 @@ type SplatRenderStats = {
   frameTargetsSamples: number;
   frameTargetsVersion: number;
   frameTargetsFallbackReason: string;
+  temporalMode: SplatTemporalStats["temporalMode"];
+  temporalEnabled: boolean;
+  temporalStable: boolean;
+  temporalStableFrames: number;
+  temporalSampleIndex: number;
+  temporalMaxSamples: number;
+  temporalJitterX: number;
+  temporalJitterY: number;
+  temporalJitterPixelsX: number;
+  temporalJitterPixelsY: number;
+  temporalResetCount: number;
+  temporalResetReason: string;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   colorMode: "dc" | "sh";
@@ -291,6 +304,7 @@ class SplatRenderPass {
   private readonly rendererBackend: RendererBackend;
   private readonly reverseDepthStats: ReverseDepthStats;
   private readonly frameTargets: ReturnType<typeof getSplatFrameTargets>;
+  private readonly temporalAccumulation: ReturnType<typeof getSplatTemporalAccumulation>;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
   private readonly gpuSortPrefixSumPass?: GpuSortPrefixSumPass;
@@ -345,6 +359,7 @@ class SplatRenderPass {
     this.renderBudget = options.renderBudget ?? getRenderSplatBudget(splatBuffers.stats.numSplats);
     this.rendererBackend = resolveRendererBackend(scene);
     this.frameTargets = getSplatFrameTargets(scene);
+    this.temporalAccumulation = getSplatTemporalAccumulation(scene);
     this.mesh.isPickable = false;
     this.mesh.hasVertexAlpha = true;
     this.material = this.createMaterial(scene);
@@ -388,6 +403,7 @@ class SplatRenderPass {
       }
       this.updateComputeTilePipeline(scene);
       this.frameTargets.update();
+      this.temporalAccumulation.update();
       this.computeTilePreviewPass?.update();
       this.computeTileSplatPreviewPass?.update(this.viewport.x, this.viewport.y);
       this.computeTileRasterPreviewPass?.update(this.viewport.x, this.viewport.y);
@@ -476,6 +492,7 @@ class SplatRenderPass {
       rendererFallbackReason: this.rendererBackend.fallbackReason,
       ...this.reverseDepthStats,
       ...this.frameTargets.getStats(),
+      ...this.temporalAccumulation.getStats(),
       computeRendererEnabled: this.rendererBackend.effective === "compute",
         computeRendererPhase:
           this.rendererBackend.effective === "compute"
