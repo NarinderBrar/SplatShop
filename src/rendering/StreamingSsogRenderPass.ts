@@ -179,6 +179,8 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   hiZOcclusionResultGeneration: number;
   hiZOcclusionGridWidth: number;
   hiZOcclusionGridHeight: number;
+  hiZOcclusionStableFrames: number;
+  hiZOcclusionHysteresisProtectedChunks: number;
   lastHiZOcclusionMs: number;
   prefetchCandidateChunks: number;
   prefetchFrustumChunks: number;
@@ -801,6 +803,9 @@ const getSsogHiZOcclusionMode = (): SsogHiZOcclusionMode => {
 const getSsogHiZGridSize = (name: string, fallback: number): number =>
   Math.max(8, Math.min(512, Math.floor(getPositiveNumberParam(name, fallback))));
 
+const getSsogHiZOcclusionStableFrames = (): number =>
+  Math.max(1, Math.min(30, Math.floor(getPositiveNumberParam("ssogHiZOcclusionStableFrames", 3))));
+
 const getSsogUploadBudgetBytes = (): number => {
   const raw = new URLSearchParams(window.location.search).get("ssogUploadBudgetBytes");
   if (raw === "all") {
@@ -912,8 +917,10 @@ class StreamingSsogRenderPass {
   private readonly hiZOcclusionPass?: SsogHiZOcclusionPass;
   private readonly hiZOcclusionMode = getSsogHiZOcclusionMode();
   private readonly hiZOcclusionBias = getNonNegativeNumberParam("ssogHiZOcclusionBias", 4);
+  private readonly hiZOcclusionStableFrames = getSsogHiZOcclusionStableFrames();
   private readonly hiZOccluderMask: Uint32Array;
   private readonly hiZVisibleMarks: Uint32Array;
+  private readonly hiZOccludedFrameCounts: Uint8Array;
   private hiZVisibleMark = 1;
   private readonly lodRangeMin = getPositiveNumberParam("lodRangeMin", 24);
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 220);
@@ -1000,6 +1007,7 @@ class StreamingSsogRenderPass {
   private frustumCulledChunks = 0;
   private gpuChunkVisibilityDriving = false;
   private hiZOcclusionDriving = false;
+  private hiZOcclusionHysteresisProtectedChunks = 0;
   private prefetchCandidateChunks = 0;
   private prefetchFrustumChunks = 0;
   private nearPrefetchChunks = 0;
@@ -1023,6 +1031,7 @@ class StreamingSsogRenderPass {
     this.prefetchEntryMarks = new Uint32Array(entries.length);
     this.hiZOccluderMask = new Uint32Array(entries.length);
     this.hiZVisibleMarks = new Uint32Array(entries.length);
+    this.hiZOccludedFrameCounts = new Uint8Array(entries.length);
     entries.forEach((entry, index) => {
       this.entriesByKey.set(this.entryKeys[index], entry);
       const finestLod = this.finestLodByNode.get(entry.nodeId);
@@ -1660,6 +1669,8 @@ class StreamingSsogRenderPass {
       !this.hiZOcclusionPass.hasValidResult()
     ) {
       this.hiZOcclusionDriving = false;
+      this.hiZOcclusionHysteresisProtectedChunks = 0;
+      this.hiZOccludedFrameCounts.fill(0);
       return;
     }
 
@@ -1675,17 +1686,29 @@ class StreamingSsogRenderPass {
     }
 
     let write = 0;
+    let hysteresisProtected = 0;
     const visibleEntryIndices = this.visibleEntryIndices.data;
     for (let read = 0; read < this.visibleEntryIndices.length; read++) {
       const entryIndex = visibleEntryIndices[read];
       const key = this.entryKeys[entryIndex];
       const gpu = key ? this.gpuLoaded.get(key) : undefined;
       const keepActiveResident = !!gpu?.active && this.isChunkRepresentedByReadyRenderPath(key);
-      if (keepActiveResident || this.hiZVisibleMarks[entryIndex] === mark) {
+      const visibleByHiZ = this.hiZVisibleMarks[entryIndex] === mark;
+      if (keepActiveResident || visibleByHiZ) {
+        this.hiZOccludedFrameCounts[entryIndex] = 0;
+        visibleEntryIndices[write++] = entryIndex;
+        continue;
+      }
+
+      const occludedFrames = Math.min(255, this.hiZOccludedFrameCounts[entryIndex] + 1);
+      this.hiZOccludedFrameCounts[entryIndex] = occludedFrames;
+      if (occludedFrames < this.hiZOcclusionStableFrames) {
+        hysteresisProtected++;
         visibleEntryIndices[write++] = entryIndex;
       }
     }
     this.visibleEntryIndices.length = write;
+    this.hiZOcclusionHysteresisProtectedChunks = hysteresisProtected;
     this.hiZOcclusionDriving = true;
   }
 
@@ -1741,6 +1764,8 @@ class StreamingSsogRenderPass {
     | "hiZOcclusionResultGeneration"
     | "hiZOcclusionGridWidth"
     | "hiZOcclusionGridHeight"
+    | "hiZOcclusionStableFrames"
+    | "hiZOcclusionHysteresisProtectedChunks"
     | "lastHiZOcclusionMs"
   > {
     const stats: SsogHiZOcclusionStats | undefined = this.hiZOcclusionPass?.getStats();
@@ -1760,6 +1785,8 @@ class StreamingSsogRenderPass {
       hiZOcclusionResultGeneration: stats?.resultGeneration ?? 0,
       hiZOcclusionGridWidth: stats?.gridWidth ?? 0,
       hiZOcclusionGridHeight: stats?.gridHeight ?? 0,
+      hiZOcclusionStableFrames: this.hiZOcclusionStableFrames,
+      hiZOcclusionHysteresisProtectedChunks: this.hiZOcclusionHysteresisProtectedChunks,
       lastHiZOcclusionMs: stats?.lastDispatchMs ?? 0,
     };
   }
