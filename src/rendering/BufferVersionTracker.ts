@@ -4,6 +4,10 @@ type BufferVersionTrackerStats = {
   bindGroupGeneration: number;
   trackedBufferCount: number;
   contentGeneration: number;
+  rebindAttemptCount: number;
+  rebindSkippedCount: number;
+  rebindAppliedCount: number;
+  resourceGeneration: number;
 };
 
 type BoundBufferState = {
@@ -19,6 +23,8 @@ class BufferVersionTracker {
   private nextContentVersion = 1;
   private _bindGroupGeneration = 0;
   private _contentGeneration = 0;
+  private _rebindAttemptCount = 0;
+  private _rebindSkippedCount = 0;
 
   track(buffer: StorageBuffer): void {
     if (!this.resourceVersions.has(buffer)) {
@@ -50,6 +56,7 @@ class BufferVersionTracker {
     if (!buffer) {
       return false;
     }
+    this._rebindAttemptCount++;
     const resourceVersion = this.getVersion(buffer);
     const bound = this.boundBuffers.get(bindName);
     if (!bound || bound.buffer !== buffer || bound.resourceVersion !== resourceVersion) {
@@ -58,6 +65,7 @@ class BufferVersionTracker {
       this._bindGroupGeneration++;
       return true;
     }
+    this._rebindSkippedCount++;
     return false;
   }
 
@@ -74,6 +82,10 @@ class BufferVersionTracker {
       bindGroupGeneration: this._bindGroupGeneration,
       trackedBufferCount: this.resourceVersions.size,
       contentGeneration: this._contentGeneration,
+      rebindAttemptCount: this._rebindAttemptCount,
+      rebindSkippedCount: this._rebindSkippedCount,
+      rebindAppliedCount: this._bindGroupGeneration,
+      resourceGeneration: this.nextResourceVersion - 1,
     };
   }
 }

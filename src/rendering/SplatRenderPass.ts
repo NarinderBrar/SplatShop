@@ -288,6 +288,12 @@ type SplatRenderStats = {
   gpuUniformArenaFrameUpdates: number;
   gpuUniformArenaFrameUpdateBytes: number;
   bindGroupGeneration: number;
+  bindGroupTrackedBuffers: number;
+  bindGroupContentGeneration: number;
+  bindGroupRebindAttempts: number;
+  bindGroupRebindSkips: number;
+  bindGroupRebindApplies: number;
+  bindGroupResourceGeneration: number;
 };
 
 type SplatRenderPassOptions = {
@@ -481,6 +487,7 @@ class SplatRenderPass {
   }
 
   getStats(): SplatRenderStats {
+    const bufferVersionStats = this.splatBuffers.bufferVersions.getStats();
     return {
       renderSplats: this.renderSplats,
       chunkCount: this.lodManager?.chunks.length ?? 0,
@@ -531,7 +538,13 @@ class SplatRenderPass {
       gpuUniformArenaFrameUpdateBytes: 0,
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.getGpuSortVisibleEffective(),
-      bindGroupGeneration: this.splatBuffers.bufferVersions.bindGroupGeneration,
+      bindGroupGeneration: bufferVersionStats.bindGroupGeneration,
+      bindGroupTrackedBuffers: bufferVersionStats.trackedBufferCount,
+      bindGroupContentGeneration: bufferVersionStats.contentGeneration,
+      bindGroupRebindAttempts: bufferVersionStats.rebindAttemptCount,
+      bindGroupRebindSkips: bufferVersionStats.rebindSkippedCount,
+      bindGroupRebindApplies: bufferVersionStats.rebindAppliedCount,
+      bindGroupResourceGeneration: bufferVersionStats.resourceGeneration,
     };
   }
 

@@ -714,6 +714,9 @@ class ViewerDebugStats {
       renderStats.gpuUniformArenaCapacityBytes > 0
         ? `GPU uniform arena: ${formatBytes(renderStats.gpuUniformArenaBytes)} / ${formatBytes(renderStats.gpuUniformArenaCapacityBytes)} / alloc ${formatCount(renderStats.gpuUniformArenaAllocations)} / frame writes ${formatCount(renderStats.gpuUniformArenaFrameUpdates)} ${formatBytes(renderStats.gpuUniformArenaFrameUpdateBytes)}`
         : "",
+      "bindGroupGeneration" in renderStats
+        ? `Bind resources: generation ${formatCount(Number(renderStats.bindGroupGeneration ?? 0))} / tracked ${formatCount(Number(renderStats.bindGroupTrackedBuffers ?? 0))} / content ${formatCount(Number(renderStats.bindGroupContentGeneration ?? 0))} / rebinds ${formatCount(Number(renderStats.bindGroupRebindApplies ?? 0))}/${formatCount(Number(renderStats.bindGroupRebindAttempts ?? 0))} / skipped ${formatCount(Number(renderStats.bindGroupRebindSkips ?? 0))} / resources ${formatCount(Number(renderStats.bindGroupResourceGeneration ?? 0))}`
+        : "",
       renderStats.gpuRadixValidationEnabled
         ? `GPU radix validation: ${renderStats.gpuRadixValidationPending ? "pending" : "ready"}`
         : "",

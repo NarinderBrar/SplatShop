@@ -362,6 +362,12 @@ class CompositeSplatRenderPass {
       gpuUniformArenaFrameUpdates: stats.reduce((sum, item) => sum + item.gpuUniformArenaFrameUpdates, 0),
       gpuUniformArenaFrameUpdateBytes: stats.reduce((sum, item) => sum + item.gpuUniformArenaFrameUpdateBytes, 0),
       bindGroupGeneration: stats.reduce((sum, item) => sum + item.bindGroupGeneration, 0),
+      bindGroupTrackedBuffers: stats.reduce((sum, item) => sum + item.bindGroupTrackedBuffers, 0),
+      bindGroupContentGeneration: stats.reduce((sum, item) => sum + item.bindGroupContentGeneration, 0),
+      bindGroupRebindAttempts: stats.reduce((sum, item) => sum + item.bindGroupRebindAttempts, 0),
+      bindGroupRebindSkips: stats.reduce((sum, item) => sum + item.bindGroupRebindSkips, 0),
+      bindGroupRebindApplies: stats.reduce((sum, item) => sum + item.bindGroupRebindApplies, 0),
+      bindGroupResourceGeneration: stats.reduce((sum, item) => sum + item.bindGroupResourceGeneration, 0),
     };
   }
 

@@ -264,6 +264,12 @@ type SsogGlobalPackedStats = {
   gpuUniformArenaFrameUpdates: number;
   gpuUniformArenaFrameUpdateBytes: number;
   bindGroupGeneration: number;
+  bindGroupTrackedBuffers: number;
+  bindGroupContentGeneration: number;
+  bindGroupRebindAttempts: number;
+  bindGroupRebindSkips: number;
+  bindGroupRebindApplies: number;
+  bindGroupResourceGeneration: number;
 };
 
 const SPLATS_PER_INSTANCE = 128;
@@ -666,6 +672,7 @@ class SsogGlobalPackedRenderPass {
   }
 
   getStats(): SsogGlobalPackedStats {
+    const bufferVersionStats = this.bufferVersions.getStats();
     return {
       renderSplats: this.numSplats,
       chunkCount: this.chunkCount,
@@ -732,7 +739,13 @@ class SsogGlobalPackedRenderPass {
       gpuUniformArenaFrameUpdateBytes: 0,
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.gpuVisibleActive ? "radix" : "cpu",
-      bindGroupGeneration: this.bufferVersions.bindGroupGeneration,
+      bindGroupGeneration: bufferVersionStats.bindGroupGeneration,
+      bindGroupTrackedBuffers: bufferVersionStats.trackedBufferCount,
+      bindGroupContentGeneration: bufferVersionStats.contentGeneration,
+      bindGroupRebindAttempts: bufferVersionStats.rebindAttemptCount,
+      bindGroupRebindSkips: bufferVersionStats.rebindSkippedCount,
+      bindGroupRebindApplies: bufferVersionStats.rebindAppliedCount,
+      bindGroupResourceGeneration: bufferVersionStats.resourceGeneration,
     };
   }
 

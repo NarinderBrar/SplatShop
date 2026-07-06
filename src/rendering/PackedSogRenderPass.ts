@@ -299,6 +299,12 @@ type PackedSogRenderStats = {
   gpuUniformArenaFrameUpdates: number;
   gpuUniformArenaFrameUpdateBytes: number;
   bindGroupGeneration: number;
+  bindGroupTrackedBuffers: number;
+  bindGroupContentGeneration: number;
+  bindGroupRebindAttempts: number;
+  bindGroupRebindSkips: number;
+  bindGroupRebindApplies: number;
+  bindGroupResourceGeneration: number;
 };
 
 class PackedSogRenderPass {
@@ -497,6 +503,7 @@ class PackedSogRenderPass {
   }
 
   getStats(): PackedSogRenderStats {
+    const bufferVersionStats = this.sogBuffers.bufferVersions.getStats();
     return {
       renderSplats: this.renderSplats,
       chunkCount: this.lodManager.chunks.length,
@@ -542,7 +549,13 @@ class PackedSogRenderPass {
       ...this.getGpuUniformArenaStats(),
       gpuSortVisibleMode: this.gpuSortVisibleMode,
       gpuSortVisibleEffective: this.getGpuSortVisibleEffective(),
-      bindGroupGeneration: this.sogBuffers.bufferVersions.bindGroupGeneration,
+      bindGroupGeneration: bufferVersionStats.bindGroupGeneration,
+      bindGroupTrackedBuffers: bufferVersionStats.trackedBufferCount,
+      bindGroupContentGeneration: bufferVersionStats.contentGeneration,
+      bindGroupRebindAttempts: bufferVersionStats.rebindAttemptCount,
+      bindGroupRebindSkips: bufferVersionStats.rebindSkippedCount,
+      bindGroupRebindApplies: bufferVersionStats.rebindAppliedCount,
+      bindGroupResourceGeneration: bufferVersionStats.resourceGeneration,
     };
   }
 
