@@ -373,6 +373,8 @@ class CompositeSplatRenderPass {
       renderOrderGroupedChunks: 0,
       renderOrderIndividualChunks: stats.length,
       renderOrderMaxBucketSize: stats.length > 0 ? 1 : 0,
+      dirtyPassDispatches: stats.reduce((sum, item) => sum + item.dirtyPassDispatches, 0),
+      dirtyPassSkips: stats.reduce((sum, item) => sum + item.dirtyPassSkips, 0),
     };
   }
 

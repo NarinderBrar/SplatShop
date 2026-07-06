@@ -275,6 +275,8 @@ type SsogGlobalPackedStats = {
   renderOrderGroupedChunks: number;
   renderOrderIndividualChunks: number;
   renderOrderMaxBucketSize: number;
+  dirtyPassDispatches: number;
+  dirtyPassSkips: number;
 };
 
 const SPLATS_PER_INSTANCE = 128;
@@ -399,10 +401,16 @@ class SsogGlobalPackedRenderPass {
   private disposed = false;
   private lastCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private lastCameraForward = new Vector3(0, 0, 0);
+  private lastComputeTileCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
+  private lastComputeTileCameraForward = new Vector3(0, 0, 0);
+  private lastComputeTileViewportWidth = 0;
+  private lastComputeTileViewportHeight = 0;
   private lastSortStart = 0;
   private lastSortMs = 0;
   private lastUploadMs = 0;
   private lastGpuGatherMs = 0;
+  private dirtyPassDispatches = 0;
+  private dirtyPassSkips = 0;
   private gpuSortFrame = 0;
   private lastGpuSortCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private lastGpuSortCameraForward = new Vector3(0, 0, 0);
@@ -756,6 +764,8 @@ class SsogGlobalPackedRenderPass {
       renderOrderGroupedChunks: this.chunkCount,
       renderOrderIndividualChunks: 0,
       renderOrderMaxBucketSize: this.chunkCount,
+      dirtyPassDispatches: this.dirtyPassDispatches,
+      dirtyPassSkips: this.dirtyPassSkips,
     };
   }
 
@@ -836,7 +846,8 @@ class SsogGlobalPackedRenderPass {
     const shouldUpdate = this.computeTileFrame === 0;
     this.computeTileFrame = (this.computeTileFrame + 1) % this.computeTileUpdateInterval;
     const frameData = this.frameData.update(this.scene, this.viewport.x, this.viewport.y, this.numSplats);
-    if (shouldUpdate) {
+    if (shouldUpdate && this.isComputeTilePipelineDirty()) {
+      this.dirtyPassDispatches++;
       this.computeTileStatsPass.dispatch(
         frameData.worldViewProjection,
         frameData.viewportWidth,
@@ -854,6 +865,8 @@ class SsogGlobalPackedRenderPass {
         depthStats?.minDepth ?? 0,
         depthStats?.maxDepth ?? 1,
       );
+    } else if (shouldUpdate) {
+      this.dirtyPassSkips++;
     }
     this.computeTileRasterPreviewPass?.update(frameData.viewportWidth, frameData.viewportHeight);
     if (this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass) {
@@ -920,6 +933,30 @@ class SsogGlobalPackedRenderPass {
       this.computeTileRasterPrimaryFallbackReason = "";
       this.mesh.setEnabled(this.enabled);
     }
+  }
+
+  private isComputeTilePipelineDirty(): boolean {
+    const camera = this.scene.activeCamera;
+    if (!camera) {
+      return false;
+    }
+
+    const cameraPosition = camera.globalPosition;
+    const cameraForward = camera.getDirection(Vector3.Forward());
+    const dirty =
+      this.viewport.x !== this.lastComputeTileViewportWidth ||
+      this.viewport.y !== this.lastComputeTileViewportHeight ||
+      !Number.isFinite(this.lastComputeTileCameraPosition.x) ||
+      Vector3.DistanceSquared(cameraPosition, this.lastComputeTileCameraPosition) > SORT_MOVE_EPSILON_SQ ||
+      Vector3.Dot(cameraForward, this.lastComputeTileCameraForward) < SORT_FORWARD_DOT_THRESHOLD;
+
+    if (dirty) {
+      this.lastComputeTileViewportWidth = this.viewport.x;
+      this.lastComputeTileViewportHeight = this.viewport.y;
+      this.lastComputeTileCameraPosition.copyFrom(cameraPosition);
+      this.lastComputeTileCameraForward.copyFrom(cameraForward);
+    }
+    return dirty;
   }
 
   private getComputeTileRasterPrimaryFallbackReason(

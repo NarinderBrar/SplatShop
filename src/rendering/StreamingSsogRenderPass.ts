@@ -1493,6 +1493,8 @@ class StreamingSsogRenderPass {
       renderOrderGroupedChunks: renderOrderStats.groupedChunks,
       renderOrderIndividualChunks: renderOrderStats.individualChunks,
       renderOrderMaxBucketSize: renderOrderStats.maxBucketSize,
+      dirtyPassDispatches: activeStats.reduce((sum, item) => sum + item.dirtyPassDispatches, 0),
+      dirtyPassSkips: activeStats.reduce((sum, item) => sum + item.dirtyPassSkips, 0),
       qualityPreset: this.qualityPreset,
       qualityDeviceTier: getSsogDeviceTier(),
       splatBudget: Number.isFinite(this.splatBudget) ? this.splatBudget : -1,

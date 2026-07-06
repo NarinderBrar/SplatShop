@@ -720,6 +720,9 @@ class ViewerDebugStats {
       "renderOrderBuckets" in renderStats
         ? `Render buckets: ${formatCount(Number(renderStats.renderOrderBuckets ?? 0))} buckets / ${formatCount(Number(renderStats.renderOrderPasses ?? 0))} passes / grouped ${formatCount(Number(renderStats.renderOrderGroupedChunks ?? 0))} / individual ${formatCount(Number(renderStats.renderOrderIndividualChunks ?? 0))} / max ${formatCount(Number(renderStats.renderOrderMaxBucketSize ?? 0))}`
         : "",
+      "dirtyPassSkips" in renderStats
+        ? `Dirty passes: dispatch ${formatCount(Number(renderStats.dirtyPassDispatches ?? 0))} / skipped ${formatCount(Number(renderStats.dirtyPassSkips ?? 0))}`
+        : "",
       renderStats.gpuRadixValidationEnabled
         ? `GPU radix validation: ${renderStats.gpuRadixValidationPending ? "pending" : "ready"}`
         : "",

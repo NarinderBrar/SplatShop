@@ -310,6 +310,8 @@ type PackedSogRenderStats = {
   renderOrderGroupedChunks: number;
   renderOrderIndividualChunks: number;
   renderOrderMaxBucketSize: number;
+  dirtyPassDispatches: number;
+  dirtyPassSkips: number;
 };
 
 class PackedSogRenderPass {
@@ -365,6 +367,11 @@ class PackedSogRenderPass {
   private lastCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private lastCameraForward = new Vector3(0, 0, 0);
   private lastLodCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
+  private lastComputeTileCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
+  private lastComputeTileCameraForward = new Vector3(0, 0, 0);
+  private lastComputeTileRenderSplats = -1;
+  private lastComputeTileViewportWidth = 0;
+  private lastComputeTileViewportHeight = 0;
   private renderSplats = 0;
   private activeChunks = 0;
   private selectedLods = 0;
@@ -373,6 +380,8 @@ class PackedSogRenderPass {
   private lastUploadMs = 0;
   private lastLodBuildMs = 0;
   private lastCpuShMs = 0;
+  private dirtyPassDispatches = 0;
+  private dirtyPassSkips = 0;
   private lastTransparentSortIndex: number | undefined;
   private radixVisibleActive = false;
 
@@ -566,6 +575,8 @@ class PackedSogRenderPass {
       renderOrderGroupedChunks: this.activeChunks > 1 ? this.activeChunks : 0,
       renderOrderIndividualChunks: this.activeChunks <= 1 ? this.activeChunks : 0,
       renderOrderMaxBucketSize: Math.max(1, this.activeChunks),
+      dirtyPassDispatches: this.dirtyPassDispatches,
+      dirtyPassSkips: this.dirtyPassSkips,
     };
   }
 
@@ -786,10 +797,41 @@ class PackedSogRenderPass {
     if (!shouldUpdate) {
       return;
     }
+    if (!this.isComputeTilePipelineDirty(scene)) {
+      this.dirtyPassSkips++;
+      return;
+    }
+    this.dirtyPassDispatches++;
     this.updateComputeTileStats(scene);
     this.updateComputeTileDepthRange(scene);
     this.updateComputeTileWorkQueue();
     this.updateComputeTileOrder(scene);
+  }
+
+  private isComputeTilePipelineDirty(scene: Scene): boolean {
+    const camera = scene.activeCamera;
+    if (!camera) {
+      return false;
+    }
+
+    const cameraPosition = camera.globalPosition;
+    const cameraForward = camera.getDirection(Vector3.Forward());
+    const dirty =
+      this.renderSplats !== this.lastComputeTileRenderSplats ||
+      this.viewport.x !== this.lastComputeTileViewportWidth ||
+      this.viewport.y !== this.lastComputeTileViewportHeight ||
+      !Number.isFinite(this.lastComputeTileCameraPosition.x) ||
+      Vector3.DistanceSquared(cameraPosition, this.lastComputeTileCameraPosition) > this.sortMoveEpsilonSq ||
+      Vector3.Dot(cameraForward, this.lastComputeTileCameraForward) < this.sortForwardDotThreshold;
+
+    if (dirty) {
+      this.lastComputeTileRenderSplats = this.renderSplats;
+      this.lastComputeTileViewportWidth = this.viewport.x;
+      this.lastComputeTileViewportHeight = this.viewport.y;
+      this.lastComputeTileCameraPosition.copyFrom(cameraPosition);
+      this.lastComputeTileCameraForward.copyFrom(cameraForward);
+    }
+    return dirty;
   }
 
   private updateComputeTileOrder(scene: Scene): void {
