@@ -15,6 +15,17 @@ const WORKGROUP_SIZE = 64;
 const PARAM_FLOAT_COUNT = 28;
 const COUNTER_COUNT = 4;
 const FAR_DEPTH_Q = 0xffffffff;
+const CLEAR_BINDINGS = ["depthGrid", "paramsBuffer"] as const;
+const BUILD_BINDINGS = ["boundsBuffer", "occluderMask", "depthGrid", "paramsBuffer"] as const;
+const TEST_BINDINGS = ["boundsBuffer", "depthGrid", "visibleIndices", "counters", "paramsBuffer"] as const;
+
+type SsogHiZBindingName =
+  | "boundsBuffer"
+  | "occluderMask"
+  | "depthGrid"
+  | "visibleIndices"
+  | "counters"
+  | "paramsBuffer";
 
 const CLEAR_SOURCE = SsogHiZOcclusionPass_CLEAR_SOURCE_raw.replaceAll(
   "__CLEAR_SOURCE_EXPR_0__",
@@ -100,12 +111,12 @@ class SsogHiZOcclusionPass {
     this.farDepthGrid.fill(FAR_DEPTH_Q);
     this.visibleIndexReadback = new Uint32Array(Math.max(1, entries.length));
 
-    this.clearShader = this.createShader(engine, "SsogHiZClear", CLEAR_SOURCE);
-    this.buildShader = this.createShader(engine, "SsogHiZBuild", BUILD_SOURCE);
-    this.testShader = this.createShader(engine, "SsogHiZTest", TEST_SOURCE);
-    this.bindShader(this.clearShader);
-    this.bindShader(this.buildShader);
-    this.bindShader(this.testShader);
+    this.clearShader = this.createShader(engine, "SsogHiZClearSparseBindings", CLEAR_SOURCE, CLEAR_BINDINGS);
+    this.buildShader = this.createShader(engine, "SsogHiZBuildSparseBindings", BUILD_SOURCE, BUILD_BINDINGS);
+    this.testShader = this.createShader(engine, "SsogHiZTestSparseBindings", TEST_SOURCE, TEST_BINDINGS);
+    this.bindShader(this.clearShader, CLEAR_BINDINGS);
+    this.bindShader(this.buildShader, BUILD_BINDINGS);
+    this.bindShader(this.testShader, TEST_BINDINGS);
     this.stats = {
       supported: true,
       enabled: true,
@@ -213,31 +224,55 @@ class SsogHiZOcclusionPass {
     };
   }
 
-  private createShader(engine: WebGPUEngine, name: string, source: string): ComputeShader {
+  private createShader(
+    engine: WebGPUEngine,
+    name: string,
+    source: string,
+    bindings: readonly SsogHiZBindingName[],
+  ): ComputeShader {
+    const fullBindingsMapping = {
+      boundsBuffer: { group: 0, binding: 0 },
+      occluderMask: { group: 0, binding: 1 },
+      depthGrid: { group: 0, binding: 2 },
+      visibleIndices: { group: 0, binding: 3 },
+      counters: { group: 0, binding: 4 },
+      paramsBuffer: { group: 0, binding: 5 },
+    } satisfies Record<SsogHiZBindingName, { group: number; binding: number }>;
+    const bindingsMapping = Object.fromEntries(
+      bindings.map((binding) => [binding, fullBindingsMapping[binding]]),
+    ) as Partial<typeof fullBindingsMapping>;
+
     return new ComputeShader(
       name,
       engine,
       { computeSource: source },
-      {
-        bindingsMapping: {
-          boundsBuffer: { group: 0, binding: 0 },
-          occluderMask: { group: 0, binding: 1 },
-          depthGrid: { group: 0, binding: 2 },
-          visibleIndices: { group: 0, binding: 3 },
-          counters: { group: 0, binding: 4 },
-          paramsBuffer: { group: 0, binding: 5 },
-        },
-      },
+      { bindingsMapping },
     );
   }
 
-  private bindShader(shader: ComputeShader): void {
-    shader.setStorageBuffer("boundsBuffer", this.bounds);
-    shader.setStorageBuffer("occluderMask", this.occluderMask);
-    shader.setStorageBuffer("depthGrid", this.depthGrid);
-    shader.setStorageBuffer("visibleIndices", this.visibleIndices);
-    shader.setStorageBuffer("counters", this.counters);
-    shader.setStorageBuffer("paramsBuffer", this.params);
+  private bindShader(shader: ComputeShader, bindings: readonly SsogHiZBindingName[]): void {
+    for (const binding of bindings) {
+      switch (binding) {
+      case "boundsBuffer":
+        shader.setStorageBuffer(binding, this.bounds);
+        break;
+      case "occluderMask":
+        shader.setStorageBuffer(binding, this.occluderMask);
+        break;
+      case "depthGrid":
+        shader.setStorageBuffer(binding, this.depthGrid);
+        break;
+      case "visibleIndices":
+        shader.setStorageBuffer(binding, this.visibleIndices);
+        break;
+      case "counters":
+        shader.setStorageBuffer(binding, this.counters);
+        break;
+      case "paramsBuffer":
+        shader.setStorageBuffer(binding, this.params);
+        break;
+      }
+    }
   }
 
   private scheduleReadback(): void {

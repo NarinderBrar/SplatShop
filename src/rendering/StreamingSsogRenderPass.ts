@@ -1678,7 +1678,10 @@ class StreamingSsogRenderPass {
     const visibleEntryIndices = this.visibleEntryIndices.data;
     for (let read = 0; read < this.visibleEntryIndices.length; read++) {
       const entryIndex = visibleEntryIndices[read];
-      if (this.hiZVisibleMarks[entryIndex] === mark) {
+      const key = this.entryKeys[entryIndex];
+      const gpu = key ? this.gpuLoaded.get(key) : undefined;
+      const keepActiveResident = !!gpu?.active && this.isChunkRepresentedByReadyRenderPath(key);
+      if (keepActiveResident || this.hiZVisibleMarks[entryIndex] === mark) {
         visibleEntryIndices[write++] = entryIndex;
       }
     }
