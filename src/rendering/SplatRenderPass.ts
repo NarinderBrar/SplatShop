@@ -38,6 +38,7 @@ import {
   type SortMode,
 } from "./renderControls";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
+import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getQualitySplatBudget } from "./qualityProfiles";
 import SplatRenderPass_GLSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.glsl-vertex-source.glsl?raw";
 import SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw from "./shaders/splat-render-pass.glsl-fragment-source.glsl?raw";
@@ -102,6 +103,17 @@ type SplatRenderStats = {
   reverseDepthNear: number;
   reverseDepthFar: number;
   reverseDepthFarToNearRatio: number;
+  frameTargetsMode: SplatFrameTargetStats["frameTargetsMode"];
+  frameTargetsSupported: boolean;
+  frameTargetsAllocated: boolean;
+  frameTargetsWidth: number;
+  frameTargetsHeight: number;
+  frameTargetsScale: number;
+  frameTargetsAttachments: string;
+  frameTargetsHasDepth: boolean;
+  frameTargetsSamples: number;
+  frameTargetsVersion: number;
+  frameTargetsFallbackReason: string;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   colorMode: "dc" | "sh";
@@ -278,6 +290,7 @@ class SplatRenderPass {
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly rendererBackend: RendererBackend;
   private readonly reverseDepthStats: ReverseDepthStats;
+  private readonly frameTargets: ReturnType<typeof getSplatFrameTargets>;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
   private readonly gpuSortPrefixSumPass?: GpuSortPrefixSumPass;
@@ -331,6 +344,7 @@ class SplatRenderPass {
     this.mesh = new Mesh("SplatRenderPassQuads", scene);
     this.renderBudget = options.renderBudget ?? getRenderSplatBudget(splatBuffers.stats.numSplats);
     this.rendererBackend = resolveRendererBackend(scene);
+    this.frameTargets = getSplatFrameTargets(scene);
     this.mesh.isPickable = false;
     this.mesh.hasVertexAlpha = true;
     this.material = this.createMaterial(scene);
@@ -373,6 +387,7 @@ class SplatRenderPass {
         this.lastViewportHeight = h;
       }
       this.updateComputeTilePipeline(scene);
+      this.frameTargets.update();
       this.computeTilePreviewPass?.update();
       this.computeTileSplatPreviewPass?.update(this.viewport.x, this.viewport.y);
       this.computeTileRasterPreviewPass?.update(this.viewport.x, this.viewport.y);
@@ -460,6 +475,7 @@ class SplatRenderPass {
       rendererEffective: this.rendererBackend.effective,
       rendererFallbackReason: this.rendererBackend.fallbackReason,
       ...this.reverseDepthStats,
+      ...this.frameTargets.getStats(),
       computeRendererEnabled: this.rendererBackend.effective === "compute",
         computeRendererPhase:
           this.rendererBackend.effective === "compute"

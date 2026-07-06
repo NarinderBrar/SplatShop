@@ -454,6 +454,15 @@ class ViewerDebugStats {
       "reverseDepthFallbackReason" in renderStats && renderStats.reverseDepthFallbackReason
         ? `Reverse-Z fallback: ${String(renderStats.reverseDepthFallbackReason)}`
         : "",
+      "frameTargetsMode" in renderStats
+        ? `Frame targets: ${String(renderStats.frameTargetsMode)}${renderStats.frameTargetsAllocated ? " allocated" : ""} / ${renderStats.frameTargetsSupported ? "supported" : "unsupported"} / ${formatCount(Number(renderStats.frameTargetsWidth ?? 0))}x${formatCount(Number(renderStats.frameTargetsHeight ?? 0))} @ ${(Number(renderStats.frameTargetsScale ?? 1) * 100).toFixed(0)}% / samples ${formatCount(Number(renderStats.frameTargetsSamples ?? 1))} / depth ${renderStats.frameTargetsHasDepth ? "yes" : "no"} / v${formatCount(Number(renderStats.frameTargetsVersion ?? 0))}`
+        : "",
+      "frameTargetsAttachments" in renderStats && renderStats.frameTargetsAttachments
+        ? `Frame target attachments: ${String(renderStats.frameTargetsAttachments)}`
+        : "",
+      "frameTargetsFallbackReason" in renderStats && renderStats.frameTargetsFallbackReason
+        ? `Frame target fallback: ${String(renderStats.frameTargetsFallbackReason)}`
+        : "",
       renderStats.computeRendererEnabled
         ? `Compute renderer: ${renderStats.computeRendererPhase}${previewLimiterStats.computeRendererVisibility ? ` / ${previewLimiterStats.computeRendererVisibility}` : ""}`
         : "",

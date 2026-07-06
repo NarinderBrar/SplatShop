@@ -40,6 +40,7 @@ import {
   type SortMode,
 } from "./renderControls";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
+import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getQualitySplatBudget } from "./qualityProfiles";
 import PackedSogRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-vertex-source.wgsl?raw";
 import PackedSogRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-fragment-source.wgsl?raw";
@@ -113,6 +114,17 @@ type PackedSogRenderStats = {
   reverseDepthNear: number;
   reverseDepthFar: number;
   reverseDepthFarToNearRatio: number;
+  frameTargetsMode: SplatFrameTargetStats["frameTargetsMode"];
+  frameTargetsSupported: boolean;
+  frameTargetsAllocated: boolean;
+  frameTargetsWidth: number;
+  frameTargetsHeight: number;
+  frameTargetsScale: number;
+  frameTargetsAttachments: string;
+  frameTargetsHasDepth: boolean;
+  frameTargetsSamples: number;
+  frameTargetsVersion: number;
+  frameTargetsFallbackReason: string;
   computeRendererEnabled: boolean;
   computeRendererPhase: string;
   colorMode: "dc" | "sh";
@@ -285,6 +297,7 @@ class PackedSogRenderPass {
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly rendererBackend: RendererBackend;
   private readonly reverseDepthStats: ReverseDepthStats;
+  private readonly frameTargets: ReturnType<typeof getSplatFrameTargets>;
   private readonly uniformArena?: GpuUniformArena;
   private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
   private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
@@ -345,6 +358,7 @@ class PackedSogRenderPass {
 
     this.mesh = new Mesh("PackedSogRenderPassQuads", scene);
     this.rendererBackend = resolveRendererBackend(scene);
+    this.frameTargets = getSplatFrameTargets(scene);
     this.uniformArena = scene.getEngine() instanceof WebGPUEngine
       ? new GpuUniformArena(scene.getEngine() as WebGPUEngine, "PackedSogUniformArena")
       : undefined;
@@ -389,6 +403,7 @@ class PackedSogRenderPass {
         this.lastViewportHeight = h;
       }
       this.updateComputeTilePipeline(scene);
+      this.frameTargets.update();
       this.computeTilePreviewPass?.update();
       this.computeTileSplatPreviewPass?.update(this.viewport.x, this.viewport.y);
       this.computeTileRasterPreviewPass?.update(this.viewport.x, this.viewport.y);
@@ -476,6 +491,7 @@ class PackedSogRenderPass {
       rendererEffective: this.rendererBackend.effective,
       rendererFallbackReason: this.rendererBackend.fallbackReason,
       ...this.reverseDepthStats,
+      ...this.frameTargets.getStats(),
       computeRendererEnabled: this.rendererBackend.effective === "compute",
       computeRendererPhase:
         this.rendererBackend.effective === "compute"
