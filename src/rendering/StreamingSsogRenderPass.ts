@@ -124,6 +124,11 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   packedMetadataMode: "none" | "shared" | "per-chunk";
   packedMetadataGroups: number;
   packedMergeCompatible: boolean;
+  renderOrderBuckets: number;
+  renderOrderPasses: number;
+  renderOrderGroupedChunks: number;
+  renderOrderIndividualChunks: number;
+  renderOrderMaxBucketSize: number;
   lastGlobalSortBuildMs: number;
   lastChunkLoadMs: number;
   lastChunkUploadMs: number;
@@ -1147,6 +1152,7 @@ class StreamingSsogRenderPass {
     const gpuBufferWriterStats = this.gpuBufferWriter?.getStats();
     const gpuChunkVisibilityStats = this.getGpuChunkVisibilityStats();
     const hiZOcclusionStats = this.getHiZOcclusionStats();
+    const renderOrderStats = this.getRenderOrderBucketStats();
     const selectedKeys = Array.from(this.selectedKeys);
     const gpuActiveChunks = Array.from(this.gpuLoaded.values()).filter((gpu) => gpu.active).length;
     const activeStats = [
@@ -1482,6 +1488,11 @@ class StreamingSsogRenderPass {
       bindGroupRebindSkips: activeStats.reduce((sum, item) => sum + item.bindGroupRebindSkips, 0),
       bindGroupRebindApplies: activeStats.reduce((sum, item) => sum + item.bindGroupRebindApplies, 0),
       bindGroupResourceGeneration: activeStats.reduce((sum, item) => sum + item.bindGroupResourceGeneration, 0),
+      renderOrderBuckets: renderOrderStats.buckets,
+      renderOrderPasses: renderOrderStats.passes,
+      renderOrderGroupedChunks: renderOrderStats.groupedChunks,
+      renderOrderIndividualChunks: renderOrderStats.individualChunks,
+      renderOrderMaxBucketSize: renderOrderStats.maxBucketSize,
       qualityPreset: this.qualityPreset,
       qualityDeviceTier: getSsogDeviceTier(),
       splatBudget: Number.isFinite(this.splatBudget) ? this.splatBudget : -1,
@@ -3255,7 +3266,7 @@ class StreamingSsogRenderPass {
     actives.forEach(([key, gpu]) => {
       const cached = this.decodedCache.get(key);
       if (!cached) return;
-      const groupKey = String(cached.entry.fileIndex);
+      const groupKey = this.getRenderBucketKey(cached);
       const group = groups.get(groupKey) ?? [];
       group.push([key, gpu]);
       groups.set(groupKey, group);
@@ -3345,6 +3356,70 @@ class StreamingSsogRenderPass {
     const keys = new Set<string>();
     this.mergedRuntimes.forEach((runtime) => runtime.keys.forEach((key) => keys.add(key)));
     return keys;
+  }
+
+  private getRenderOrderBucketStats(): {
+    buckets: number;
+    passes: number;
+    groupedChunks: number;
+    individualChunks: number;
+    maxBucketSize: number;
+  } {
+    const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
+    if (activeEntries.length === 0) {
+      return { buckets: 0, passes: 0, groupedChunks: 0, individualChunks: 0, maxBucketSize: 0 };
+    }
+
+    if (this.packedGlobalRuntime || this.expandedRuntime) {
+      return {
+        buckets: 1,
+        passes: 1,
+        groupedChunks: activeEntries.length,
+        individualChunks: 0,
+        maxBucketSize: activeEntries.length,
+      };
+    }
+
+    const buckets = new Map<string, number>();
+    for (const [key] of activeEntries) {
+      const cached = this.decodedCache.get(key);
+      const bucketKey = cached ? this.getRenderBucketKey(cached) : "missing";
+      buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + 1);
+    }
+
+    let groupedChunks = 0;
+    let individualChunks = 0;
+    let maxBucketSize = 0;
+    for (const count of buckets.values()) {
+      maxBucketSize = Math.max(maxBucketSize, count);
+      if (count > 1) {
+        groupedChunks += count;
+      } else {
+        individualChunks += 1;
+      }
+    }
+
+    const mergedKeys = this.getMergedKeys();
+    const individualPasses = activeEntries.filter(([key]) => !mergedKeys.has(key)).length;
+    return {
+      buckets: buckets.size,
+      passes: this.mergedRuntimes.size + individualPasses,
+      groupedChunks,
+      individualChunks,
+      maxBucketSize,
+    };
+  }
+
+  private getRenderBucketKey(cached: CachedDecodedChunk): string {
+    const stats = cached.chunk.data.shN
+      ? `sh:${cached.chunk.data.shN.bands}:${cached.chunk.data.shN.coeffsPerChannel}:${cached.chunk.data.shN.paletteCount}`
+      : "dc";
+    return [
+      "packed-sog",
+      stats,
+      cached.entry.fileIndex,
+      this.getPackedMetadataFingerprint(cached.chunk.data),
+    ].join("|");
   }
 
   private getActivePackedMetadataStats(): {

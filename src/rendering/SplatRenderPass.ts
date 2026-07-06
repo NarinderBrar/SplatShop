@@ -294,6 +294,11 @@ type SplatRenderStats = {
   bindGroupRebindSkips: number;
   bindGroupRebindApplies: number;
   bindGroupResourceGeneration: number;
+  renderOrderBuckets: number;
+  renderOrderPasses: number;
+  renderOrderGroupedChunks: number;
+  renderOrderIndividualChunks: number;
+  renderOrderMaxBucketSize: number;
 };
 
 type SplatRenderPassOptions = {
@@ -545,6 +550,11 @@ class SplatRenderPass {
       bindGroupRebindSkips: bufferVersionStats.rebindSkippedCount,
       bindGroupRebindApplies: bufferVersionStats.rebindAppliedCount,
       bindGroupResourceGeneration: bufferVersionStats.resourceGeneration,
+      renderOrderBuckets: 1,
+      renderOrderPasses: 1,
+      renderOrderGroupedChunks: this.activeChunks > 1 ? this.activeChunks : 0,
+      renderOrderIndividualChunks: this.activeChunks <= 1 ? this.activeChunks : 0,
+      renderOrderMaxBucketSize: Math.max(1, this.activeChunks),
     };
   }
 

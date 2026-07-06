@@ -270,6 +270,11 @@ type SsogGlobalPackedStats = {
   bindGroupRebindSkips: number;
   bindGroupRebindApplies: number;
   bindGroupResourceGeneration: number;
+  renderOrderBuckets: number;
+  renderOrderPasses: number;
+  renderOrderGroupedChunks: number;
+  renderOrderIndividualChunks: number;
+  renderOrderMaxBucketSize: number;
 };
 
 const SPLATS_PER_INSTANCE = 128;
@@ -746,6 +751,11 @@ class SsogGlobalPackedRenderPass {
       bindGroupRebindSkips: bufferVersionStats.rebindSkippedCount,
       bindGroupRebindApplies: bufferVersionStats.rebindAppliedCount,
       bindGroupResourceGeneration: bufferVersionStats.resourceGeneration,
+      renderOrderBuckets: 1,
+      renderOrderPasses: 1,
+      renderOrderGroupedChunks: this.chunkCount,
+      renderOrderIndividualChunks: 0,
+      renderOrderMaxBucketSize: this.chunkCount,
     };
   }
 

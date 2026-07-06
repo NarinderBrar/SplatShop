@@ -368,6 +368,11 @@ class CompositeSplatRenderPass {
       bindGroupRebindSkips: stats.reduce((sum, item) => sum + item.bindGroupRebindSkips, 0),
       bindGroupRebindApplies: stats.reduce((sum, item) => sum + item.bindGroupRebindApplies, 0),
       bindGroupResourceGeneration: stats.reduce((sum, item) => sum + item.bindGroupResourceGeneration, 0),
+      renderOrderBuckets: stats.length,
+      renderOrderPasses: stats.length,
+      renderOrderGroupedChunks: 0,
+      renderOrderIndividualChunks: stats.length,
+      renderOrderMaxBucketSize: stats.length > 0 ? 1 : 0,
     };
   }
 

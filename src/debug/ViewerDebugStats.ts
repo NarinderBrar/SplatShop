@@ -717,6 +717,9 @@ class ViewerDebugStats {
       "bindGroupGeneration" in renderStats
         ? `Bind resources: generation ${formatCount(Number(renderStats.bindGroupGeneration ?? 0))} / tracked ${formatCount(Number(renderStats.bindGroupTrackedBuffers ?? 0))} / content ${formatCount(Number(renderStats.bindGroupContentGeneration ?? 0))} / rebinds ${formatCount(Number(renderStats.bindGroupRebindApplies ?? 0))}/${formatCount(Number(renderStats.bindGroupRebindAttempts ?? 0))} / skipped ${formatCount(Number(renderStats.bindGroupRebindSkips ?? 0))} / resources ${formatCount(Number(renderStats.bindGroupResourceGeneration ?? 0))}`
         : "",
+      "renderOrderBuckets" in renderStats
+        ? `Render buckets: ${formatCount(Number(renderStats.renderOrderBuckets ?? 0))} buckets / ${formatCount(Number(renderStats.renderOrderPasses ?? 0))} passes / grouped ${formatCount(Number(renderStats.renderOrderGroupedChunks ?? 0))} / individual ${formatCount(Number(renderStats.renderOrderIndividualChunks ?? 0))} / max ${formatCount(Number(renderStats.renderOrderMaxBucketSize ?? 0))}`
+        : "",
       renderStats.gpuRadixValidationEnabled
         ? `GPU radix validation: ${renderStats.gpuRadixValidationPending ? "pending" : "ready"}`
         : "",
