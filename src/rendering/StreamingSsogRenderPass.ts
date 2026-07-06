@@ -17,6 +17,7 @@ import { SsogGpuChunkVisibilityPass, type SsogGpuChunkVisibilityStats } from "./
 import { SsogHiZOcclusionPass, type SsogHiZOcclusionStats } from "./SsogHiZOcclusionPass";
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 import { GpuBufferWriter } from "./GpuBufferWriter";
+import { renderDiagnostics } from "./RenderDiagnostics";
 import {
   getDeviceTier,
   getExplicitSplatBudget,
@@ -2372,7 +2373,10 @@ class StreamingSsogRenderPass {
           this.debugBounds.dispose(command.key);
           return true;
         }
-        console.warn(`Failed to load SSOG chunk ${command.key}.`, command.error);
+        renderDiagnostics.reportError(
+          "ssog-chunk-load",
+          `Failed to load SSOG chunk ${command.key}: ${String(command.error)}`,
+        );
         this.scheduleChunkRetry(command.key, command.entry);
         return true;
       case "chunkLoadSettled":

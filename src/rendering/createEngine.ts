@@ -1,6 +1,8 @@
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 
+import { installWebGpuErrorDedupe } from "./RenderDiagnostics";
+
 type EngineResult = {
   engine: Engine | WebGPUEngine;
   mode: "WebGPU" | "WebGL";
@@ -35,6 +37,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<EngineRes
     });
 
     await engine.initAsync();
+    installWebGpuErrorDedupe(engine);
     return { engine, mode: "WebGPU" };
   }
 

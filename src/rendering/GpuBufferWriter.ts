@@ -1,6 +1,7 @@
 import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { GpuBufferArena } from "./GpuBufferArena";
+import { renderDiagnostics } from "./RenderDiagnostics";
 
 type GpuBufferWriterStats = {
   totalUploadBytes: number;
@@ -461,6 +462,7 @@ class GpuBufferWriter {
     this.lastFailureLabel = label;
     this.lastFailureBytes = byteLength;
     this.lastErrorMessage = `GpuBufferWriter::${path}(${label}, ${formatBytes(byteLength)}): ${String(error).slice(0, MAX_ERROR_MESSAGE_LENGTH)}`;
+    renderDiagnostics.reportError("gpu-buffer-writer", this.lastErrorMessage);
   }
 
   private pushValidationScope(): void {

@@ -6,6 +6,7 @@ import { LoadingProgress } from "../debug/LoadingProgress";
 import { ViewerDebugStats } from "../debug/ViewerDebugStats";
 import { initFileHandler } from "../file-handler";
 import { createEngine } from "../rendering/createEngine";
+import { renderDiagnostics } from "../rendering/RenderDiagnostics";
 import { createUI } from "./createUI";
 import { CameraManager } from "./CameraManager";
 import type { SplatCloud } from "../splat/SplatCloud";
@@ -360,6 +361,7 @@ export async function createApp(
   ]);
 
   engine.runRenderLoop(() => {
+    renderDiagnostics.beginFrame();
     scene.render();
     debugStats.update();
     loadingProgress.update(currentSplatCloud);

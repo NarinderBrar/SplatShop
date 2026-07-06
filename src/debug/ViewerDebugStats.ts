@@ -1,4 +1,5 @@
 import type { SplatCloud } from "../splat/SplatCloud";
+import { renderDiagnostics } from "../rendering/RenderDiagnostics";
 
 const formatCount = (value: number): string => value.toLocaleString("en-US");
 
@@ -65,7 +66,8 @@ const getDebugGroupKey = (line: string): DebugGroupKey => {
     line.startsWith("Sort:") ||
     line.startsWith("Upload:") ||
     line.startsWith("LOD build:") ||
-    line.startsWith("Sort pending:")
+    line.startsWith("Sort pending:") ||
+    line.startsWith("Render errors:")
   ) {
     return "frame";
   }
@@ -440,6 +442,7 @@ class ViewerDebugStats {
       computeTileOrderOverflowTiles?: number;
     };
     const assetStats = splatCloud.asset.stats;
+    const renderDiagnosticStats = renderDiagnostics.getStats();
     const lines = [
       `Mode: ${this.mode}`,
       `FPS: ${this.fps.toFixed(1)}`,
@@ -737,6 +740,9 @@ class ViewerDebugStats {
         : "",
       renderStats.gpuRadixValidationEnabled
         ? `GPU radix checksum: ${renderStats.gpuRadixChecksumValid ? "valid" : "invalid"} / ${formatCount(renderStats.gpuRadixValidatedIndexCount)}`
+        : "",
+      renderDiagnosticStats.totalErrors > 0
+        ? `Render errors: total ${formatCount(renderDiagnosticStats.totalErrors)} / unique ${formatCount(renderDiagnosticStats.uniqueErrors)} / suppressed ${formatCount(renderDiagnosticStats.suppressedErrors)} / last ${renderDiagnosticStats.lastKind} x${formatCount(renderDiagnosticStats.lastCount)} ${renderDiagnosticStats.lastMessage}`
         : "",
       `Sort: ${formatMs(renderStats.lastSortMs)} ms`,
       `Upload: ${formatMs(renderStats.lastUploadMs)} ms`,
