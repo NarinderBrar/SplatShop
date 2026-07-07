@@ -783,6 +783,9 @@ class ViewerDebugStats {
       "sortQueued" in renderStats
         ? `Sort queued: ${(renderStats as typeof renderStats & { sortQueued?: boolean }).sortQueued ? "yes" : "no"} / coalesced ${formatCount(Number((renderStats as typeof renderStats & { sortCoalesced?: number }).sortCoalesced ?? 0))}`
         : "",
+      "sortMinIntervalMs" in renderStats
+        ? `Sort throttle: ${formatMs(Number((renderStats as typeof renderStats & { sortMinIntervalMs?: number }).sortMinIntervalMs ?? 0))} ms / delayed ${formatCount(Number((renderStats as typeof renderStats & { sortThrottled?: number }).sortThrottled ?? 0))} / tiny reuse ${formatCount(Number((renderStats as typeof renderStats & { sortTinyReuse?: number }).sortTinyReuse ?? 0))} / worker ${(renderStats as typeof renderStats & { sortDedicatedWorker?: boolean }).sortDedicatedWorker ? "dedicated" : "none"}`
+        : "",
       `Bounds min: ${formatVec(bufferStats.boundsMin)}`,
       `Bounds max: ${formatVec(bufferStats.boundsMax)}`,
       "scaleLogMax" in bufferStats

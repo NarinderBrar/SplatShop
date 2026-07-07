@@ -19,7 +19,17 @@ import { ComputeTileWorkQueuePass, type ComputeTileWorkQueueStats } from "./Comp
 import { canCreateComputeShader, GpuDepthKeyPass, type GpuDepthKeyStats } from "./GpuDepthKeyPass";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
 import { getQualityPreset, getSplatShaderQualityProfile } from "./qualityProfiles";
-import { getRequestedRendererMode, type EffectiveRendererMode, type RequestedRendererMode } from "./renderControls";
+import {
+  getRequestedRendererMode,
+  getSortForwardDotThreshold,
+  getSortIntervalFrames,
+  getSortMinIntervalMs,
+  getSortMoveEpsilonSq,
+  getSortTinyForwardDotThreshold,
+  getSortTinyMoveEpsilonSq,
+  type EffectiveRendererMode,
+  type RequestedRendererMode,
+} from "./renderControls";
 import { BufferVersionTracker } from "./BufferVersionTracker";
 import { FrameDataSoA } from "./FrameDataSoA";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
@@ -213,6 +223,10 @@ type SsogGlobalPackedStats = {
   sortPending: boolean;
   sortQueued: boolean;
   sortCoalesced: number;
+  sortThrottled: number;
+  sortTinyReuse: number;
+  sortMinIntervalMs: number;
+  sortDedicatedWorker: boolean;
   lastSortMs: number;
   lastUploadMs: number;
   lastLodBuildMs: number;
@@ -283,9 +297,6 @@ type SsogGlobalPackedStats = {
 
 const SPLATS_PER_INSTANCE = 128;
 const SHADER_QUALITY = getSplatShaderQualityProfile();
-const SORT_MOVE_EPSILON_SQ = 0.0001;
-const SORT_FORWARD_DOT_THRESHOLD = Math.cos((0.25 * Math.PI) / 180);
-const SORT_INTERVAL_FRAMES = 6;
 const AUTO_GPU_SORT_SPLAT_THRESHOLD = 2_000_000;
 const GPU_INDEX_GATHER_WORKGROUP_SIZE = 256;
 const DEFAULT_COMPUTE_PRIMARY_MIN_COVERAGE = 0.45;
@@ -398,6 +409,8 @@ class SsogGlobalPackedRenderPass {
   private sortPending = false;
   private pendingSortView?: { cameraPosition: [number, number, number]; cameraForward: [number, number, number] };
   private sortCoalesced = 0;
+  private sortThrottled = 0;
+  private sortTinyReuse = 0;
   private sortFrame = 0;
   private enabled = true;
   private disposed = false;
@@ -408,6 +421,7 @@ class SsogGlobalPackedRenderPass {
   private lastComputeTileViewportWidth = 0;
   private lastComputeTileViewportHeight = 0;
   private lastSortStart = 0;
+  private lastSortRequestTime = Number.NEGATIVE_INFINITY;
   private lastSortMs = 0;
   private lastUploadMs = 0;
   private lastGpuGatherMs = 0;
@@ -476,6 +490,12 @@ class SsogGlobalPackedRenderPass {
   private readonly cpuShEnabled = isCpuShEnabled();
   private readonly cpuShIntervalFrames = getCpuShIntervalFrames();
   private readonly gpuRadixSortIntervalFrames = getSsogGpuRadixSortIntervalFrames();
+  private readonly sortIntervalFrames = getSortIntervalFrames();
+  private readonly sortMoveEpsilonSq = getSortMoveEpsilonSq();
+  private readonly sortForwardDotThreshold = getSortForwardDotThreshold();
+  private readonly sortMinIntervalMs = getSortMinIntervalMs();
+  private readonly sortTinyMoveEpsilonSq = getSortTinyMoveEpsilonSq();
+  private readonly sortTinyForwardDotThreshold = getSortTinyForwardDotThreshold();
 
   readonly signature: string;
   readonly keys: Set<string>;
@@ -727,6 +747,10 @@ class SsogGlobalPackedRenderPass {
       sortPending: this.sortPending,
       sortQueued: !!this.pendingSortView,
       sortCoalesced: this.sortCoalesced,
+      sortThrottled: this.sortThrottled,
+      sortTinyReuse: this.sortTinyReuse,
+      sortMinIntervalMs: this.sortMinIntervalMs,
+      sortDedicatedWorker: !!this.sortWorker,
       lastSortMs: this.lastSortMs,
       lastUploadMs: this.lastUploadMs,
       lastLodBuildMs: 0,
@@ -951,8 +975,8 @@ class SsogGlobalPackedRenderPass {
       this.viewport.x !== this.lastComputeTileViewportWidth ||
       this.viewport.y !== this.lastComputeTileViewportHeight ||
       !Number.isFinite(this.lastComputeTileCameraPosition.x) ||
-      Vector3.DistanceSquared(cameraPosition, this.lastComputeTileCameraPosition) > SORT_MOVE_EPSILON_SQ ||
-      Vector3.Dot(cameraForward, this.lastComputeTileCameraForward) < SORT_FORWARD_DOT_THRESHOLD;
+      Vector3.DistanceSquared(cameraPosition, this.lastComputeTileCameraPosition) > this.sortMoveEpsilonSq ||
+      Vector3.Dot(cameraForward, this.lastComputeTileCameraForward) < this.sortForwardDotThreshold;
 
     if (dirty) {
       this.lastComputeTileViewportWidth = this.viewport.x;
@@ -1439,8 +1463,21 @@ class SsogGlobalPackedRenderPass {
     const cameraForward = camera.getDirection(Vector3.Forward());
     this.updateCpuShColors(cameraPosition);
     const initialSort = !Number.isFinite(this.lastCameraPosition.x);
-    const moved = Vector3.DistanceSquared(cameraPosition, this.lastCameraPosition) > SORT_MOVE_EPSILON_SQ;
-    const turned = Vector3.Dot(cameraForward, this.lastCameraForward) < SORT_FORWARD_DOT_THRESHOLD;
+    const cameraMoveDistanceSq = Vector3.DistanceSquared(cameraPosition, this.lastCameraPosition);
+    const cameraForwardDot = Vector3.Dot(cameraForward, this.lastCameraForward);
+    const moved = cameraMoveDistanceSq > this.sortMoveEpsilonSq;
+    const turned = cameraForwardDot < this.sortForwardDotThreshold;
+    const tinyMoved = cameraMoveDistanceSq <= this.sortTinyMoveEpsilonSq;
+    const tinyTurned = cameraForwardDot >= this.sortTinyForwardDotThreshold;
+    if (this.pendingSortView && !this.sortPending && this.canDispatchSortNow()) {
+      this.flushPendingSortView();
+      return;
+    }
+    if (!initialSort && tinyMoved && tinyTurned) {
+      this.sortTinyReuse++;
+      this.updateGpuVisibleState();
+      return;
+    }
     if (!initialSort && !moved && !turned) {
       this.updateGpuVisibleState();
       return;
@@ -1463,7 +1500,7 @@ class SsogGlobalPackedRenderPass {
       }
     }
 
-    this.sortFrame = (this.sortFrame + 1) % SORT_INTERVAL_FRAMES;
+    this.sortFrame = (this.sortFrame + 1) % this.sortIntervalFrames;
     if (!initialSort && this.sortFrame !== 1) {
       return;
     }
@@ -1480,12 +1517,34 @@ class SsogGlobalPackedRenderPass {
       return;
     }
 
+    if (!this.canDispatchSortNow()) {
+      this.sortThrottled++;
+      this.queuePendingSortView(cameraPosition, cameraForward);
+      return;
+    }
+    this.postSortRequest(
+      this.sortWorker,
+      [cameraPosition.x, cameraPosition.y, cameraPosition.z],
+      [cameraForward.x, cameraForward.y, cameraForward.z],
+    );
+  }
+
+  private canDispatchSortNow(now = performance.now()): boolean {
+    return now - this.lastSortRequestTime >= this.sortMinIntervalMs;
+  }
+
+  private postSortRequest(
+    sortWorker: Worker,
+    cameraPosition: [number, number, number],
+    cameraForward: [number, number, number],
+  ): void {
     this.sortPending = true;
     this.lastSortStart = performance.now();
-    this.sortWorker.postMessage({
+    this.lastSortRequestTime = this.lastSortStart;
+    sortWorker.postMessage({
       type: "sort",
-      cameraPosition: [cameraPosition.x, cameraPosition.y, cameraPosition.z],
-      cameraForward: [cameraForward.x, cameraForward.y, cameraForward.z],
+      cameraPosition,
+      cameraForward,
     });
   }
 
@@ -1501,18 +1560,16 @@ class SsogGlobalPackedRenderPass {
     if (!this.pendingSortView || !this.sortWorker || this.disposed || !this.enabled) {
       return;
     }
+    if (!this.canDispatchSortNow()) {
+      this.sortThrottled++;
+      return;
+    }
 
     const view = this.pendingSortView;
     this.pendingSortView = undefined;
-    this.sortPending = true;
-    this.lastSortStart = performance.now();
     this.lastCameraPosition.set(view.cameraPosition[0], view.cameraPosition[1], view.cameraPosition[2]);
     this.lastCameraForward.set(view.cameraForward[0], view.cameraForward[1], view.cameraForward[2]);
-    this.sortWorker.postMessage({
-      type: "sort",
-      cameraPosition: view.cameraPosition,
-      cameraForward: view.cameraForward,
-    });
+    this.postSortRequest(this.sortWorker, view.cameraPosition, view.cameraForward);
   }
 
   private updateGpuSortStages(cameraPosition: Vector3, cameraForward: Vector3, forceDepth = false): boolean {
@@ -1535,8 +1592,8 @@ class SsogGlobalPackedRenderPass {
 
     if (forceDepth) {
       const initialGpuSort = !Number.isFinite(this.lastGpuSortCameraPosition.x) || !radixStats.dispatched;
-      const moved = Vector3.DistanceSquared(cameraPosition, this.lastGpuSortCameraPosition) > SORT_MOVE_EPSILON_SQ;
-      const turned = Vector3.Dot(cameraForward, this.lastGpuSortCameraForward) < SORT_FORWARD_DOT_THRESHOLD;
+      const moved = Vector3.DistanceSquared(cameraPosition, this.lastGpuSortCameraPosition) > this.sortMoveEpsilonSq;
+      const turned = Vector3.Dot(cameraForward, this.lastGpuSortCameraForward) < this.sortForwardDotThreshold;
       if (!initialGpuSort && !moved && !turned) {
         this.lastGpuSortSkippedReason = "camera-static";
         this.updateGpuVisibleState();

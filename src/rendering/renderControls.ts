@@ -101,13 +101,25 @@ const getSortIntervalFrames = (): number => Math.max(1, Math.floor(getPositiveNu
 
 const getGpuSortIntervalFrames = (): number => Math.max(1, Math.floor(getPositiveNumberParam("gpuSortInterval", 30)));
 
+const getSortMinIntervalMs = (): number => getPositiveNumberParam("sortMinIntervalMs", 50);
+
 const getSortMoveEpsilonSq = (): number => {
   const epsilon = getPositiveNumberParam("sortMoveEpsilon", 0.01);
   return epsilon * epsilon;
 };
 
+const getSortTinyMoveEpsilonSq = (): number => {
+  const epsilon = getPositiveNumberParam("sortTinyMoveEpsilon", 0.002);
+  return epsilon * epsilon;
+};
+
 const getSortForwardDotThreshold = (): number => {
   const degrees = getPositiveNumberParam("sortAngleDegrees", 0.25);
+  return Math.cos((degrees * Math.PI) / 180);
+};
+
+const getSortTinyForwardDotThreshold = (): number => {
+  const degrees = getPositiveNumberParam("sortTinyAngleDegrees", 0.05);
   return Math.cos((degrees * Math.PI) / 180);
 };
 
@@ -119,8 +131,11 @@ export {
   getGpuSortIntervalFrames,
   getSortForwardDotThreshold,
   getSortIntervalFrames,
+  getSortMinIntervalMs,
   getSortMode,
   getSortMoveEpsilonSq,
+  getSortTinyForwardDotThreshold,
+  getSortTinyMoveEpsilonSq,
   resolveRendererBackend,
 };
 export type { EffectiveRendererMode, RendererBackend, RequestedRendererMode, SortMode };

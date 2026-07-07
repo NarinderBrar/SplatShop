@@ -27,8 +27,11 @@ import {
   getGpuSortIntervalFrames,
   getSortForwardDotThreshold,
   getSortIntervalFrames,
+  getSortMinIntervalMs,
   getSortMode,
   getSortMoveEpsilonSq,
+  getSortTinyForwardDotThreshold,
+  getSortTinyMoveEpsilonSq,
   resolveRendererBackend,
   type EffectiveRendererMode,
   type RequestedRendererMode,
@@ -237,6 +240,10 @@ type SplatRenderStats = {
   sortPending: boolean;
   sortQueued: boolean;
   sortCoalesced: number;
+  sortThrottled: number;
+  sortTinyReuse: number;
+  sortMinIntervalMs: number;
+  sortDedicatedWorker: boolean;
   lastSortMs: number;
   lastUploadMs: number;
   lastLodBuildMs: number;
@@ -340,6 +347,9 @@ class SplatRenderPass {
   private readonly computeTileUpdateInterval = getComputeTileUpdateInterval();
   private readonly sortMoveEpsilonSq = getSortMoveEpsilonSq();
   private readonly sortForwardDotThreshold = getSortForwardDotThreshold();
+  private readonly sortMinIntervalMs = getSortMinIntervalMs();
+  private readonly sortTinyMoveEpsilonSq = getSortTinyMoveEpsilonSq();
+  private readonly sortTinyForwardDotThreshold = getSortTinyForwardDotThreshold();
   private readonly viewport = new Vector2(1, 1);
   private lastViewportWidth = 0;
   private lastViewportHeight = 0;
@@ -348,6 +358,8 @@ class SplatRenderPass {
   private sortPending = false;
   private pendingSortView?: { cameraPosition: [number, number, number]; cameraForward: [number, number, number] };
   private sortCoalesced = 0;
+  private sortThrottled = 0;
+  private sortTinyReuse = 0;
   private enabled = true;
   private sortFrame = 0;
   private gpuSortFrame = 0;
@@ -367,6 +379,7 @@ class SplatRenderPass {
   private activeChunks = 0;
   private selectedLods = 0;
   private lastSortStart = 0;
+  private lastSortRequestTime = Number.NEGATIVE_INFINITY;
   private lastSortMs = 0;
   private lastUploadMs = 0;
   private lastLodBuildMs = 0;
@@ -540,6 +553,10 @@ class SplatRenderPass {
       sortPending: this.sortPending,
       sortQueued: !!this.pendingSortView,
       sortCoalesced: this.sortCoalesced,
+      sortThrottled: this.sortThrottled,
+      sortTinyReuse: this.sortTinyReuse,
+      sortMinIntervalMs: this.sortMinIntervalMs,
+      sortDedicatedWorker: !!this.sortWorker,
       lastSortMs: this.lastSortMs,
       lastUploadMs: this.lastUploadMs,
       lastLodBuildMs: this.lastLodBuildMs,
@@ -1494,6 +1511,19 @@ class SplatRenderPass {
     const moved = Vector3.DistanceSquared(cameraPosition, this.lastCameraPosition) > this.sortMoveEpsilonSq;
     const turned = Vector3.Dot(cameraForward, this.lastCameraForward) < this.sortForwardDotThreshold;
     const shouldSortView = initialSort || moved || turned;
+    const tinyMoved = Vector3.DistanceSquared(cameraPosition, this.lastCameraPosition) <= this.sortTinyMoveEpsilonSq;
+    const tinyTurned = Vector3.Dot(cameraForward, this.lastCameraForward) >= this.sortTinyForwardDotThreshold;
+
+    if (this.pendingSortView && !this.sortPending && this.canDispatchSortNow()) {
+      this.flushPendingSortView();
+      return;
+    }
+
+    if (!initialSort && tinyMoved && tinyTurned && this.sortMode !== "continuous") {
+      this.sortTinyReuse++;
+      this.updateGpuSortStages(cameraPosition, cameraForward, splatBuffers);
+      return;
+    }
 
     if (shouldSortView && this.gpuSortVisibleMode === "auto") {
       this.useCpuVisibleSort(splatBuffers);
@@ -1535,12 +1565,34 @@ class SplatRenderPass {
     if (!sortWorker) {
       return;
     }
+    if (!this.canDispatchSortNow()) {
+      this.sortThrottled++;
+      this.queuePendingSortView(cameraPosition, cameraForward);
+      return;
+    }
+    this.postSortRequest(
+      sortWorker,
+      [cameraPosition.x, cameraPosition.y, cameraPosition.z],
+      [cameraForward.x, cameraForward.y, cameraForward.z],
+    );
+  }
+
+  private canDispatchSortNow(now = performance.now()): boolean {
+    return now - this.lastSortRequestTime >= this.sortMinIntervalMs;
+  }
+
+  private postSortRequest(
+    sortWorker: Worker,
+    cameraPosition: [number, number, number],
+    cameraForward: [number, number, number],
+  ): void {
     this.sortPending = true;
     this.lastSortStart = performance.now();
+    this.lastSortRequestTime = this.lastSortStart;
     sortWorker.postMessage({
       type: "sort",
-      cameraPosition: [cameraPosition.x, cameraPosition.y, cameraPosition.z],
-      cameraForward: [cameraForward.x, cameraForward.y, cameraForward.z],
+      cameraPosition,
+      cameraForward,
     });
   }
 
@@ -1556,18 +1608,16 @@ class SplatRenderPass {
     if (!this.pendingSortView || !this.sortWorker || this.disposed || !this.enabled) {
       return;
     }
+    if (!this.canDispatchSortNow()) {
+      this.sortThrottled++;
+      return;
+    }
 
     const view = this.pendingSortView;
     this.pendingSortView = undefined;
-    this.sortPending = true;
-    this.lastSortStart = performance.now();
     this.lastCameraPosition.set(view.cameraPosition[0], view.cameraPosition[1], view.cameraPosition[2]);
     this.lastCameraForward.set(view.cameraForward[0], view.cameraForward[1], view.cameraForward[2]);
-    this.sortWorker.postMessage({
-      type: "sort",
-      cameraPosition: view.cameraPosition,
-      cameraForward: view.cameraForward,
-    });
+    this.postSortRequest(this.sortWorker, view.cameraPosition, view.cameraForward);
   }
 
   private updateLod(cameraPosition: Vector3, splatBuffers: SplatBuffers): void {
