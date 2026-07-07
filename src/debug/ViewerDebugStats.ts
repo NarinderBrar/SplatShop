@@ -614,7 +614,7 @@ class ViewerDebugStats {
       streamingStats.qualityPreset !== undefined
         ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityPlatform ? ` / ${streamingStats.qualityPlatform}` : ""}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}${streamingStats.baseSplatBudget !== undefined && streamingStats.baseSplatBudget !== streamingStats.splatBudget ? ` of ${formatCount(streamingStats.baseSplatBudget)}` : ""}`
         : "",
-      `Shader quality: min ${shaderQuality.minPixelRadius.toFixed(2)}px / max ${shaderQuality.maxPixelRadius.toFixed(0)}px / alpha ${shaderQuality.alphaClip.toFixed(4)} / DPR ${shaderQuality.maxDevicePixelRatio.toFixed(2)}x`,
+      `Shader quality: min ${shaderQuality.minPixelRadius.toFixed(2)}px / max ${shaderQuality.maxPixelRadius.toFixed(0)}px / alpha ${shaderQuality.minAlpha.toFixed(4)} / stddev ${shaderQuality.maxStdDev.toFixed(2)} / clip ${shaderQuality.clipXY.toFixed(2)} / blur ${shaderQuality.blurAmount.toFixed(2)} / pre ${shaderQuality.preBlurAmount.toFixed(2)} / DPR ${shaderQuality.maxDevicePixelRatio.toFixed(2)}x`,
       streamingStats.adaptiveQualityScale !== undefined
         ? `SSOG adaptive: ${(streamingStats.adaptiveQualityScale * 100).toFixed(0)}% / ${streamingStats.qualityInteractionState ?? "unknown"} ${((streamingStats.adaptiveInteractionScale ?? 1) * 100).toFixed(0)}% / frame ${formatMs(streamingStats.adaptiveFrameMs ?? 0)} ms / target ${formatMs(streamingStats.adaptiveTargetFrameMs ?? 0)} ms`
         : "",

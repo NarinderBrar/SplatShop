@@ -2,6 +2,8 @@ varying vCorner: vec2f;
 varying vColor: vec4f;
 
 uniform vizMode: f32;
+uniform minAlpha: f32;
+uniform blurAmount: f32;
 
 const EXP4: f32 = 0.01831563888873418;
 const INV_ONE_MINUS_EXP4: f32 = 1.018657360363774;
@@ -21,8 +23,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
 
   let splatAlpha = clamp(input.vColor.a, 0.0, 1.0);
   let effectiveAlpha = select(splatAlpha, 1.0, uniforms.vizMode == 1.0);
-  let alpha = normExp(radius2) * effectiveAlpha;
-  if (alpha < __WGSL_FRAGMENT_SOURCE_EXPR_0__) {
+  let blurScale = max(0.5, uniforms.blurAmount);
+  let alpha = normExp(radius2 / (blurScale * blurScale)) * effectiveAlpha;
+  if (alpha < max(uniforms.minAlpha, __WGSL_FRAGMENT_SOURCE_EXPR_0__)) {
     discard;
   }
   fragmentOutputs.color = vec4f(max(input.vColor.rgb, vec3f(0.0)) * alpha, alpha);

@@ -10,6 +10,7 @@ uniform vec2 viewport;
 uniform float gaussianScale;
 uniform float minPixelRadius;
 uniform float maxPixelRadius;
+uniform float clipXY;
 uniform float vizMode;
 
 varying vec2 vCorner;
@@ -22,6 +23,13 @@ void main(void) {
     pixelRadius = 2.0;
   } else {
     pixelRadius = clamp(exp(splatScale) * gaussianScale, minPixelRadius, maxPixelRadius);
+  }
+  if (abs(centerClip.x) - pixelRadius * centerClip.w / viewport.x > centerClip.w * clipXY ||
+      abs(centerClip.y) - pixelRadius * centerClip.w / viewport.y > centerClip.w * clipXY) {
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    vCorner = vec2(2.0);
+    vColor = vec4(0.0);
+    return;
   }
   vec2 clipOffset = corner * pixelRadius * 2.0 / viewport * centerClip.w;
 

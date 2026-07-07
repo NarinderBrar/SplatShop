@@ -11,10 +11,20 @@ type PlatformQualityProfile = {
 };
 
 type SplatShaderQualityProfile = {
+  minAlpha: number;
   minPixelRadius: number;
   maxPixelRadius: number;
+  maxStdDev: number;
+  clipXY: number;
+  blurAmount: number;
+  preBlurAmount: number;
   alphaClip: number;
   maxDevicePixelRatio: number;
+};
+
+const getNumberParam = (name: string, fallback: number): number => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) ? value : fallback;
 };
 
 const getPositiveNumberParam = (name: string, fallback: number): number => {
@@ -182,32 +192,57 @@ const getSplatShaderQualityProfile = (): SplatShaderQualityProfile => {
   const deviceTier = getDeviceTier();
   const base: Record<SplatQualityPreset, SplatShaderQualityProfile> = {
     fast: {
+      minAlpha: 1.5 / 255,
       minPixelRadius: 2.5,
       maxPixelRadius: 56,
+      maxStdDev: 2.2,
+      clipXY: 1.08,
+      blurAmount: 0.9,
+      preBlurAmount: 0.2,
       alphaClip: 1.5 / 255,
       maxDevicePixelRatio: 1.15,
     },
     balanced: {
+      minAlpha: 1 / 255,
       minPixelRadius: 2,
       maxPixelRadius: 96,
+      maxStdDev: 2.8284271247461903,
+      clipXY: 1.15,
+      blurAmount: 1,
+      preBlurAmount: 0.3,
       alphaClip: 1 / 255,
       maxDevicePixelRatio: 1.5,
     },
     full: {
+      minAlpha: 0.75 / 255,
       minPixelRadius: 1.5,
       maxPixelRadius: 128,
+      maxStdDev: 3,
+      clipXY: 1.22,
+      blurAmount: 1,
+      preBlurAmount: 0.3,
       alphaClip: 0.75 / 255,
       maxDevicePixelRatio: 2,
     },
     idle: {
+      minAlpha: 0.5 / 255,
       minPixelRadius: 1.25,
       maxPixelRadius: 144,
+      maxStdDev: 3.1,
+      clipXY: 1.25,
+      blurAmount: 1.03,
+      preBlurAmount: 0.32,
       alphaClip: 0.5 / 255,
       maxDevicePixelRatio: 2,
     },
     screenshot: {
+      minAlpha: 0.25 / 255,
       minPixelRadius: 1,
       maxPixelRadius: 192,
+      maxStdDev: 3.2,
+      clipXY: 1.3,
+      blurAmount: 1.05,
+      preBlurAmount: 0.35,
       alphaClip: 0.25 / 255,
       maxDevicePixelRatio: 2.5,
     },
@@ -220,17 +255,23 @@ const getSplatShaderQualityProfile = (): SplatShaderQualityProfile => {
         : { min: 1, max: 1, dpr: 1, alpha: 1 };
   const platformScale =
     platform === "quest"
-      ? { min: 1.25, max: 0.65, dpr: 0.75, alpha: 1.35 }
+      ? { min: 1.25, max: 0.65, dpr: 0.75, alpha: 1.35, stdDev: 0.82, clip: 0.96, blur: 0.95 }
       : platform === "ios" || platform === "android" || platform === "mobile"
-        ? { min: 1.15, max: 0.8, dpr: 0.85, alpha: 1.15 }
+        ? { min: 1.15, max: 0.8, dpr: 0.85, alpha: 1.15, stdDev: 0.9, clip: 0.98, blur: 0.97 }
         : platform === "vision"
-          ? { min: 1, max: 0.9, dpr: 0.9, alpha: 1.05 }
-          : { min: 1, max: 1, dpr: 1, alpha: 1 };
+          ? { min: 1, max: 0.9, dpr: 0.9, alpha: 1.05, stdDev: 0.95, clip: 1, blur: 1 }
+          : { min: 1, max: 1, dpr: 1, alpha: 1, stdDev: 1, clip: 1, blur: 1 };
   const selected = base[preset];
+  const alphaClip = selected.alphaClip * tierScale.alpha * platformScale.alpha;
   return {
+    minAlpha: getPositiveNumberParam("splatMinAlpha", selected.minAlpha * tierScale.alpha * platformScale.alpha),
     minPixelRadius: getPositiveNumberParam("splatMinPixelRadius", selected.minPixelRadius * tierScale.min * platformScale.min),
     maxPixelRadius: getPositiveNumberParam("splatMaxPixelRadius", selected.maxPixelRadius * tierScale.max * platformScale.max),
-    alphaClip: getPositiveNumberParam("splatAlphaClip", selected.alphaClip * tierScale.alpha * platformScale.alpha),
+    maxStdDev: getPositiveNumberParam("splatMaxStdDev", selected.maxStdDev * platformScale.stdDev),
+    clipXY: Math.max(0.9, getPositiveNumberParam("splatClipXY", selected.clipXY * platformScale.clip)),
+    blurAmount: Math.max(0.5, getPositiveNumberParam("splatBlurAmount", selected.blurAmount * platformScale.blur)),
+    preBlurAmount: Math.max(0, getNumberParam("splatPreBlurAmount", selected.preBlurAmount)),
+    alphaClip: getPositiveNumberParam("splatAlphaClip", alphaClip),
     maxDevicePixelRatio: getPositiveNumberParam(
       "maxDevicePixelRatio",
       Math.max(1, selected.maxDevicePixelRatio * tierScale.dpr * platformScale.dpr),

@@ -1363,8 +1363,13 @@ class SplatRenderPass {
           "projection",
           "viewport",
           "gaussianScale",
+          "minAlpha",
           "minPixelRadius",
           "maxPixelRadius",
+          "maxStdDev",
+          "clipXY",
+          "blurAmount",
+          "preBlurAmount",
           "renderSplatCount",
           "vizMode",
         ],
@@ -1380,8 +1385,13 @@ class SplatRenderPass {
     material.alphaMode = Constants.ALPHA_PREMULTIPLIED;
     material.disableDepthWrite = true;
     material.setFloat("gaussianScale", isWebGPU ? 1.0 : 420);
+    material.setFloat("minAlpha", SHADER_QUALITY.minAlpha);
     material.setFloat("minPixelRadius", SHADER_QUALITY.minPixelRadius);
     material.setFloat("maxPixelRadius", SHADER_QUALITY.maxPixelRadius);
+    material.setFloat("maxStdDev", SHADER_QUALITY.maxStdDev);
+    material.setFloat("clipXY", SHADER_QUALITY.clipXY);
+    material.setFloat("blurAmount", SHADER_QUALITY.blurAmount);
+    material.setFloat("preBlurAmount", SHADER_QUALITY.preBlurAmount);
     material.setFloat("renderSplatCount", 0);
     material.setFloat("vizMode", 0);
 

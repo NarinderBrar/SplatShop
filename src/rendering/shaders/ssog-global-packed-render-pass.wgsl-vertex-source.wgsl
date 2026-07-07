@@ -7,6 +7,9 @@ uniform projection: mat4x4f;
 uniform viewport: vec2f;
 uniform minPixelRadius: f32;
 uniform maxPixelRadius: f32;
+uniform maxStdDev: f32;
+uniform clipXY: f32;
+uniform preBlurAmount: f32;
 uniform renderSplatCount: f32;
 uniform vizMode: f32;
 
@@ -128,21 +131,23 @@ fn initCornerCov(center: vec3f, rotation: vec4f, scale: vec3f, corner: vec2f, ce
   let J = mat3x3f(vec3f(J1, 0.0, J2.x), vec3f(0.0, J1, J2.y), vec3f(0.0, 0.0, 0.0));
   let T = W * J;
   let cov = transpose(T) * Vrk * T;
-  let diagonal1 = cov[0][0] + 0.3;
+  let lowpass = max(0.0, uniforms.preBlurAmount);
+  let diagonal1 = cov[0][0] + lowpass;
   let offDiagonal = cov[0][1];
-  let diagonal2 = cov[1][1] + 0.3;
+  let diagonal2 = cov[1][1] + lowpass;
   let mid = 0.5 * (diagonal1 + diagonal2);
   let radius = length(vec2f((diagonal1 - diagonal2) / 2.0, offDiagonal));
   let lambda1 = mid + radius;
   let lambda2 = max(mid - radius, 0.1);
   let vmin = min(1024.0, min(uniforms.viewport.x, uniforms.viewport.y));
-  let l1 = 2.0 * min(sqrt(2.0 * lambda1), vmin);
-  let l2 = 2.0 * min(sqrt(2.0 * lambda2), vmin);
+  let stdDev = max(0.5, uniforms.maxStdDev);
+  let l1 = min(stdDev * sqrt(lambda1), min(uniforms.maxPixelRadius, vmin));
+  let l2 = min(stdDev * sqrt(lambda2), min(uniforms.maxPixelRadius, vmin));
   let maxL = max(l1, l2);
   if (maxL < uniforms.minPixelRadius) {
     return vec4f(0.0, 0.0, 2.0, 1.0);
   }
-  if (any(abs(centerClipClamped.xy) - vec2f(maxL, maxL) * centerClipClamped.w / uniforms.viewport > vec2f(centerClipClamped.w))) {
+  if (any(abs(centerClipClamped.xy) - vec2f(maxL, maxL) * centerClipClamped.w / uniforms.viewport > vec2f(centerClipClamped.w * uniforms.clipXY))) {
     return vec4f(0.0, 0.0, 2.0, 1.0);
   }
   let c = centerClipClamped.w / uniforms.viewport;
