@@ -356,6 +356,8 @@ class ViewerDebugStats {
       fallbackReasonGpuPageUnavailable?: number;
       fallbackReasonMemoryPressure?: number;
       fallbackReasonBudgetThrottled?: number;
+      residencyFallbackNodes?: number;
+      parentResidencyFallbackNodes?: number;
       fallbackReasonBreakdown?: string;
       candidateChunks?: number;
       frustumVisibleChunks?: number;
@@ -670,6 +672,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.finestSelectedNodes !== undefined
         ? `SSOG LOD nodes: finest ${formatCount(streamingStats.finestSelectedNodes)} / coarse fallback ${formatCount(streamingStats.coarseFallbackNodes ?? 0)}`
+        : "",
+      streamingStats.residencyFallbackNodes !== undefined
+        ? `SSOG residency fallback: ${formatCount(streamingStats.residencyFallbackNodes)} nodes / parent ${formatCount(streamingStats.parentResidencyFallbackNodes ?? 0)}`
         : "",
       streamingStats.fallbackReasonBreakdown
         ? `SSOG fallback reasons: ${streamingStats.fallbackReasonBreakdown}`

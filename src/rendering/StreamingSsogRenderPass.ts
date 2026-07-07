@@ -154,6 +154,8 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   fallbackReasonMemoryPressure: number;
   fallbackReasonBudgetThrottled: number;
   fallbackReasonBreakdown: string;
+  residencyFallbackNodes: number;
+  parentResidencyFallbackNodes: number;
   candidateChunks: number;
   frustumVisibleChunks: number;
   frustumCulledChunks: number;
@@ -886,6 +888,7 @@ class StreamingSsogRenderPass {
   private readonly chunkLoadAttempts = new Map<string, number>();
   private readonly chunkRetryReadyFrame = new Map<string, number>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
+  private readonly entriesByNode = new Map<number, SsogChunkEntry[]>();
   private readonly finestLodByNode = new Map<number, number>();
   private readonly entryKeys: string[];
   private readonly selectedKeys = new Set<string>();
@@ -1015,6 +1018,8 @@ class StreamingSsogRenderPass {
   private pendingReplacementNodes = 0;
   private finestSelectedNodes = 0;
   private coarseFallbackNodes = 0;
+  private residencyFallbackNodes = 0;
+  private parentResidencyFallbackNodes = 0;
   private fallbackReasonChildMissing = 0;
   private fallbackReasonUploadBudgetExceeded = 0;
   private fallbackReasonGpuPageUnavailable = 0;
@@ -1052,10 +1057,19 @@ class StreamingSsogRenderPass {
     this.hiZOccludedFrameCounts = new Uint8Array(entries.length);
     entries.forEach((entry, index) => {
       this.entriesByKey.set(this.entryKeys[index], entry);
+      const nodeEntries = this.entriesByNode.get(entry.nodeId);
+      if (nodeEntries) {
+        nodeEntries.push(entry);
+      } else {
+        this.entriesByNode.set(entry.nodeId, [entry]);
+      }
       const finestLod = this.finestLodByNode.get(entry.nodeId);
       if (finestLod === undefined || entry.lod < finestLod) {
         this.finestLodByNode.set(entry.nodeId, entry.lod);
       }
+    });
+    this.entriesByNode.forEach((nodeEntries) => {
+      nodeEntries.sort((a, b) => a.lod - b.lod || a.count - b.count);
     });
     const finestEntries = entries.filter((entry) => entry.lod === 0);
     this.sourceSplats = (finestEntries.length > 0 ? finestEntries : entries).reduce(
@@ -1637,6 +1651,8 @@ class StreamingSsogRenderPass {
       fallbackReasonGpuPageUnavailable: this.fallbackReasonGpuPageUnavailable,
       fallbackReasonMemoryPressure: this.fallbackReasonMemoryPressure,
       fallbackReasonBudgetThrottled: this.fallbackReasonBudgetThrottled,
+      residencyFallbackNodes: this.residencyFallbackNodes,
+      parentResidencyFallbackNodes: this.parentResidencyFallbackNodes,
       fallbackReasonBreakdown: [
         this.fallbackReasonChildMissing > 0 ? `child_missing:${this.fallbackReasonChildMissing}` : "",
         this.fallbackReasonUploadBudgetExceeded > 0 ? `upload_budget:${this.fallbackReasonUploadBudgetExceeded}` : "",
@@ -2141,9 +2157,12 @@ class StreamingSsogRenderPass {
         missingSelectedNodeIds.add(item.nodeId);
       }
     }
-    for (const nodeId of missingSelectedNodeIds) {
-      const fallback = this.getCoarsestEntryForNode(nodeId);
-      if (fallback) {
+    for (const item of stableSelected) {
+      if (!missingSelectedNodeIds.has(item.nodeId)) {
+        continue;
+      }
+      const fallbackCandidates = this.getResidencyFallbackCandidates(item);
+      for (const fallback of fallbackCandidates) {
         const fallbackKey = chunkKey(fallback);
         if (this.gpuLoaded.has(fallbackKey)) {
           this.fallbackKeys.add(fallbackKey);
@@ -2166,6 +2185,7 @@ class StreamingSsogRenderPass {
       }
     }
     this.coarseFallbackNodes = this.coarseFallbackNodeIds.size;
+    this.updateResidencyFallbackStats(stableSelected, renderSelected);
 
     this.updateFallbackReasonStats(stableSelected, selection.selectedSplats);
 
@@ -2941,9 +2961,11 @@ class StreamingSsogRenderPass {
   }
 
   private getCoarsestEntryForNode(nodeId: number): SsogChunkEntry | undefined {
-    return this.entries
-      .filter((entry) => entry.nodeId === nodeId)
-      .sort((a, b) => b.lod - a.lod || a.count - b.count)[0];
+    const entries = this.entriesByNode.get(nodeId);
+    if (!entries || entries.length === 0) {
+      return undefined;
+    }
+    return entries[entries.length - 1];
   }
 
   private getBestResidentEntryForNode(nodeId: number, targetLod: number): SsogChunkEntry | undefined {
@@ -2961,6 +2983,80 @@ class StreamingSsogRenderPass {
     })[0];
   }
 
+  private getAncestorNodeIds(item: SelectedSsogItem): number[] {
+    const ancestors: number[] = [];
+    const visited = new Set<number>();
+    let parentNodeId = item.value.parentNodeId;
+    while (parentNodeId !== undefined && !visited.has(parentNodeId)) {
+      visited.add(parentNodeId);
+      ancestors.push(parentNodeId);
+      const parentEntry = this.getCoarsestEntryForNode(parentNodeId);
+      parentNodeId = parentEntry?.parentNodeId;
+    }
+    return ancestors;
+  }
+
+  private getResidencyFallbackCandidates(item: SelectedSsogItem): SsogChunkEntry[] {
+    const candidates: SsogChunkEntry[] = [];
+    const seen = new Set<string>();
+    const add = (entry: SsogChunkEntry | undefined): void => {
+      if (!entry) {
+        return;
+      }
+      const key = chunkKey(entry);
+      if (seen.has(key) || key === item.key) {
+        return;
+      }
+      seen.add(key);
+      candidates.push(entry);
+    };
+
+    add(this.getCoarsestEntryForNode(item.nodeId));
+    for (const ancestorNodeId of this.getAncestorNodeIds(item)) {
+      add(this.getCoarsestEntryForNode(ancestorNodeId));
+    }
+    return candidates;
+  }
+
+  private getBestResidentFallbackForItem(item: SelectedSsogItem): { entry: SsogChunkEntry; parentFallback: boolean } | undefined {
+    const sameNodeFallback = this.getBestResidentEntryForNode(item.nodeId, item.lod);
+    if (sameNodeFallback && chunkKey(sameNodeFallback) !== item.key) {
+      return { entry: sameNodeFallback, parentFallback: false };
+    }
+
+    for (const ancestorNodeId of this.getAncestorNodeIds(item)) {
+      const ancestorFallback = this.getBestResidentEntryForNode(ancestorNodeId, item.lod);
+      if (ancestorFallback) {
+        return { entry: ancestorFallback, parentFallback: true };
+      }
+    }
+    return undefined;
+  }
+
+  private updateResidencyFallbackStats(stableSelected: SelectedSsogItem[], renderSelected: SelectedSsogItem[]): void {
+    const desiredByNode = new Map<number, SelectedSsogItem>();
+    for (const item of stableSelected) {
+      desiredByNode.set(item.nodeId, item);
+    }
+
+    const fallbackNodeIds = new Set<number>();
+    const parentFallbackNodeIds = new Set<number>();
+    for (const item of renderSelected) {
+      const desired = desiredByNode.get(item.nodeId);
+      if (!desired || desired.key === item.key) {
+        continue;
+      }
+      fallbackNodeIds.add(item.nodeId);
+      const fallbackEntry = this.entriesByKey.get(item.key);
+      if (fallbackEntry && fallbackEntry.nodeId !== item.nodeId) {
+        parentFallbackNodeIds.add(item.nodeId);
+      }
+    }
+
+    this.residencyFallbackNodes = fallbackNodeIds.size;
+    this.parentResidencyFallbackNodes = parentFallbackNodeIds.size;
+  }
+
   private resolveResidentSelection(selected: SelectedSsogItem[]): SelectedSsogItem[] {
     const fallbackNodes = new Set<number>();
     const resident = selected.map((item): SelectedSsogItem => {
@@ -2968,7 +3064,7 @@ class StreamingSsogRenderPass {
         return item;
       }
 
-      const fallback = this.getBestResidentEntryForNode(item.nodeId, item.lod);
+      const fallback = this.getBestResidentFallbackForItem(item);
       if (!fallback) {
         return item;
       }
@@ -2976,10 +3072,10 @@ class StreamingSsogRenderPass {
       fallbackNodes.add(item.nodeId);
       return {
         ...item,
-        value: fallback,
-        key: chunkKey(fallback),
-        lod: fallback.lod,
-        count: fallback.count,
+        value: fallback.entry,
+        key: chunkKey(fallback.entry),
+        lod: fallback.entry.lod,
+        count: fallback.entry.count,
       };
     });
 
