@@ -8,6 +8,18 @@ type PlatformQualityProfile = {
   ssogSplatBudget: number;
 };
 
+type SplatShaderQualityProfile = {
+  minPixelRadius: number;
+  maxPixelRadius: number;
+  alphaClip: number;
+  maxDevicePixelRatio: number;
+};
+
+const getPositiveNumberParam = (name: string, fallback: number): number => {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
 const getQualityPreset = (): SplatQualityPreset => {
   const params = new URLSearchParams(window.location.search);
   const value = params.get("quality");
@@ -81,6 +93,59 @@ const getPlatformQualityProfile = (): PlatformQualityProfile => {
   };
 };
 
+const getSplatShaderQualityProfile = (): SplatShaderQualityProfile => {
+  const preset = getQualityPreset();
+  const deviceTier = getDeviceTier();
+  const base: Record<SplatQualityPreset, SplatShaderQualityProfile> = {
+    fast: {
+      minPixelRadius: 2.5,
+      maxPixelRadius: 56,
+      alphaClip: 1.5 / 255,
+      maxDevicePixelRatio: 1.15,
+    },
+    balanced: {
+      minPixelRadius: 2,
+      maxPixelRadius: 96,
+      alphaClip: 1 / 255,
+      maxDevicePixelRatio: 1.5,
+    },
+    full: {
+      minPixelRadius: 1.5,
+      maxPixelRadius: 128,
+      alphaClip: 0.75 / 255,
+      maxDevicePixelRatio: 2,
+    },
+    idle: {
+      minPixelRadius: 1.25,
+      maxPixelRadius: 144,
+      alphaClip: 0.5 / 255,
+      maxDevicePixelRatio: 2,
+    },
+    screenshot: {
+      minPixelRadius: 1,
+      maxPixelRadius: 192,
+      alphaClip: 0.25 / 255,
+      maxDevicePixelRatio: 2.5,
+    },
+  };
+  const tierScale =
+    deviceTier === "low"
+      ? { min: 1.15, max: 0.75, dpr: 0.85, alpha: 1.25 }
+      : deviceTier === "high"
+        ? { min: 0.9, max: 1.2, dpr: 1.15, alpha: 0.85 }
+        : { min: 1, max: 1, dpr: 1, alpha: 1 };
+  const selected = base[preset];
+  return {
+    minPixelRadius: getPositiveNumberParam("splatMinPixelRadius", selected.minPixelRadius * tierScale.min),
+    maxPixelRadius: getPositiveNumberParam("splatMaxPixelRadius", selected.maxPixelRadius * tierScale.max),
+    alphaClip: getPositiveNumberParam("splatAlphaClip", selected.alphaClip * tierScale.alpha),
+    maxDevicePixelRatio: getPositiveNumberParam(
+      "maxDevicePixelRatio",
+      Math.max(1, selected.maxDevicePixelRatio * tierScale.dpr),
+    ),
+  };
+};
+
 const getExplicitSplatBudget = (): number | undefined => {
   const explicitBudget = Number(new URLSearchParams(window.location.search).get("splatBudget"));
   return Number.isFinite(explicitBudget) && explicitBudget > 0 ? Math.floor(explicitBudget) : undefined;
@@ -104,5 +169,6 @@ export {
   getPlatformQualityProfile,
   getQualityPreset,
   getQualitySplatBudget,
+  getSplatShaderQualityProfile,
 };
-export type { PlatformQualityProfile, SplatDeviceTier, SplatQualityPreset };
+export type { PlatformQualityProfile, SplatDeviceTier, SplatQualityPreset, SplatShaderQualityProfile };

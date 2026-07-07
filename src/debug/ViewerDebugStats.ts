@@ -1,4 +1,5 @@
 import type { SplatCloud } from "../splat/SplatCloud";
+import { getSplatShaderQualityProfile } from "../rendering/qualityProfiles";
 import { renderDiagnostics } from "../rendering/RenderDiagnostics";
 
 const formatCount = (value: number): string => value.toLocaleString("en-US");
@@ -443,6 +444,7 @@ class ViewerDebugStats {
     };
     const assetStats = splatCloud.asset.stats;
     const renderDiagnosticStats = renderDiagnostics.getStats();
+    const shaderQuality = getSplatShaderQualityProfile();
     const lines = [
       `Mode: ${this.mode}`,
       `FPS: ${this.fps.toFixed(1)}`,
@@ -595,6 +597,7 @@ class ViewerDebugStats {
       streamingStats.qualityPreset !== undefined
         ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}${streamingStats.baseSplatBudget !== undefined && streamingStats.baseSplatBudget !== streamingStats.splatBudget ? ` of ${formatCount(streamingStats.baseSplatBudget)}` : ""}`
         : "",
+      `Shader quality: min ${shaderQuality.minPixelRadius.toFixed(2)}px / max ${shaderQuality.maxPixelRadius.toFixed(0)}px / alpha ${shaderQuality.alphaClip.toFixed(4)} / DPR ${shaderQuality.maxDevicePixelRatio.toFixed(2)}x`,
       streamingStats.adaptiveQualityScale !== undefined
         ? `SSOG adaptive: ${(streamingStats.adaptiveQualityScale * 100).toFixed(0)}% / ${streamingStats.qualityInteractionState ?? "unknown"} ${((streamingStats.adaptiveInteractionScale ?? 1) * 100).toFixed(0)}% / frame ${formatMs(streamingStats.adaptiveFrameMs ?? 0)} ms / target ${formatMs(streamingStats.adaptiveTargetFrameMs ?? 0)} ms`
         : "",

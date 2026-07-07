@@ -40,16 +40,14 @@ import {
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
-import { getQualitySplatBudget } from "./qualityProfiles";
+import { getQualitySplatBudget, getSplatShaderQualityProfile } from "./qualityProfiles";
 import SplatRenderPass_GLSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.glsl-vertex-source.glsl?raw";
 import SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw from "./shaders/splat-render-pass.glsl-fragment-source.glsl?raw";
 import SplatRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.wgsl-vertex-source.wgsl?raw";
 import SplatRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/splat-render-pass.wgsl-fragment-source.wgsl?raw";
 
 const SPLATS_PER_INSTANCE = 128;
-const MIN_PIXEL_RADIUS = 2.0;
-const MAX_PIXEL_RADIUS = 96;
-const ALPHA_CLIP = 1 / 255;
+const SHADER_QUALITY = getSplatShaderQualityProfile();
 const LOD_REBUILD_INTERVAL_FRAMES = 30;
 const LOD_CAMERA_POSITION_EPSILON = 0.08;
 
@@ -80,11 +78,11 @@ const getComputeTileUpdateInterval = (): number => {
 
 const GLSL_VERTEX_SOURCE = SplatRenderPass_GLSL_VERTEX_SOURCE_raw;
 
-const GLSL_FRAGMENT_SOURCE = SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw.replaceAll("__GLSL_FRAGMENT_SOURCE_EXPR_0__", String(ALPHA_CLIP.toFixed(10)));
+const GLSL_FRAGMENT_SOURCE = SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw.replaceAll("__GLSL_FRAGMENT_SOURCE_EXPR_0__", String(SHADER_QUALITY.alphaClip.toFixed(10)));
 
 const WGSL_VERTEX_SOURCE = SplatRenderPass_WGSL_VERTEX_SOURCE_raw;
 
-const WGSL_FRAGMENT_SOURCE = SplatRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(ALPHA_CLIP.toFixed(10)));
+const WGSL_FRAGMENT_SOURCE = SplatRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(SHADER_QUALITY.alphaClip.toFixed(10)));
 
 type SplatRenderStats = {
   renderSplats: number;
@@ -1359,8 +1357,8 @@ class SplatRenderPass {
     material.alphaMode = Constants.ALPHA_PREMULTIPLIED;
     material.disableDepthWrite = true;
     material.setFloat("gaussianScale", isWebGPU ? 1.0 : 420);
-    material.setFloat("minPixelRadius", MIN_PIXEL_RADIUS);
-    material.setFloat("maxPixelRadius", MAX_PIXEL_RADIUS);
+    material.setFloat("minPixelRadius", SHADER_QUALITY.minPixelRadius);
+    material.setFloat("maxPixelRadius", SHADER_QUALITY.maxPixelRadius);
     material.setFloat("renderSplatCount", 0);
     material.setFloat("vizMode", 0);
 

@@ -1,6 +1,7 @@
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 
+import { getSplatShaderQualityProfile } from "./qualityProfiles";
 import { installWebGpuErrorDedupe } from "./RenderDiagnostics";
 
 type EngineResult = {
@@ -28,6 +29,12 @@ async function createWebGpuDeviceDescriptor(): Promise<GPUDeviceDescriptor | und
 }
 
 export async function createEngine(canvas: HTMLCanvasElement): Promise<EngineResult> {
+  const applyQualityPixelRatioCap = (engine: Engine | WebGPUEngine): void => {
+    const maxDevicePixelRatio = getSplatShaderQualityProfile().maxDevicePixelRatio;
+    const targetDevicePixelRatio = Math.min(window.devicePixelRatio || 1, maxDevicePixelRatio);
+    engine.setHardwareScalingLevel(1 / Math.max(1, targetDevicePixelRatio));
+  };
+
   if (await WebGPUEngine.IsSupportedAsync) {
     const deviceDescriptor = await createWebGpuDeviceDescriptor();
     const engine = new WebGPUEngine(canvas, {
@@ -37,6 +44,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<EngineRes
     });
 
     await engine.initAsync();
+    applyQualityPixelRatioCap(engine);
     installWebGpuErrorDedupe(engine);
     return { engine, mode: "WebGPU" };
   }
@@ -47,6 +55,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<EngineRes
     preserveDrawingBuffer: false,
     stencil: true,
   });
+  applyQualityPixelRatioCap(engine);
 
   return { engine, mode: "WebGL" };
 }

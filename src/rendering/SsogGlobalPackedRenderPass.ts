@@ -18,7 +18,7 @@ import { ComputeTileStatsPass, type ComputeTileStats } from "./ComputeTileStatsP
 import { ComputeTileWorkQueuePass, type ComputeTileWorkQueueStats } from "./ComputeTileWorkQueuePass";
 import { canCreateComputeShader, GpuDepthKeyPass, type GpuDepthKeyStats } from "./GpuDepthKeyPass";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
-import { getQualityPreset } from "./qualityProfiles";
+import { getQualityPreset, getSplatShaderQualityProfile } from "./qualityProfiles";
 import { getRequestedRendererMode, type EffectiveRendererMode, type RequestedRendererMode } from "./renderControls";
 import { BufferVersionTracker } from "./BufferVersionTracker";
 import { FrameDataSoA } from "./FrameDataSoA";
@@ -280,9 +280,7 @@ type SsogGlobalPackedStats = {
 };
 
 const SPLATS_PER_INSTANCE = 128;
-const MIN_PIXEL_RADIUS = 2.0;
-const MAX_PIXEL_RADIUS = 96;
-const ALPHA_CLIP = 1 / 255;
+const SHADER_QUALITY = getSplatShaderQualityProfile();
 const SORT_MOVE_EPSILON_SQ = 0.0001;
 const SORT_FORWARD_DOT_THRESHOLD = Math.cos((0.25 * Math.PI) / 180);
 const SORT_INTERVAL_FRAMES = 6;
@@ -362,7 +360,7 @@ const GPU_INDEX_GATHER_SOURCE = SsogGlobalPackedRenderPass_GPU_INDEX_GATHER_SOUR
 
 const WGSL_VERTEX_SOURCE = SsogGlobalPackedRenderPass_WGSL_VERTEX_SOURCE_raw;
 
-const WGSL_FRAGMENT_SOURCE = SsogGlobalPackedRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(ALPHA_CLIP.toFixed(10)));
+const WGSL_FRAGMENT_SOURCE = SsogGlobalPackedRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(SHADER_QUALITY.alphaClip.toFixed(10)));
 
 class SsogGlobalPackedRenderPass {
   private readonly mesh: Mesh;
@@ -1330,8 +1328,8 @@ class SsogGlobalPackedRenderPass {
     material.backFaceCulling = false;
     material.alphaMode = Constants.ALPHA_PREMULTIPLIED;
     material.disableDepthWrite = true;
-    material.setFloat("minPixelRadius", MIN_PIXEL_RADIUS);
-    material.setFloat("maxPixelRadius", MAX_PIXEL_RADIUS);
+    material.setFloat("minPixelRadius", SHADER_QUALITY.minPixelRadius);
+    material.setFloat("maxPixelRadius", SHADER_QUALITY.maxPixelRadius);
     material.setFloat("renderSplatCount", 0);
     material.setFloat("vizMode", 0);
     return material;
