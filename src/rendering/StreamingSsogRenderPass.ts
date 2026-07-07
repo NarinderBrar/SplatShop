@@ -21,14 +21,17 @@ import { renderDiagnostics } from "./RenderDiagnostics";
 import {
   getDeviceTier,
   getExplicitSplatBudget,
+  getPlatformKind,
   getPlatformQualityProfile,
   getQualityPreset,
   type SplatDeviceTier,
+  type SplatPlatformKind,
   type SplatQualityPreset,
 } from "./qualityProfiles";
 
 type StreamingSsogRenderStats = PackedSogRenderStats & {
   qualityPreset: SsogQualityPreset;
+  qualityPlatform: SsogPlatformKind;
   qualityDeviceTier: SsogDeviceTier;
   splatBudget: number;
   baseSplatBudget: number;
@@ -296,6 +299,7 @@ type SsogGpuChunkVisibilityMode = "off" | "debug" | "drive";
 type SsogHiZOcclusionMode = "off" | "debug" | "drive";
 type SsogQualityPreset = SplatQualityPreset;
 type SsogDeviceTier = SplatDeviceTier;
+type SsogPlatformKind = SplatPlatformKind;
 type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4 | 5;
 
 type SsogBudgetRegistration = {
@@ -594,6 +598,8 @@ const getNonNegativeNumberParam = (name: string, fallback: number): number => {
 };
 
 const getSsogQualityPreset = (): SsogQualityPreset => getQualityPreset();
+
+const getSsogPlatformKind = (): SsogPlatformKind => getPlatformKind();
 
 const getSsogDeviceTier = (): SsogDeviceTier => getDeviceTier();
 
@@ -1650,6 +1656,7 @@ class StreamingSsogRenderPass {
       dirtyPassDispatches: activeStats.reduce((sum, item) => sum + item.dirtyPassDispatches, 0),
       dirtyPassSkips: activeStats.reduce((sum, item) => sum + item.dirtyPassSkips, 0),
       qualityPreset: this.qualityPreset,
+      qualityPlatform: getSsogPlatformKind(),
       qualityDeviceTier: getSsogDeviceTier(),
       splatBudget: Number.isFinite(this.splatBudget) ? this.splatBudget : -1,
       baseSplatBudget: Number.isFinite(this.baseSplatBudget) ? this.baseSplatBudget : -1,

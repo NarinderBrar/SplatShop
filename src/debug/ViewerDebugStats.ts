@@ -251,6 +251,7 @@ class ViewerDebugStats {
       evictedChunks?: number;
       cacheSplats?: number;
       qualityPreset?: string;
+      qualityPlatform?: string;
       qualityDeviceTier?: string;
       splatBudget?: number;
       baseSplatBudget?: number;
@@ -611,7 +612,7 @@ class ViewerDebugStats {
         ? `Cache splats: ${formatCount(streamingStats.cacheSplats)}`
         : "",
       streamingStats.qualityPreset !== undefined
-        ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}${streamingStats.baseSplatBudget !== undefined && streamingStats.baseSplatBudget !== streamingStats.splatBudget ? ` of ${formatCount(streamingStats.baseSplatBudget)}` : ""}`
+        ? `SSOG preset: ${streamingStats.qualityPreset}${streamingStats.qualityPlatform ? ` / ${streamingStats.qualityPlatform}` : ""}${streamingStats.qualityDeviceTier ? ` / ${streamingStats.qualityDeviceTier}` : ""} / budget ${streamingStats.splatBudget !== undefined && streamingStats.splatBudget < 0 ? "all" : formatCount(streamingStats.splatBudget ?? 0)}${streamingStats.baseSplatBudget !== undefined && streamingStats.baseSplatBudget !== streamingStats.splatBudget ? ` of ${formatCount(streamingStats.baseSplatBudget)}` : ""}`
         : "",
       `Shader quality: min ${shaderQuality.minPixelRadius.toFixed(2)}px / max ${shaderQuality.maxPixelRadius.toFixed(0)}px / alpha ${shaderQuality.alphaClip.toFixed(4)} / DPR ${shaderQuality.maxDevicePixelRatio.toFixed(2)}x`,
       streamingStats.adaptiveQualityScale !== undefined
