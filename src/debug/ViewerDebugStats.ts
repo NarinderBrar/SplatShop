@@ -279,13 +279,20 @@ class ViewerDebugStats {
       gpuPagePoolTotalPages?: number;
       gpuPagePoolUsedPages?: number;
       gpuPagePoolFreePages?: number;
+      gpuPagePoolLargestFreeRun?: number;
+      gpuPagePoolFragmentation?: number;
       gpuPagePoolAllocatedChunks?: number;
       gpuPagePoolResidentSplats?: number;
       gpuPagePoolOverflowChunks?: number;
       gpuPagePoolOverflowPages?: number;
       gpuPagePoolPressure?: number;
+      gpuPagePoolAllocationRequests?: number;
+      gpuPagePoolOverflowAllocationRequests?: number;
+      gpuPagePoolFreedPages?: number;
+      gpuPagePoolReusedKeys?: number;
       gpuPageEvictedChunks?: number;
       gpuPageEvictedPages?: number;
+      gpuPageDeferredUploadChunks?: number;
       protectedFallbackChunks?: number;
       nearPrefetchChunksLoaded?: number;
       idlePrefetchChunksLoaded?: number;
@@ -611,7 +618,10 @@ class ViewerDebugStats {
         ? `SSOG cache pressure: chunks ${(streamingStats.cacheChunkPressure * 100).toFixed(0)}% / splats ${((streamingStats.cacheSplatPressure ?? 0) * 100).toFixed(0)}% / selected ${(streamingStats.selectedCacheRatio ?? 0).toFixed(2)}x`
         : "",
       streamingStats.gpuPagePoolTotalPages !== undefined
-        ? `SSOG GPU pages: ${formatCount(streamingStats.gpuPagePoolUsedPages ?? 0)}/${formatCount(streamingStats.gpuPagePoolTotalPages)} used / ${formatCount(streamingStats.gpuPagePoolAllocatedChunks ?? 0)} chunks / ${formatCount(streamingStats.gpuPagePoolResidentSplats ?? 0)} splats / page ${formatCount(streamingStats.gpuPagePoolPageCapacitySplats ?? 0)} / pressure ${((streamingStats.gpuPagePoolPressure ?? 0) * 100).toFixed(0)}% / evicted ${formatCount(streamingStats.gpuPageEvictedChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPageEvictedPages ?? 0)} pages${(streamingStats.gpuPagePoolOverflowPages ?? 0) > 0 ? ` / overflow ${formatCount(streamingStats.gpuPagePoolOverflowChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPagePoolOverflowPages ?? 0)} pages` : ""}`
+        ? `SSOG GPU pages: ${formatCount(streamingStats.gpuPagePoolUsedPages ?? 0)}/${formatCount(streamingStats.gpuPagePoolTotalPages)} used / free run ${formatCount(streamingStats.gpuPagePoolLargestFreeRun ?? 0)} / frag ${((streamingStats.gpuPagePoolFragmentation ?? 0) * 100).toFixed(0)}% / ${formatCount(streamingStats.gpuPagePoolAllocatedChunks ?? 0)} chunks / ${formatCount(streamingStats.gpuPagePoolResidentSplats ?? 0)} splats / page ${formatCount(streamingStats.gpuPagePoolPageCapacitySplats ?? 0)} / pressure ${((streamingStats.gpuPagePoolPressure ?? 0) * 100).toFixed(0)}% / evicted ${formatCount(streamingStats.gpuPageEvictedChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPageEvictedPages ?? 0)} pages / deferred ${formatCount(streamingStats.gpuPageDeferredUploadChunks ?? 0)}${(streamingStats.gpuPagePoolOverflowPages ?? 0) > 0 ? ` / overflow ${formatCount(streamingStats.gpuPagePoolOverflowChunks ?? 0)} chunks ${formatCount(streamingStats.gpuPagePoolOverflowPages ?? 0)} pages` : ""}`
+        : "",
+      streamingStats.gpuPagePoolAllocationRequests !== undefined
+        ? `SSOG GPU page ops: alloc ${formatCount(streamingStats.gpuPagePoolAllocationRequests)} / overflow alloc ${formatCount(streamingStats.gpuPagePoolOverflowAllocationRequests ?? 0)} / freed pages ${formatCount(streamingStats.gpuPagePoolFreedPages ?? 0)} / reused keys ${formatCount(streamingStats.gpuPagePoolReusedKeys ?? 0)}`
         : "",
       streamingStats.decodedCacheSplatLimit !== undefined
         ? `SSOG cache classes: fallback ${formatCount(streamingStats.protectedFallbackChunks ?? 0)} / near prefetch ${formatCount(streamingStats.nearPrefetchChunksLoaded ?? 0)} / idle prefetch ${formatCount(streamingStats.idlePrefetchChunksLoaded ?? 0)} / decoded limit ${formatCount(streamingStats.decodedCacheSplatLimit ?? 0)}`

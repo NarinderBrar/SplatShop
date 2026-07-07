@@ -9,26 +9,40 @@ type SsogGpuPagePoolStats = {
   totalPages: number;
   usedPages: number;
   freePages: number;
+  largestFreeRun: number;
+  fragmentation: number;
   allocatedChunks: number;
   residentSplats: number;
   overflowChunks: number;
   overflowPages: number;
   pressure: number;
+  allocationRequests: number;
+  overflowAllocationRequests: number;
+  freedPages: number;
+  reusedKeys: number;
 };
 
 class SsogGpuPagePool {
   private readonly pageOwners: Array<string | undefined>;
   private readonly chunkPages = new Map<string, SsogGpuPageAllocation>();
   private residentSplats = 0;
+  private allocationRequests = 0;
+  private overflowAllocationRequests = 0;
+  private freedPages = 0;
+  private reusedKeys = 0;
 
   constructor(private readonly pageCapacitySplats: number, pageCount: number) {
     this.pageOwners = new Array(Math.max(1, pageCount));
   }
 
   allocateChunk(key: string, splats: number): SsogGpuPageAllocation {
-    this.freeChunk(key);
+    if (this.chunkPages.has(key)) {
+      this.reusedKeys++;
+      this.freeChunk(key);
+    }
+    this.allocationRequests++;
 
-    const requiredPages = Math.max(1, Math.ceil(splats / this.pageCapacitySplats));
+    const requiredPages = this.getRequiredPages(splats);
     const pages: number[] = [];
     for (let index = 0; index < this.pageOwners.length && pages.length < requiredPages; index++) {
       if (this.pageOwners[index] === undefined) {
@@ -42,9 +56,30 @@ class SsogGpuPagePool {
       overflowPages: requiredPages - pages.length,
       splats,
     };
+    if (allocation.overflowPages > 0) {
+      this.overflowAllocationRequests++;
+    }
     this.chunkPages.set(key, allocation);
     this.residentSplats += splats;
     return allocation;
+  }
+
+  canAllocate(splats: number): boolean {
+    return this.getFreePageCount() >= this.getRequiredPages(splats);
+  }
+
+  getRequiredPages(splats: number): number {
+    return Math.max(1, Math.ceil(splats / this.pageCapacitySplats));
+  }
+
+  getFreePageCount(): number {
+    let freePages = 0;
+    this.pageOwners.forEach((owner) => {
+      if (owner === undefined) {
+        freePages++;
+      }
+    });
+    return freePages;
   }
 
   freeChunk(key: string): void {
@@ -56,6 +91,7 @@ class SsogGpuPagePool {
     for (const page of allocation.pages) {
       if (this.pageOwners[page] === key) {
         this.pageOwners[page] = undefined;
+        this.freedPages++;
       }
     }
     this.residentSplats -= allocation.splats;
@@ -70,9 +106,17 @@ class SsogGpuPagePool {
 
   getStats(): SsogGpuPagePoolStats {
     let usedPages = 0;
+    let freePages = 0;
+    let currentFreeRun = 0;
+    let largestFreeRun = 0;
     this.pageOwners.forEach((owner) => {
       if (owner !== undefined) {
         usedPages++;
+        currentFreeRun = 0;
+      } else {
+        freePages++;
+        currentFreeRun++;
+        largestFreeRun = Math.max(largestFreeRun, currentFreeRun);
       }
     });
 
@@ -89,12 +133,18 @@ class SsogGpuPagePool {
       pageCapacitySplats: this.pageCapacitySplats,
       totalPages: this.pageOwners.length,
       usedPages,
-      freePages: this.pageOwners.length - usedPages,
+      freePages,
+      largestFreeRun,
+      fragmentation: freePages <= 0 ? 0 : 1 - largestFreeRun / freePages,
       allocatedChunks: this.chunkPages.size,
       residentSplats: this.residentSplats,
       overflowChunks,
       overflowPages,
       pressure: usedPages / Math.max(1, this.pageOwners.length),
+      allocationRequests: this.allocationRequests,
+      overflowAllocationRequests: this.overflowAllocationRequests,
+      freedPages: this.freedPages,
+      reusedKeys: this.reusedKeys,
     };
   }
 }

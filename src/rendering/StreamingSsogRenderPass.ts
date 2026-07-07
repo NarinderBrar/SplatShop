@@ -64,13 +64,20 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuPagePoolTotalPages: number;
   gpuPagePoolUsedPages: number;
   gpuPagePoolFreePages: number;
+  gpuPagePoolLargestFreeRun: number;
+  gpuPagePoolFragmentation: number;
   gpuPagePoolAllocatedChunks: number;
   gpuPagePoolResidentSplats: number;
   gpuPagePoolOverflowChunks: number;
   gpuPagePoolOverflowPages: number;
   gpuPagePoolPressure: number;
+  gpuPagePoolAllocationRequests: number;
+  gpuPagePoolOverflowAllocationRequests: number;
+  gpuPagePoolFreedPages: number;
+  gpuPagePoolReusedKeys: number;
   gpuPageEvictedChunks: number;
   gpuPageEvictedPages: number;
+  gpuPageDeferredUploadChunks: number;
   decodedCacheChunks: number;
   decodedCacheBytes: number;
   decodedCachePressure: number;
@@ -1036,6 +1043,7 @@ class StreamingSsogRenderPass {
   private nearPrefetchChunks = 0;
   private gpuPageEvictedChunks = 0;
   private gpuPageEvictedPages = 0;
+  private gpuPageDeferredUploadChunks = 0;
   private gpuPreUploadEvictedChunks = 0;
   private gpuPreUploadEvictedPages = 0;
   private staleQueuedChunksDropped = 0;
@@ -1562,13 +1570,20 @@ class StreamingSsogRenderPass {
       gpuPagePoolTotalPages: gpuPagePoolStats.totalPages,
       gpuPagePoolUsedPages: gpuPagePoolStats.usedPages,
       gpuPagePoolFreePages: gpuPagePoolStats.freePages,
+      gpuPagePoolLargestFreeRun: gpuPagePoolStats.largestFreeRun,
+      gpuPagePoolFragmentation: gpuPagePoolStats.fragmentation,
       gpuPagePoolAllocatedChunks: gpuPagePoolStats.allocatedChunks,
       gpuPagePoolResidentSplats: gpuPagePoolStats.residentSplats,
       gpuPagePoolOverflowChunks: gpuPagePoolStats.overflowChunks,
       gpuPagePoolOverflowPages: gpuPagePoolStats.overflowPages,
       gpuPagePoolPressure: gpuPagePoolStats.pressure,
+      gpuPagePoolAllocationRequests: gpuPagePoolStats.allocationRequests,
+      gpuPagePoolOverflowAllocationRequests: gpuPagePoolStats.overflowAllocationRequests,
+      gpuPagePoolFreedPages: gpuPagePoolStats.freedPages,
+      gpuPagePoolReusedKeys: gpuPagePoolStats.reusedKeys,
       gpuPageEvictedChunks: this.gpuPageEvictedChunks,
       gpuPageEvictedPages: this.gpuPageEvictedPages,
+      gpuPageDeferredUploadChunks: this.gpuPageDeferredUploadChunks,
       decodedCacheChunks: this.decodedCache.size,
       decodedCacheBytes: this.decodedCacheBytes,
       decodedCachePressure: Math.max(
@@ -2647,11 +2662,41 @@ class StreamingSsogRenderPass {
   }
 
   private shouldDeferDecodedUpload(decoded: DecodedChunk, budgetState: SsogUploadBudgetState): boolean {
-    return (
+    if (
       Number.isFinite(this.uploadBudgetBytes) &&
       budgetState.uploadedChunks > 0 &&
       budgetState.uploadedBytes + decoded.bytes > this.uploadBudgetBytes
-    );
+    ) {
+      return true;
+    }
+
+    if (this.getUploadPriority(decoded.key) <= 1 || this.canSatisfyGpuPageUpload(decoded)) {
+      return false;
+    }
+
+    this.gpuPageDeferredUploadChunks++;
+    return true;
+  }
+
+  private canSatisfyGpuPageUpload(decoded: DecodedChunk): boolean {
+    if (this.gpuLoaded.has(decoded.key) || this.gpuPagePool.canAllocate(decoded.chunk.data.numSplats)) {
+      return true;
+    }
+
+    const requiredPages = this.gpuPagePool.getRequiredPages(decoded.chunk.data.numSplats);
+    let releasablePages = this.gpuPagePool.getStats().freePages;
+    let releasableChunks = Number.isFinite(this.cacheChunkLimit) && this.gpuLoaded.size >= this.cacheChunkLimit ? 0 : 1;
+    for (const [key, gpu] of this.gpuLoaded) {
+      if (this.isGpuChunkProtected(key, gpu)) {
+        continue;
+      }
+      releasablePages += gpu.pageAllocation.pages.length;
+      releasableChunks++;
+      if (releasablePages >= requiredPages && releasableChunks > 0) {
+        return true;
+      }
+    }
+    return releasablePages >= requiredPages && releasableChunks > 0;
   }
 
   private getDecodedUploadQueueBytes(): number {
