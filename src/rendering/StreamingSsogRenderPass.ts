@@ -64,6 +64,8 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuPagePoolTotalPages: number;
   gpuPagePoolUsedPages: number;
   gpuPagePoolFreePages: number;
+  gpuPagePoolNeededPages: number;
+  gpuPagePoolFreeablePages: number;
   gpuPagePoolLargestFreeRun: number;
   gpuPagePoolFragmentation: number;
   gpuPagePoolAllocatedChunks: number;
@@ -292,6 +294,11 @@ type SsogQualityPreset = SplatQualityPreset;
 type SsogDeviceTier = SplatDeviceTier;
 type SsogChunkLoadPriority = 0 | 1 | 2 | 3 | 4 | 5;
 
+type SsogBudgetRegistration = {
+  sourceSplats: number;
+  lodScale: number;
+};
+
 type SsogQualityProfile = {
   preset: SsogQualityPreset;
   deviceTier: SsogDeviceTier;
@@ -350,6 +357,7 @@ class SsogCandidateSoA {
   lods = new Uint16Array(0);
   counts = new Uint32Array(0);
   flags = new Uint8Array(0);
+  lodScales = new Float32Array(0);
   bounds = new Float32Array(0);
   length = 0;
   growCount = 0;
@@ -364,6 +372,7 @@ class SsogCandidateSoA {
     entryIndex: number,
     entry: SsogChunkEntry,
     wasSelected: boolean,
+    lodScale: number,
   ): void {
     const boundsOffset = index * 6;
     this.entryIndices[index] = entryIndex;
@@ -373,6 +382,7 @@ class SsogCandidateSoA {
     this.lods[index] = entry.lod;
     this.counts[index] = entry.count;
     this.flags[index] = wasSelected ? 1 : 0;
+    this.lodScales[index] = lodScale;
     this.bounds[boundsOffset + 0] = entry.bound.min[0];
     this.bounds[boundsOffset + 1] = entry.bound.min[1];
     this.bounds[boundsOffset + 2] = entry.bound.min[2];
@@ -398,8 +408,56 @@ class SsogCandidateSoA {
     this.lods = new Uint16Array(capacity);
     this.counts = new Uint32Array(capacity);
     this.flags = new Uint8Array(capacity);
+    this.lodScales = new Float32Array(capacity);
     this.bounds = new Float32Array(capacity * 6);
     this.growCount++;
+  }
+}
+
+class SsogGlobalSplatBudgetCoordinator {
+  private static readonly registrations = new Map<symbol, SsogBudgetRegistration>();
+
+  static register(handle: symbol, sourceSplats: number, lodScale: number): void {
+    this.registrations.set(handle, {
+      sourceSplats: Math.max(0, Math.floor(sourceSplats)),
+      lodScale: Math.max(0.01, lodScale),
+    });
+  }
+
+  static unregister(handle: symbol): void {
+    this.registrations.delete(handle);
+  }
+
+  static updateLodScale(handle: symbol, lodScale: number): void {
+    const registration = this.registrations.get(handle);
+    if (!registration) {
+      return;
+    }
+    registration.lodScale = Math.max(0.01, lodScale);
+  }
+
+  static getAllocation(handle: symbol): number {
+    const registration = this.registrations.get(handle);
+    if (!registration) {
+      return 0;
+    }
+
+    const registrations = Array.from(this.registrations.values());
+    const totalSourceSplats = registrations.reduce((sum, item) => sum + item.sourceSplats, 0);
+    const totalBudget = getSplatBudget(totalSourceSplats);
+    if (totalBudget >= totalSourceSplats) {
+      return registration.sourceSplats;
+    }
+
+    const totalWeight = registrations.reduce((sum, item) => sum + item.sourceSplats * item.lodScale, 0);
+    if (totalWeight <= 0) {
+      return Math.min(registration.sourceSplats, totalBudget);
+    }
+
+    const weightedBudget = Math.floor(
+      (totalBudget * registration.sourceSplats * registration.lodScale) / totalWeight,
+    );
+    return Math.max(1, Math.min(registration.sourceSplats, weightedBudget));
   }
 }
 
@@ -680,8 +738,14 @@ const getSsogCacheChunkLimit = (): number => {
 const getSsogMaxPendingLoads = (): number =>
   Math.max(1, Math.floor(getPositiveNumberParam("ssogMaxPending", getSsogQualityProfile().maxPendingLoads)));
 
+const getSsogReservedWorkerSlots = (): number =>
+  Math.max(0, Math.floor(getNonNegativeNumberParam("ssogReservedWorkerSlots", 1)));
+
 const getSsogPrefetchMultiplier = (): number =>
   Math.max(1, getPositiveNumberParam("ssogPrefetchMultiplier", getSsogQualityProfile().prefetchMultiplier));
+
+const getSsogLodScale = (): number =>
+  Math.max(0.01, getPositiveNumberParam("ssogLodScale", 1));
 
 const getSsogPrefetchFrustumMargin = (): number =>
   getNonNegativeNumberParam("ssogPrefetchFrustumMargin", getSsogQualityProfile().prefetchFrustumMargin);
@@ -926,10 +990,13 @@ class StreamingSsogRenderPass {
   private readonly updateObserver: () => void;
   private readonly qualityPreset = getSsogQualityPreset();
   private readonly sourceSplats: number;
-  private readonly baseSplatBudget: number;
+  private readonly budgetHandle = Symbol("ssog-streaming-budget");
+  private lodScale = getSsogLodScale();
+  private baseSplatBudget: number;
   private splatBudget: number;
   private readonly cacheChunkLimit = getSsogCacheChunkLimit();
   private readonly baseMaxPendingLoads = getSsogMaxPendingLoads();
+  private readonly reservedWorkerSlots = getSsogReservedWorkerSlots();
   private maxPendingLoads = this.baseMaxPendingLoads;
   private readonly basePrefetchMultiplier = getSsogPrefetchMultiplier();
   private prefetchMultiplier = this.basePrefetchMultiplier;
@@ -1084,7 +1151,8 @@ class StreamingSsogRenderPass {
       (sum, entry) => sum + entry.count,
       0,
     );
-    this.baseSplatBudget = getSplatBudget(this.sourceSplats);
+    SsogGlobalSplatBudgetCoordinator.register(this.budgetHandle, this.sourceSplats, this.lodScale);
+    this.baseSplatBudget = SsogGlobalSplatBudgetCoordinator.getAllocation(this.budgetHandle);
     this.splatBudget = this.baseSplatBudget;
     this.cacheSplatLimit = Math.floor(
       getPositiveNumberParam("ssogCacheSplats", Math.max(this.splatBudget * this.cacheSplatMultiplier, 1)),
@@ -1119,6 +1187,7 @@ class StreamingSsogRenderPass {
   dispose(): void {
     this.disposed = true;
     this.scene.unregisterBeforeRender(this.updateObserver);
+    SsogGlobalSplatBudgetCoordinator.unregister(this.budgetHandle);
     this.gpuLoaded.forEach((gpu) => {
       gpu.pass.dispose();
       gpu.buffers.dispose();
@@ -1178,6 +1247,17 @@ class StreamingSsogRenderPass {
     if (this.expandedRuntime) {
       this.expandedRuntime.pass.setVizMode(mode);
     }
+  }
+
+  setLodScale(scale: number): void {
+    const nextScale = Math.max(0.01, scale);
+    if (Math.abs(nextScale - this.lodScale) < 0.0001) {
+      return;
+    }
+
+    this.lodScale = nextScale;
+    SsogGlobalSplatBudgetCoordinator.updateLodScale(this.budgetHandle, this.lodScale);
+    this.updateLodSelection(true);
   }
 
   getStats(): StreamingSsogRenderStats {
@@ -1570,6 +1650,8 @@ class StreamingSsogRenderPass {
       gpuPagePoolTotalPages: gpuPagePoolStats.totalPages,
       gpuPagePoolUsedPages: gpuPagePoolStats.usedPages,
       gpuPagePoolFreePages: gpuPagePoolStats.freePages,
+      gpuPagePoolNeededPages: gpuPagePoolStats.neededPages,
+      gpuPagePoolFreeablePages: gpuPagePoolStats.freeablePages,
       gpuPagePoolLargestFreeRun: gpuPagePoolStats.largestFreeRun,
       gpuPagePoolFragmentation: gpuPagePoolStats.fragmentation,
       gpuPagePoolAllocatedChunks: gpuPagePoolStats.allocatedChunks,
@@ -1888,6 +1970,7 @@ class StreamingSsogRenderPass {
   }
 
   private updateAdaptiveQuality(): void {
+    this.baseSplatBudget = SsogGlobalSplatBudgetCoordinator.getAllocation(this.budgetHandle);
     const now = performance.now();
     const frameMs = Math.min(250, Math.max(0, now - this.lastAdaptiveFrameTime));
     this.lastAdaptiveFrameTime = now;
@@ -2017,6 +2100,14 @@ class StreamingSsogRenderPass {
       case "inactive":
         return 5;
     }
+  }
+
+  private updateNeededGpuPages(): void {
+    const neededKeys = new Set<string>();
+    this.selectedKeys.forEach((key) => neededKeys.add(key));
+    this.fallbackKeys.forEach((key) => neededKeys.add(key));
+    this.desiredKeys.forEach((key) => neededKeys.add(key));
+    this.gpuPagePool.updateNeededChunks(neededKeys);
   }
 
   private dropStaleQueuedChunks(): void {
@@ -2220,6 +2311,7 @@ class StreamingSsogRenderPass {
         this.desiredKeys.add(item.key);
       }
     }
+    this.updateNeededGpuPages();
     this.renderSelectedNodeIds.clear();
     this.finestSelectedNodeIds.clear();
     this.selectedLodValues.clear();
@@ -2351,7 +2443,7 @@ class StreamingSsogRenderPass {
       const entry = this.entries[entryIndex];
       const key = this.entryKeys[entryIndex];
       const wasSelected = this.selectedKeys.has(key) || (includePrefetchKeys && this.prefetchKeys.has(key));
-      candidateSoA.set(itemIndex, entryIndex, entry, wasSelected);
+      candidateSoA.set(itemIndex, entryIndex, entry, wasSelected, this.lodScale);
       const item = target[itemIndex];
       if (item) {
         item.value = entry;
@@ -2363,6 +2455,7 @@ class StreamingSsogRenderPass {
         item.count = entry.count;
         item.bound = entry.bound;
         item.wasSelected = wasSelected;
+        item.lodScale = this.lodScale;
       } else {
         target[itemIndex] = {
           value: entry,
@@ -2374,6 +2467,7 @@ class StreamingSsogRenderPass {
           count: entry.count,
           bound: entry.bound,
           wasSelected,
+          lodScale: this.lodScale,
         };
       }
     }
@@ -2481,7 +2575,8 @@ class StreamingSsogRenderPass {
     }
 
     while (this.pending.size < this.maxPendingLoads && this.queued.size > 0) {
-      const reserveUrgentSlot = this.maxPendingLoads > 1 && this.pending.size >= this.maxPendingLoads - 1;
+      const activeFetchLimit = Math.max(1, this.maxPendingLoads - this.reservedWorkerSlots);
+      const reserveUrgentSlot = this.maxPendingLoads > 1 && this.pending.size >= activeFetchLimit;
       const next = this.takeNextQueuedChunk(reserveUrgentSlot);
       if (!next) {
         return;

@@ -279,6 +279,8 @@ class ViewerDebugStats {
       gpuPagePoolTotalPages?: number;
       gpuPagePoolUsedPages?: number;
       gpuPagePoolFreePages?: number;
+      gpuPagePoolNeededPages?: number;
+      gpuPagePoolFreeablePages?: number;
       gpuPagePoolLargestFreeRun?: number;
       gpuPagePoolFragmentation?: number;
       gpuPagePoolAllocatedChunks?: number;
@@ -658,6 +660,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.gpuBufferWriterLastErrorMessage
         ? `SSOG GPU writer error: ${streamingStats.gpuBufferWriterLastErrorMessage}`
+        : "",
+      streamingStats.gpuPagePoolNeededPages !== undefined
+        ? `SSOG pages: needed ${formatCount(streamingStats.gpuPagePoolNeededPages)} / freeable ${formatCount(streamingStats.gpuPagePoolFreeablePages ?? 0)} / free ${formatCount(streamingStats.gpuPagePoolFreePages ?? 0)}`
         : "",
       streamingStats.chunkSortMode !== undefined
         ? `SSOG chunk sort: ${streamingStats.chunkSortMode} / scale ${formatCount(streamingStats.chunkSortScale ?? 0)} / hysteresis ${formatCount(streamingStats.chunkSortHysteresis ?? 0)}`

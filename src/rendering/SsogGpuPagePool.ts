@@ -9,6 +9,8 @@ type SsogGpuPagePoolStats = {
   totalPages: number;
   usedPages: number;
   freePages: number;
+  neededPages: number;
+  freeablePages: number;
   largestFreeRun: number;
   fragmentation: number;
   allocatedChunks: number;
@@ -26,6 +28,8 @@ class SsogGpuPagePool {
   private readonly pageOwners: Array<string | undefined>;
   private readonly chunkPages = new Map<string, SsogGpuPageAllocation>();
   private residentSplats = 0;
+  private neededPages = 0;
+  private freeablePages = 0;
   private allocationRequests = 0;
   private overflowAllocationRequests = 0;
   private freedPages = 0;
@@ -82,6 +86,20 @@ class SsogGpuPagePool {
     return freePages;
   }
 
+  updateNeededChunks(neededKeys: ReadonlySet<string>): void {
+    let neededPages = 0;
+    let freeablePages = 0;
+    this.chunkPages.forEach((allocation, key) => {
+      if (neededKeys.has(key)) {
+        neededPages += allocation.pages.length + allocation.overflowPages;
+      } else {
+        freeablePages += allocation.pages.length + allocation.overflowPages;
+      }
+    });
+    this.neededPages = neededPages;
+    this.freeablePages = freeablePages;
+  }
+
   freeChunk(key: string): void {
     const allocation = this.chunkPages.get(key);
     if (!allocation) {
@@ -102,6 +120,8 @@ class SsogGpuPagePool {
     this.pageOwners.fill(undefined);
     this.chunkPages.clear();
     this.residentSplats = 0;
+    this.neededPages = 0;
+    this.freeablePages = 0;
   }
 
   getStats(): SsogGpuPagePoolStats {
@@ -134,6 +154,8 @@ class SsogGpuPagePool {
       totalPages: this.pageOwners.length,
       usedPages,
       freePages,
+      neededPages: this.neededPages,
+      freeablePages: this.freeablePages,
       largestFreeRun,
       fragmentation: freePages <= 0 ? 0 : 1 - largestFreeRun / freePages,
       allocatedChunks: this.chunkPages.size,

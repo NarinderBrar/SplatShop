@@ -164,6 +164,13 @@ class SplatCloud {
     }
   }
 
+  setLodScale(scale: number): void {
+    const pass = this.renderPass;
+    if ("setLodScale" in pass) {
+      (pass as unknown as { setLodScale: (v: number) => void }).setLodScale(scale);
+    }
+  }
+
   selectPoint(
     ndcX: number,
     ndcY: number,

@@ -16,6 +16,7 @@ type SsogSelectableItem<T> = {
   count: number;
   bound: SsogBound;
   wasSelected?: boolean;
+  lodScale?: number;
 };
 
 type SsogLodCandidateSoA = {
@@ -25,6 +26,7 @@ type SsogLodCandidateSoA = {
   lods: Uint16Array;
   counts: Uint32Array;
   flags: Uint8Array;
+  lodScales: Float32Array;
   bounds: Float32Array;
 };
 
@@ -167,8 +169,9 @@ const getBoundsRank = <T>(
   const distanceBias = 1 / Math.sqrt(distanceToCenter);
   const hysteresis = item.wasSelected ? 1.15 : 1;
   const depthBias = 1 + item.depth * 0.015;
+  const lodScale = Math.max(0.01, item.lodScale ?? 1);
   return {
-    score: screenBias * viewBias * distanceBias * Math.sqrt(item.count) * hysteresis * depthBias,
+    score: screenBias * viewBias * distanceBias * Math.sqrt(item.count) * hysteresis * depthBias * lodScale,
     screenRadius,
     viewDot,
   };
@@ -213,8 +216,9 @@ const getBoundsRankFromSoA = (
   const distanceBias = 1 / Math.sqrt(distanceToCenter);
   const hysteresis = candidates.flags[index] !== 0 ? 1.15 : 1;
   const depthBias = 1 + candidates.depths[index] * 0.015;
+  const lodScale = Math.max(0.01, candidates.lodScales[index] || 1);
   return {
-    score: screenBias * viewBias * distanceBias * Math.sqrt(candidates.counts[index]) * hysteresis * depthBias,
+    score: screenBias * viewBias * distanceBias * Math.sqrt(candidates.counts[index]) * hysteresis * depthBias * lodScale,
     screenRadius,
     viewDot,
   };
