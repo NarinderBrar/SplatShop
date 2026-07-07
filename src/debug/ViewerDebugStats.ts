@@ -264,6 +264,12 @@ class ViewerDebugStats {
       coneFovDegrees?: number;
       coneFoveate?: number;
       behindFoveate?: number;
+      lodTraversalBackend?: string;
+      lodTraversalPending?: boolean;
+      lodTraversalWorkerRequests?: number;
+      lodTraversalWorkerResponses?: number;
+      lodTraversalWorkerFallbacks?: number;
+      lastLodTraversalWorkerMs?: number;
       cacheChunkPressure?: number;
       cacheSplatPressure?: number;
       selectedCacheRatio?: number;
@@ -620,6 +626,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.coneFovDegrees !== undefined
         ? `SSOG foveation: ${streamingStats.coneFov0Degrees?.toFixed(0) ?? "0"}-${streamingStats.coneFovDegrees.toFixed(0)} deg / edge ${((streamingStats.coneFoveate ?? 0) * 100).toFixed(0)}% / behind ${((streamingStats.behindFoveate ?? 0) * 100).toFixed(0)}%`
+        : "",
+      streamingStats.lodTraversalBackend !== undefined
+        ? `SSOG LOD worker: ${streamingStats.lodTraversalBackend} / ${streamingStats.lodTraversalPending ? "pending" : "ready"} / ${formatMs(streamingStats.lastLodTraversalWorkerMs ?? 0)} ms / req ${formatCount(streamingStats.lodTraversalWorkerRequests ?? 0)} / done ${formatCount(streamingStats.lodTraversalWorkerResponses ?? 0)} / fallback ${formatCount(streamingStats.lodTraversalWorkerFallbacks ?? 0)}`
         : "",
       streamingStats.cacheChunkLimit !== undefined
         ? `SSOG cache: ${streamingStats.cacheChunkLimit < 0 ? "all" : formatCount(streamingStats.cacheChunkLimit)} chunks / ${formatCount(streamingStats.cacheSplatLimit ?? 0)} splats`

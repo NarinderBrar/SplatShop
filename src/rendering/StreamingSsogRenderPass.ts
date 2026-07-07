@@ -6,7 +6,13 @@ import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { SogPackedData, SsogChunkEntry, SsogChunkLoader, SsogPackedChunk } from "../splat/SplatAsset";
 import { SogBuffers } from "../splat/SogBuffers";
 import { SplatBuffers, type PackedSplatArrays } from "../splat/SplatBuffers";
-import { selectSsogLodFromSoA, SsogLodSelectorScratch, type SsogSelectableItem } from "../splat/SsogLodSelector";
+import {
+  selectSsogLodFromSoA,
+  SsogLodSelectorScratch,
+  type SsogLodSelection,
+  type SsogLodSelectOptions,
+  type SsogSelectableItem,
+} from "../splat/SsogLodSelector";
 import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { isAabbInFrustum } from "../splat/SsogFrustumCulling";
 import { SsogDebugBounds } from "../debug/SsogDebugBounds";
@@ -18,6 +24,7 @@ import { SsogHiZOcclusionPass, type SsogHiZOcclusionStats } from "./SsogHiZOcclu
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 import { GpuBufferWriter } from "./GpuBufferWriter";
 import { renderDiagnostics } from "./RenderDiagnostics";
+import type { SsogLodTraversalRequest, SsogLodTraversalResponse } from "../workers/ssogLodTraversalTypes";
 import {
   getDeviceTier,
   getExplicitSplatBudget,
@@ -219,6 +226,12 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   coneFovDegrees: number;
   coneFoveate: number;
   behindFoveate: number;
+  lodTraversalBackend: "main-thread" | "rust-wasm-worker";
+  lodTraversalPending: boolean;
+  lodTraversalWorkerRequests: number;
+  lodTraversalWorkerResponses: number;
+  lodTraversalWorkerFallbacks: number;
+  lastLodTraversalWorkerMs: number;
 };
 
 type GpuResidentChunk = {
@@ -278,6 +291,13 @@ type SelectedSsogItem = {
   nodeId: number;
   lod: number;
   count: number;
+};
+
+type SsogLodTraversalKind = "visible" | "prefetch";
+
+type SsogLodWorkerSelection = {
+  entryIndices: Uint32Array;
+  selectedSplats: number;
 };
 
 type MergedRuntime = {
@@ -949,6 +969,11 @@ const getSsogUploadChunkBudget = (): number => {
 const getSsogGpuPageCapacitySplats = (): number =>
   Math.max(1, Math.floor(getPositiveNumberParam("ssogGpuPageSplats", 65_536)));
 
+const isSsogLodWorkerEnabled = (): boolean => {
+  const value = new URLSearchParams(window.location.search).get("ssogLodWorker");
+  return value !== "false" && value !== "off";
+};
+
 const getSogPackedDataByteLength = (data: SogPackedData): number => {
   const shNBytes = data.shN
     ? data.shN.centroids.byteLength + data.shN.labels.byteLength + data.shN.codebook.byteLength
@@ -1021,6 +1046,17 @@ class StreamingSsogRenderPass {
   private readonly prefetchSelectItems: SelectableSsogEntry[] = [];
   private readonly visibleLodScratch = new SsogLodSelectorScratch<SsogChunkEntry>();
   private readonly prefetchLodScratch = new SsogLodSelectorScratch<SsogChunkEntry>();
+  private readonly lodTraversalWorkerEnabled = isSsogLodWorkerEnabled();
+  private lodTraversalWorker?: Worker;
+  private lodTraversalRequestId = 0;
+  private lodTraversalPendingVisible = false;
+  private lodTraversalPendingPrefetch = false;
+  private lodTraversalWorkerRequests = 0;
+  private lodTraversalWorkerResponses = 0;
+  private lodTraversalWorkerFallbacks = 0;
+  private lastLodTraversalWorkerMs = 0;
+  private latestVisibleLodWorkerSelection?: SsogLodWorkerSelection;
+  private latestPrefetchLodWorkerSelection?: SsogLodWorkerSelection;
   private readonly stableSelectedByNode = new Map<number, SelectedSsogItem>();
   private readonly missingSelectedNodeIds = new Set<number>();
   private readonly coarseFallbackNodeIds = new Set<number>();
@@ -1245,6 +1281,8 @@ class StreamingSsogRenderPass {
     this.gpuBufferWriter?.dispose();
     this.gpuChunkVisibilityPass?.dispose();
     this.hiZOcclusionPass?.dispose();
+    this.lodTraversalWorker?.terminate();
+    this.lodTraversalWorker = undefined;
     this.gpuLoaded.clear();
     this.decodedCache.clear();
     this.pending.clear();
@@ -1675,6 +1713,14 @@ class StreamingSsogRenderPass {
       coneFovDegrees: this.coneFovDegrees,
       coneFoveate: this.coneFoveate,
       behindFoveate: this.behindFoveate,
+      lodTraversalBackend: this.latestVisibleLodWorkerSelection || this.latestPrefetchLodWorkerSelection
+        ? "rust-wasm-worker"
+        : "main-thread",
+      lodTraversalPending: this.lodTraversalPendingVisible || this.lodTraversalPendingPrefetch,
+      lodTraversalWorkerRequests: this.lodTraversalWorkerRequests,
+      lodTraversalWorkerResponses: this.lodTraversalWorkerResponses,
+      lodTraversalWorkerFallbacks: this.lodTraversalWorkerFallbacks,
+      lastLodTraversalWorkerMs: this.lastLodTraversalWorkerMs,
       loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,
       pendingUploadChunks: this.decodedUploadQueue.size,
@@ -2251,24 +2297,27 @@ class StreamingSsogRenderPass {
       this.visibleEntryIndices,
       false,
     );
-    const selection = selectSsogLodFromSoA(
+    const visibleSelectionOptions = {
+      budget: this.splatBudget,
+      cameraPosition,
+      cameraForward,
+      focalPixels,
+      lodRangeMin: this.lodRangeMin,
+      lodRangeMax: this.lodRangeMax,
+      lodUnderfillLimit: this.lodUnderfillLimit,
+      forceFineScreenRatio: this.forceFineScreenRatio,
+      forceFineViewDot: this.forceFineViewDot,
+      coneFov0Cos: fovDegreesToCos(this.coneFov0Degrees),
+      coneFovCos: fovDegreesToCos(this.coneFovDegrees),
+      coneFoveate: this.coneFoveate,
+      behindFoveate: this.behindFoveate,
+    };
+    const selection = this.selectSsogLodWithWorker(
+      "visible",
       this.visibleCandidateSoA,
       visibleItems,
-      {
-        budget: this.splatBudget,
-        cameraPosition,
-        cameraForward,
-        focalPixels,
-        lodRangeMin: this.lodRangeMin,
-        lodRangeMax: this.lodRangeMax,
-        lodUnderfillLimit: this.lodUnderfillLimit,
-        forceFineScreenRatio: this.forceFineScreenRatio,
-        forceFineViewDot: this.forceFineViewDot,
-        coneFov0Cos: fovDegreesToCos(this.coneFov0Degrees),
-        coneFovCos: fovDegreesToCos(this.coneFovDegrees),
-        coneFoveate: this.coneFoveate,
-        behindFoveate: this.behindFoveate,
-      },
+      this.visibleEntryIndices,
+      visibleSelectionOptions,
       this.visibleLodScratch,
     );
     const prefetchBudgetMultiplier =
@@ -2277,7 +2326,8 @@ class StreamingSsogRenderPass {
         : this.prefetchMultiplier;
     const prefetchSelection =
       this.prefetchEntryIndices.length > this.visibleEntryIndices.length || this.prefetchMultiplier > 1
-        ? selectSsogLodFromSoA(
+        ? this.selectSsogLodWithWorker(
+            "prefetch",
             this.prefetchCandidateSoA,
             this.fillSelectableItems(
               this.prefetchSelectItems,
@@ -2285,6 +2335,7 @@ class StreamingSsogRenderPass {
               this.prefetchEntryIndices,
               true,
             ),
+            this.prefetchEntryIndices,
             {
               budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * prefetchBudgetMultiplier)),
               cameraPosition,
@@ -2536,6 +2587,209 @@ class StreamingSsogRenderPass {
       }
     }
     return target;
+  }
+
+  private selectSsogLodWithWorker(
+    kind: SsogLodTraversalKind,
+    candidateSoA: SsogCandidateSoA,
+    items: SelectableSsogEntry[],
+    currentEntryIndices: ChunkIndexBuffer,
+    options: SsogLodSelectOptions,
+    scratch: SsogLodSelectorScratch<SsogChunkEntry>,
+  ): SsogLodSelection<SsogChunkEntry> {
+    if (this.lodTraversalWorkerEnabled) {
+      this.queueLodTraversalRequest(kind, candidateSoA, options);
+      const workerSelection = this.consumeLodWorkerSelection(kind, currentEntryIndices);
+      if (workerSelection) {
+        return workerSelection;
+      }
+      this.lodTraversalWorkerFallbacks++;
+    }
+
+    return selectSsogLodFromSoA(candidateSoA, items, options, scratch);
+  }
+
+  private queueLodTraversalRequest(
+    kind: SsogLodTraversalKind,
+    candidateSoA: SsogCandidateSoA,
+    options: SsogLodSelectOptions,
+  ): void {
+    if (candidateSoA.length === 0 || this.isLodTraversalPending(kind)) {
+      return;
+    }
+
+    const worker = this.ensureLodTraversalWorker();
+    if (!worker) {
+      return;
+    }
+
+    const request: SsogLodTraversalRequest = {
+      requestId: ++this.lodTraversalRequestId,
+      kind,
+      entryIndices: candidateSoA.entryIndices.subarray(0, candidateSoA.length).slice(),
+      nodeIds: candidateSoA.nodeIds.subarray(0, candidateSoA.length).slice(),
+      depths: candidateSoA.depths.subarray(0, candidateSoA.length).slice(),
+      lods: candidateSoA.lods.subarray(0, candidateSoA.length).slice(),
+      counts: candidateSoA.counts.subarray(0, candidateSoA.length).slice(),
+      flags: candidateSoA.flags.subarray(0, candidateSoA.length).slice(),
+      lodScales: candidateSoA.lodScales.subarray(0, candidateSoA.length).slice(),
+      bounds: candidateSoA.bounds.subarray(0, candidateSoA.length * 6).slice(),
+      options: {
+        ...options,
+        cameraPosition: {
+          x: options.cameraPosition.x,
+          y: options.cameraPosition.y,
+          z: options.cameraPosition.z,
+        },
+        cameraForward: options.cameraForward
+          ? {
+              x: options.cameraForward.x,
+              y: options.cameraForward.y,
+              z: options.cameraForward.z,
+            }
+          : undefined,
+      },
+    };
+
+    this.setLodTraversalPending(kind, true);
+    this.lodTraversalWorkerRequests++;
+    worker.postMessage(request, [
+      request.entryIndices.buffer,
+      request.nodeIds.buffer,
+      request.depths.buffer,
+      request.lods.buffer,
+      request.counts.buffer,
+      request.flags.buffer,
+      request.lodScales.buffer,
+      request.bounds.buffer,
+    ]);
+  }
+
+  private ensureLodTraversalWorker(): Worker | undefined {
+    if (this.lodTraversalWorker || this.disposed) {
+      return this.lodTraversalWorker;
+    }
+
+    try {
+      this.lodTraversalWorker = new Worker(new URL("../workers/ssogLodTraversal.worker.ts", import.meta.url), {
+        type: "module",
+      });
+    } catch (error) {
+      renderDiagnostics.reportError("ssog-lod-worker-create", error);
+      return undefined;
+    }
+
+    this.lodTraversalWorker.onmessage = (event: MessageEvent<SsogLodTraversalResponse>) => {
+      if (this.disposed) {
+        return;
+      }
+
+      const response = event.data;
+      this.setLodTraversalPending(response.kind, false);
+      this.lodTraversalWorkerResponses++;
+      this.lastLodTraversalWorkerMs = response.elapsedMs;
+      const selection = {
+        entryIndices: response.selectedEntryIndices,
+        selectedSplats: response.selectedSplats,
+      };
+      if (response.kind === "visible") {
+        this.latestVisibleLodWorkerSelection = selection;
+      } else {
+        this.latestPrefetchLodWorkerSelection = selection;
+      }
+    };
+    this.lodTraversalWorker.onerror = (event) => {
+      this.lodTraversalPendingVisible = false;
+      this.lodTraversalPendingPrefetch = false;
+      renderDiagnostics.reportError("ssog-lod-worker-error", event.message);
+      this.lodTraversalWorker?.terminate();
+      this.lodTraversalWorker = undefined;
+    };
+    return this.lodTraversalWorker;
+  }
+
+  private consumeLodWorkerSelection(
+    kind: SsogLodTraversalKind,
+    currentEntryIndices: ChunkIndexBuffer,
+  ): SsogLodSelection<SsogChunkEntry> | undefined {
+    const latest =
+      kind === "visible"
+        ? this.latestVisibleLodWorkerSelection
+        : this.latestPrefetchLodWorkerSelection;
+    if (!latest) {
+      return undefined;
+    }
+
+    const current = new Set<number>();
+    for (let index = 0; index < currentEntryIndices.length; index++) {
+      current.add(currentEntryIndices.data[index]);
+    }
+
+    const selected: SelectableSsogEntry[] = [];
+    const selectedLods = new Set<number>();
+    let selectedSplats = 0;
+    const includePrefetchKeys = kind === "prefetch";
+    for (let index = 0; index < latest.entryIndices.length; index++) {
+      const entryIndex = latest.entryIndices[index];
+      if (!current.has(entryIndex)) {
+        continue;
+      }
+      const item = this.createSelectableItemFromEntryIndex(entryIndex, includePrefetchKeys);
+      if (!item) {
+        continue;
+      }
+      selected.push(item);
+      selectedLods.add(item.lod);
+      selectedSplats += item.count;
+    }
+
+    if (selected.length === 0 && currentEntryIndices.length > 0) {
+      return undefined;
+    }
+
+    return {
+      selected,
+      activeChunks: selected.length,
+      selectedLods: selectedLods.size,
+      selectedSplats,
+    };
+  }
+
+  private createSelectableItemFromEntryIndex(
+    entryIndex: number,
+    includePrefetchKeys: boolean,
+  ): SelectableSsogEntry | undefined {
+    const entry = this.entries[entryIndex];
+    const key = this.entryKeys[entryIndex];
+    if (!entry || !key) {
+      return undefined;
+    }
+
+    const wasSelected = this.selectedKeys.has(key) || (includePrefetchKeys && this.prefetchKeys.has(key));
+    return {
+      value: entry,
+      key,
+      nodeId: entry.nodeId,
+      parentNodeId: entry.parentNodeId,
+      depth: entry.depth,
+      lod: entry.lod,
+      count: entry.count,
+      bound: entry.bound,
+      wasSelected,
+      lodScale: this.lodScale,
+    };
+  }
+
+  private isLodTraversalPending(kind: SsogLodTraversalKind): boolean {
+    return kind === "visible" ? this.lodTraversalPendingVisible : this.lodTraversalPendingPrefetch;
+  }
+
+  private setLodTraversalPending(kind: SsogLodTraversalKind, pending: boolean): void {
+    if (kind === "visible") {
+      this.lodTraversalPendingVisible = pending;
+    } else {
+      this.lodTraversalPendingPrefetch = pending;
+    }
   }
 
   private processRendererCommandQueue(): number {

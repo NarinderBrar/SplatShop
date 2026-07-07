@@ -1,0 +1,15 @@
+{
+  "name": "ssog_lod_traversal",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "ssog_lod_traversal_bg.wasm",
+    "ssog_lod_traversal.js",
+    "ssog_lod_traversal.d.ts"
+  ],
+  "main": "ssog_lod_traversal.js",
+  "types": "ssog_lod_traversal.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
