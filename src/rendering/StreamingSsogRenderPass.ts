@@ -134,6 +134,7 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   lastChunkLoadMs: number;
   lastChunkUploadMs: number;
   uploadBudgetBytes: number;
+  uploadChunkBudget: number;
   staleQueuedChunksDropped: number;
   stalePendingChunksDropped: number;
   staleUploadChunksDropped: number;
@@ -821,6 +822,16 @@ const getSsogUploadBudgetBytes = (): number => {
   return Math.floor(getPositiveNumberParam("ssogUploadBudgetBytes", getSsogQualityProfile().uploadBudgetBytes));
 };
 
+const getSsogUploadChunkBudget = (): number => {
+  const raw = new URLSearchParams(window.location.search).get("ssogUploadChunkBudget");
+  if (raw === "all") {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const profile = getSsogQualityProfile();
+  return Math.max(1, Math.floor(getPositiveNumberParam("ssogUploadChunkBudget", Math.max(2, profile.maxPendingLoads))));
+};
+
 const getSsogGpuPageCapacitySplats = (): number =>
   Math.max(1, Math.floor(getPositiveNumberParam("ssogGpuPageSplats", 65_536)));
 
@@ -952,6 +963,7 @@ class StreamingSsogRenderPass {
   private readonly selectionStableFrames = getSsogSelectionStableFrames();
   private readonly progressiveGlobalBuild = isSsogProgressiveGlobalBuildEnabled();
   private readonly baseUploadBudgetBytes = getSsogUploadBudgetBytes();
+  private readonly uploadChunkBudget = getSsogUploadChunkBudget();
   private uploadBudgetBytes = this.baseUploadBudgetBytes;
   private readonly adaptiveQualityEnabled =
     !hasExplicitNumberParam("splatBudget") &&
@@ -1606,6 +1618,7 @@ class StreamingSsogRenderPass {
       lastChunkLoadMs: this.lastChunkLoadMs,
       lastChunkUploadMs: this.lastChunkUploadMs,
       uploadBudgetBytes: Number.isFinite(this.uploadBudgetBytes) ? this.uploadBudgetBytes : -1,
+      uploadChunkBudget: Number.isFinite(this.uploadChunkBudget) ? this.uploadChunkBudget : -1,
       staleQueuedChunksDropped: this.staleQueuedChunksDropped,
       stalePendingChunksDropped: this.stalePendingChunksDropped,
       staleUploadChunksDropped: this.staleUploadChunksDropped,
@@ -2555,6 +2568,16 @@ class StreamingSsogRenderPass {
     };
 
     for (const decoded of queued) {
+      const priority = this.getUploadPriority(decoded.key);
+      if (
+        Number.isFinite(this.uploadChunkBudget) &&
+        budgetState.uploadedChunks >= this.uploadChunkBudget &&
+        priority > 1
+      ) {
+        diagnostics.deferredChunks++;
+        diagnostics.deferredBytes += decoded.bytes;
+        continue;
+      }
       this.processDecodedUpload(decoded, budgetState, diagnostics);
     }
     queued.length = 0;

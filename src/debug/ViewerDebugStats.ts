@@ -337,6 +337,7 @@ class ViewerDebugStats {
       lastChunkLoadMs?: number;
       lastChunkUploadMs?: number;
       uploadBudgetBytes?: number;
+      uploadChunkBudget?: number;
       staleQueuedChunksDropped?: number;
       stalePendingChunksDropped?: number;
       staleUploadChunksDropped?: number;
@@ -620,7 +621,7 @@ class ViewerDebugStats {
         ? `SSOG loading: max pending ${formatCount(streamingStats.maxPendingLoads)} / prefetch ${streamingStats.prefetchMultiplier?.toFixed(2) ?? "0.00"}x`
         : "",
       streamingStats.uploadBudgetBytes !== undefined
-        ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)}/${formatCount(streamingStats.attemptedUploadChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / skipped ${formatCount(streamingStats.skippedUploadChunksThisFrame ?? 0)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)} (${formatBytes(streamingStats.deferredUploadBytes ?? 0)})`
+        ? `SSOG upload: ${formatCount(streamingStats.uploadedChunksThisFrame ?? 0)}/${formatCount(streamingStats.attemptedUploadChunksThisFrame ?? 0)} chunks / ${formatBytes(streamingStats.uploadedBytesThisFrame ?? 0)} this frame / budget ${streamingStats.uploadBudgetBytes < 0 ? "all" : formatBytes(streamingStats.uploadBudgetBytes)} / chunk cap ${streamingStats.uploadChunkBudget !== undefined && streamingStats.uploadChunkBudget < 0 ? "all" : formatCount(streamingStats.uploadChunkBudget ?? 0)} / skipped ${formatCount(streamingStats.skippedUploadChunksThisFrame ?? 0)} / deferred ${formatCount(streamingStats.deferredUploadChunks ?? 0)} (${formatBytes(streamingStats.deferredUploadBytes ?? 0)})`
         : "",
       streamingStats.staleQueuedChunksDropped !== undefined
         ? `SSOG stale drops: queued ${formatCount(streamingStats.staleQueuedChunksDropped ?? 0)} / loaded ${formatCount(streamingStats.stalePendingChunksDropped ?? 0)} / upload ${formatCount(streamingStats.staleUploadChunksDropped ?? 0)}`
@@ -751,6 +752,9 @@ class ViewerDebugStats {
       `Upload: ${formatMs(renderStats.lastUploadMs)} ms`,
       `LOD build: ${formatMs(renderStats.lastLodBuildMs)} ms`,
       `Sort pending: ${renderStats.sortPending ? "yes" : "no"}`,
+      "sortQueued" in renderStats
+        ? `Sort queued: ${(renderStats as typeof renderStats & { sortQueued?: boolean }).sortQueued ? "yes" : "no"} / coalesced ${formatCount(Number((renderStats as typeof renderStats & { sortCoalesced?: number }).sortCoalesced ?? 0))}`
+        : "",
       `Bounds min: ${formatVec(bufferStats.boundsMin)}`,
       `Bounds max: ${formatVec(bufferStats.boundsMax)}`,
       "scaleLogMax" in bufferStats

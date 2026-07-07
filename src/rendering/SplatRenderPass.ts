@@ -235,6 +235,8 @@ type SplatRenderStats = {
   computeTileUpdateInterval: number;
   sortMode: SortMode;
   sortPending: boolean;
+  sortQueued: boolean;
+  sortCoalesced: number;
   lastSortMs: number;
   lastUploadMs: number;
   lastLodBuildMs: number;
@@ -344,6 +346,8 @@ class SplatRenderPass {
   private readonly updateViewport: () => void;
   private sortWorker?: Worker;
   private sortPending = false;
+  private pendingSortView?: { cameraPosition: [number, number, number]; cameraForward: [number, number, number] };
+  private sortCoalesced = 0;
   private enabled = true;
   private sortFrame = 0;
   private gpuSortFrame = 0;
@@ -534,6 +538,8 @@ class SplatRenderPass {
       computeTileUpdateInterval: this.computeTileUpdateInterval,
       sortMode: this.sortMode,
       sortPending: this.sortPending,
+      sortQueued: !!this.pendingSortView,
+      sortCoalesced: this.sortCoalesced,
       lastSortMs: this.lastSortMs,
       lastUploadMs: this.lastUploadMs,
       lastLodBuildMs: this.lastLodBuildMs,
@@ -1450,6 +1456,7 @@ class SplatRenderPass {
           splatBuffers.bufferVersions.bump(splatBuffers.storage.indices);
         }
         this.lastUploadMs = performance.now() - uploadStart;
+        this.flushPendingSortView();
       };
     }
 
@@ -1493,6 +1500,9 @@ class SplatRenderPass {
     }
 
     if (this.sortPending) {
+      if (shouldSortView) {
+        this.queuePendingSortView(cameraPosition, cameraForward);
+      }
       return;
     }
 
@@ -1531,6 +1541,32 @@ class SplatRenderPass {
       type: "sort",
       cameraPosition: [cameraPosition.x, cameraPosition.y, cameraPosition.z],
       cameraForward: [cameraForward.x, cameraForward.y, cameraForward.z],
+    });
+  }
+
+  private queuePendingSortView(cameraPosition: Vector3, cameraForward: Vector3): void {
+    this.pendingSortView = {
+      cameraPosition: [cameraPosition.x, cameraPosition.y, cameraPosition.z],
+      cameraForward: [cameraForward.x, cameraForward.y, cameraForward.z],
+    };
+    this.sortCoalesced++;
+  }
+
+  private flushPendingSortView(): void {
+    if (!this.pendingSortView || !this.sortWorker || this.disposed || !this.enabled) {
+      return;
+    }
+
+    const view = this.pendingSortView;
+    this.pendingSortView = undefined;
+    this.sortPending = true;
+    this.lastSortStart = performance.now();
+    this.lastCameraPosition.set(view.cameraPosition[0], view.cameraPosition[1], view.cameraPosition[2]);
+    this.lastCameraForward.set(view.cameraForward[0], view.cameraForward[1], view.cameraForward[2]);
+    this.sortWorker.postMessage({
+      type: "sort",
+      cameraPosition: view.cameraPosition,
+      cameraForward: view.cameraForward,
     });
   }
 

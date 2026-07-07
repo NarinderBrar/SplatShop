@@ -211,6 +211,8 @@ type SsogGlobalPackedStats = {
   computeTileUpdateInterval: number;
   sortMode: "auto";
   sortPending: boolean;
+  sortQueued: boolean;
+  sortCoalesced: number;
   lastSortMs: number;
   lastUploadMs: number;
   lastLodBuildMs: number;
@@ -394,6 +396,8 @@ class SsogGlobalPackedRenderPass {
   private lastViewportHeight = 0;
   private sortWorker?: Worker;
   private sortPending = false;
+  private pendingSortView?: { cameraPosition: [number, number, number]; cameraForward: [number, number, number] };
+  private sortCoalesced = 0;
   private sortFrame = 0;
   private enabled = true;
   private disposed = false;
@@ -721,6 +725,8 @@ class SsogGlobalPackedRenderPass {
       computeTileUpdateInterval: this.computeTileUpdateInterval,
       sortMode: "auto",
       sortPending: this.sortPending,
+      sortQueued: !!this.pendingSortView,
+      sortCoalesced: this.sortCoalesced,
       lastSortMs: this.lastSortMs,
       lastUploadMs: this.lastUploadMs,
       lastLodBuildMs: 0,
@@ -1440,6 +1446,7 @@ class SsogGlobalPackedRenderPass {
       return;
     }
     if (this.sortPending) {
+      this.queuePendingSortView(cameraPosition, cameraForward);
       this.updateGpuSortStages(cameraPosition, cameraForward);
       return;
     }
@@ -1479,6 +1486,32 @@ class SsogGlobalPackedRenderPass {
       type: "sort",
       cameraPosition: [cameraPosition.x, cameraPosition.y, cameraPosition.z],
       cameraForward: [cameraForward.x, cameraForward.y, cameraForward.z],
+    });
+  }
+
+  private queuePendingSortView(cameraPosition: Vector3, cameraForward: Vector3): void {
+    this.pendingSortView = {
+      cameraPosition: [cameraPosition.x, cameraPosition.y, cameraPosition.z],
+      cameraForward: [cameraForward.x, cameraForward.y, cameraForward.z],
+    };
+    this.sortCoalesced++;
+  }
+
+  private flushPendingSortView(): void {
+    if (!this.pendingSortView || !this.sortWorker || this.disposed || !this.enabled) {
+      return;
+    }
+
+    const view = this.pendingSortView;
+    this.pendingSortView = undefined;
+    this.sortPending = true;
+    this.lastSortStart = performance.now();
+    this.lastCameraPosition.set(view.cameraPosition[0], view.cameraPosition[1], view.cameraPosition[2]);
+    this.lastCameraForward.set(view.cameraForward[0], view.cameraForward[1], view.cameraForward[2]);
+    this.sortWorker.postMessage({
+      type: "sort",
+      cameraPosition: view.cameraPosition,
+      cameraForward: view.cameraForward,
     });
   }
 
@@ -1584,6 +1617,7 @@ class SsogGlobalPackedRenderPass {
       this.buffers.indices.update(sortedIndices, 0, sortedIndices.byteLength);
       this.bufferVersions.bump(this.buffers.indices);
       this.lastUploadMs = performance.now() - uploadStart;
+      this.flushPendingSortView();
     };
     this.sortWorker.postMessage({ type: "init", centers: centers.buffer, indices: indices.buffer }, [
       centers.buffer,
