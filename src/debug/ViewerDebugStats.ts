@@ -259,6 +259,10 @@ class ViewerDebugStats {
       adaptiveFrameMs?: number;
       adaptiveTargetFrameMs?: number;
       qualityInteractionState?: string;
+      coneFov0Degrees?: number;
+      coneFovDegrees?: number;
+      coneFoveate?: number;
+      behindFoveate?: number;
       cacheChunkPressure?: number;
       cacheSplatPressure?: number;
       selectedCacheRatio?: number;
@@ -612,6 +616,9 @@ class ViewerDebugStats {
       `Shader quality: min ${shaderQuality.minPixelRadius.toFixed(2)}px / max ${shaderQuality.maxPixelRadius.toFixed(0)}px / alpha ${shaderQuality.alphaClip.toFixed(4)} / DPR ${shaderQuality.maxDevicePixelRatio.toFixed(2)}x`,
       streamingStats.adaptiveQualityScale !== undefined
         ? `SSOG adaptive: ${(streamingStats.adaptiveQualityScale * 100).toFixed(0)}% / ${streamingStats.qualityInteractionState ?? "unknown"} ${((streamingStats.adaptiveInteractionScale ?? 1) * 100).toFixed(0)}% / frame ${formatMs(streamingStats.adaptiveFrameMs ?? 0)} ms / target ${formatMs(streamingStats.adaptiveTargetFrameMs ?? 0)} ms`
+        : "",
+      streamingStats.coneFovDegrees !== undefined
+        ? `SSOG foveation: ${streamingStats.coneFov0Degrees?.toFixed(0) ?? "0"}-${streamingStats.coneFovDegrees.toFixed(0)} deg / edge ${((streamingStats.coneFoveate ?? 0) * 100).toFixed(0)}% / behind ${((streamingStats.behindFoveate ?? 0) * 100).toFixed(0)}%`
         : "",
       streamingStats.cacheChunkLimit !== undefined
         ? `SSOG cache: ${streamingStats.cacheChunkLimit < 0 ? "all" : formatCount(streamingStats.cacheChunkLimit)} chunks / ${formatCount(streamingStats.cacheSplatLimit ?? 0)} splats`

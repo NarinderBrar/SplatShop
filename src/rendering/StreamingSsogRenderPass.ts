@@ -212,6 +212,10 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   rendererCommandPoolGrows: number;
   prefetchFrustumMargin: number;
   nearPrefetchDistance: number;
+  coneFov0Degrees: number;
+  coneFovDegrees: number;
+  coneFoveate: number;
+  behindFoveate: number;
 };
 
 type GpuResidentChunk = {
@@ -313,6 +317,10 @@ type SsogQualityProfile = {
   cacheSplatMultiplier: number;
   lodMoveEpsilon: number;
   lodAngleDegrees: number;
+  coneFov0Degrees: number;
+  coneFovDegrees: number;
+  coneFoveate: number;
+  behindFoveate: number;
   selectionStableFrames: number;
   uploadBudgetBytes: number;
   chunkSortScale: number;
@@ -651,6 +659,10 @@ const getSsogQualityProfile = (): SsogQualityProfile => {
         cacheSplatMultiplier: 1.1,
         lodMoveEpsilon: 0.8,
         lodAngleDegrees: 18,
+        coneFov0Degrees: 24,
+        coneFovDegrees: 78,
+        coneFoveate: 0.55,
+        behindFoveate: 0.88,
         selectionStableFrames: 6,
         uploadBudgetBytes: 12 * 1024 * 1024,
         chunkSortScale: 48,
@@ -672,6 +684,10 @@ const getSsogQualityProfile = (): SsogQualityProfile => {
         cacheSplatMultiplier: 1.35,
         lodMoveEpsilon: 0.65,
         lodAngleDegrees: 14,
+        coneFov0Degrees: 30,
+        coneFovDegrees: 95,
+        coneFoveate: 0.38,
+        behindFoveate: 0.75,
         selectionStableFrames: 12,
         uploadBudgetBytes: 24 * 1024 * 1024,
         chunkSortScale: 64,
@@ -693,6 +709,10 @@ const getSsogQualityProfile = (): SsogQualityProfile => {
         cacheSplatMultiplier: 1.35,
         lodMoveEpsilon: 0.08,
         lodAngleDegrees: 1,
+        coneFov0Degrees: preset === "screenshot" ? 70 : preset === "full" ? 55 : 42,
+        coneFovDegrees: preset === "screenshot" ? 160 : preset === "full" ? 135 : 120,
+        coneFoveate: preset === "screenshot" ? 0.08 : preset === "full" ? 0.16 : 0.25,
+        behindFoveate: preset === "screenshot" ? 0.25 : preset === "full" ? 0.45 : 0.6,
         selectionStableFrames: 2,
         uploadBudgetBytes: 48 * 1024 * 1024,
         chunkSortScale: 64,
@@ -771,6 +791,21 @@ const getLodForwardDotThreshold = (): number => {
   const degrees = getPositiveNumberParam("lodAngleDegrees", getSsogQualityProfile().lodAngleDegrees);
   return Math.cos((degrees * Math.PI) / 180);
 };
+
+const getSsogConeFov0Degrees = (): number =>
+  Math.max(0, Math.min(180, getNonNegativeNumberParam("ssogConeFov0", getSsogQualityProfile().coneFov0Degrees)));
+
+const getSsogConeFovDegrees = (): number =>
+  Math.max(getSsogConeFov0Degrees(), Math.min(180, getNonNegativeNumberParam("ssogConeFov", getSsogQualityProfile().coneFovDegrees)));
+
+const getSsogConeFoveate = (): number =>
+  Math.max(0, Math.min(1, getNonNegativeNumberParam("ssogConeFoveate", getSsogQualityProfile().coneFoveate)));
+
+const getSsogBehindFoveate = (): number =>
+  Math.max(0, Math.min(1, getNonNegativeNumberParam("ssogBehindFoveate", getSsogQualityProfile().behindFoveate)));
+
+const fovDegreesToCos = (degrees: number): number =>
+  Math.cos((Math.max(0, Math.min(180, degrees)) * Math.PI) / 180);
 
 const getSsogMotionMoveEpsilonSq = (): number => {
   const epsilon = getPositiveNumberParam("ssogMotionMoveEpsilon", 0.025);
@@ -1021,6 +1056,10 @@ class StreamingSsogRenderPass {
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly lodMoveEpsilonSq = getLodMoveEpsilonSq();
   private readonly lodForwardDotThreshold = getLodForwardDotThreshold();
+  private readonly coneFov0Degrees = getSsogConeFov0Degrees();
+  private readonly coneFovDegrees = getSsogConeFovDegrees();
+  private readonly coneFoveate = getSsogConeFoveate();
+  private readonly behindFoveate = getSsogBehindFoveate();
   private readonly motionMoveEpsilonSq = getSsogMotionMoveEpsilonSq();
   private readonly motionForwardDotThreshold = getSsogMotionForwardDotThreshold();
   private readonly idleRefineFrames = Math.max(1, Math.floor(getPositiveNumberParam("ssogIdleRefineFrames", DEFAULT_IDLE_REFINE_FRAMES)));
@@ -1619,6 +1658,10 @@ class StreamingSsogRenderPass {
       adaptiveFrameMs: this.adaptiveFrameMs,
       adaptiveTargetFrameMs: ADAPTIVE_QUALITY_TARGET_FRAME_MS,
       qualityInteractionState: this.qualityInteractionState,
+      coneFov0Degrees: this.coneFov0Degrees,
+      coneFovDegrees: this.coneFovDegrees,
+      coneFoveate: this.coneFoveate,
+      behindFoveate: this.behindFoveate,
       loadedChunks: this.gpuLoaded.size,
       pendingChunks: this.pending.size,
       pendingUploadChunks: this.decodedUploadQueue.size,
@@ -2208,6 +2251,10 @@ class StreamingSsogRenderPass {
         lodUnderfillLimit: this.lodUnderfillLimit,
         forceFineScreenRatio: this.forceFineScreenRatio,
         forceFineViewDot: this.forceFineViewDot,
+        coneFov0Cos: fovDegreesToCos(this.coneFov0Degrees),
+        coneFovCos: fovDegreesToCos(this.coneFovDegrees),
+        coneFoveate: this.coneFoveate,
+        behindFoveate: this.behindFoveate,
       },
       this.visibleLodScratch,
     );
@@ -2235,6 +2282,10 @@ class StreamingSsogRenderPass {
               lodUnderfillLimit: this.lodUnderfillLimit,
               forceFineScreenRatio: this.forceFineScreenRatio,
               forceFineViewDot: this.forceFineViewDot,
+              coneFov0Cos: fovDegreesToCos(this.coneFov0Degrees),
+              coneFovCos: fovDegreesToCos(this.coneFovDegrees),
+              coneFoveate: this.coneFoveate,
+              behindFoveate: this.behindFoveate,
             },
             this.prefetchLodScratch,
           )

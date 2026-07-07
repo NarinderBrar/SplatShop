@@ -40,6 +40,10 @@ type SsogLodSelectOptions = {
   lodUnderfillLimit: number;
   forceFineScreenRatio?: number;
   forceFineViewDot?: number;
+  coneFov0Cos?: number;
+  coneFovCos?: number;
+  coneFoveate?: number;
+  behindFoveate?: number;
 };
 
 type SsogLodSelection<T> = {
@@ -53,6 +57,32 @@ type RankValues = {
   score: number;
   screenRadius: number;
   viewDot: number;
+};
+
+const getFoveationWeight = (viewDot: number, options: SsogLodSelectOptions): number => {
+  const coneFoveate = Math.max(0, Math.min(1, options.coneFoveate ?? 0));
+  const behindFoveate = Math.max(0, Math.min(1, options.behindFoveate ?? 0));
+  if (coneFoveate <= 0 && behindFoveate <= 0) {
+    return 1;
+  }
+
+  if (viewDot <= 0) {
+    return Math.max(0.01, 1 - behindFoveate);
+  }
+
+  const innerCos = Math.max(-1, Math.min(1, options.coneFov0Cos ?? 1));
+  const outerCos = Math.max(-1, Math.min(1, options.coneFovCos ?? innerCos));
+  const highCos = Math.max(innerCos, outerCos);
+  const lowCos = Math.min(innerCos, outerCos);
+  if (viewDot >= highCos) {
+    return 1;
+  }
+  if (viewDot <= lowCos) {
+    return Math.max(0.01, 1 - coneFoveate);
+  }
+
+  const t = (viewDot - lowCos) / Math.max(0.000001, highCos - lowCos);
+  return Math.max(0.01, 1 - coneFoveate * (1 - t));
 };
 
 type SsogLodCandidateReader<T> = {
@@ -166,12 +196,13 @@ const getBoundsRank = <T>(
       )
     : 0.5;
   const viewBias = 0.35 + viewDot * 0.65;
+  const foveationWeight = getFoveationWeight(viewDot, options);
   const distanceBias = 1 / Math.sqrt(distanceToCenter);
   const hysteresis = item.wasSelected ? 1.15 : 1;
   const depthBias = 1 + item.depth * 0.015;
   const lodScale = Math.max(0.01, item.lodScale ?? 1);
   return {
-    score: screenBias * viewBias * distanceBias * Math.sqrt(item.count) * hysteresis * depthBias * lodScale,
+    score: screenBias * viewBias * foveationWeight * distanceBias * Math.sqrt(item.count) * hysteresis * depthBias * lodScale,
     screenRadius,
     viewDot,
   };
@@ -213,12 +244,13 @@ const getBoundsRankFromSoA = (
       )
     : 0.5;
   const viewBias = 0.35 + viewDot * 0.65;
+  const foveationWeight = getFoveationWeight(viewDot, options);
   const distanceBias = 1 / Math.sqrt(distanceToCenter);
   const hysteresis = candidates.flags[index] !== 0 ? 1.15 : 1;
   const depthBias = 1 + candidates.depths[index] * 0.015;
   const lodScale = Math.max(0.01, candidates.lodScales[index] || 1);
   return {
-    score: screenBias * viewBias * distanceBias * Math.sqrt(candidates.counts[index]) * hysteresis * depthBias * lodScale,
+    score: screenBias * viewBias * foveationWeight * distanceBias * Math.sqrt(candidates.counts[index]) * hysteresis * depthBias * lodScale,
     screenRadius,
     viewDot,
   };
