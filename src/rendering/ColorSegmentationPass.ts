@@ -12,7 +12,7 @@ const COMPUTE_SOURCE = ColorSegmentationPass_COMPUTE_SOURCE_raw.replaceAll("__CO
 class ColorSegmentationPass {
   private readonly shader: ComputeShader;
   private readonly params: StorageBuffer;
-  private readonly paramsData = new Float32Array(1);
+  private readonly paramsData = new Float32Array(2);
   private readonly groupBuffer: StorageBuffer;
   private dispatched = false;
 
@@ -20,9 +20,11 @@ class ColorSegmentationPass {
     scene: Scene,
     colorBuffer: StorageBuffer,
     splatCount: number,
+    colorOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     this.paramsData[0] = splatCount;
+    this.paramsData[1] = colorOffset;
     this.params = new StorageBuffer(engine, this.paramsData.byteLength, undefined, "ColorSegmentationParams");
     this.params.update(this.paramsData);
 

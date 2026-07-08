@@ -18,6 +18,8 @@ uniform meansLOffset: f32;
 uniform meansUOffset: f32;
 uniform quatsOffset: f32;
 uniform scalesOffset: f32;
+uniform colorOffset: f32;
+uniform stateOffset: f32;
 uniform scaleCodebookOffset: f32;
 
 var<storage, read> meansLBuffer: array<u32>;
@@ -95,7 +97,7 @@ fn decodeScale(index: u32) -> vec3f {
 }
 
 fn decodeColor(index: u32) -> vec4f {
-  return colorBuffer[index];
+  return colorBuffer[u32(uniforms.colorOffset) + index];
 }
 
 fn initCornerCov(center: vec3f, rotation: vec4f, scale: vec3f, corner: vec2f, centerClip: vec4f) -> vec4f {
@@ -166,7 +168,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let center = decodeCenter(splatIndex);
   let rotation = normalize(decodeRotation(splatIndex));
   let logScale = decodeScale(splatIndex);
-  let splatState = splatStateBuffer[splatIndex];
+  let splatState = splatStateBuffer[u32(uniforms.stateOffset) + splatIndex];
   if ((splatState & SPLAT_STATE_RENDER_DISABLED) != 0u) {
     vertexOutputs.position = vec4f(0.0, 0.0, 2.0, 1.0);
     vertexOutputs.vCorner = vec2f(2.0, 2.0);

@@ -6,11 +6,12 @@
 fn main(@builtin(global_invocation_id) globalId: vec3u) {
   let index = globalId.x;
   let splatCount = u32(paramsBuffer[0]);
+  let colorOffset = u32(paramsBuffer[1]);
   if (index >= splatCount) {
     return;
   }
 
-  let color = colorBuffer[index].rgb;
+  let color = colorBuffer[colorOffset + index].rgb;
   let r = u32(color.r * 255.0) >> 5u;
   let g = u32(color.g * 255.0) >> 5u;
   let b = u32(color.b * 255.0) >> 5u;

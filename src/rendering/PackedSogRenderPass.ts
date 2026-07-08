@@ -467,6 +467,7 @@ class PackedSogRenderPass {
 
   setSplatStateBuffer(buffer: StorageBuffer): void {
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", buffer);
+    this.material.setFloat("stateOffset", 0);
   }
 
   dispose(): void {
@@ -500,7 +501,12 @@ class PackedSogRenderPass {
 		if (!storage) {
 			return undefined;
 		}
-		const pass = new ColorSegmentationPass(scene, storage.color, this.sogBuffers.packed.numSplats);
+		const pass = new ColorSegmentationPass(
+      scene,
+      storage.color,
+      this.sogBuffers.packed.numSplats,
+      this.sogBuffers.storageOffsets.color,
+    );
 		pass.dispatch();
 		return pass;
 	}
@@ -1423,6 +1429,8 @@ class PackedSogRenderPass {
           "meansUOffset",
           "quatsOffset",
           "scalesOffset",
+          "colorOffset",
+          "stateOffset",
           "scaleCodebookOffset",
         ],
         storageBuffers: [
@@ -1483,6 +1491,8 @@ class PackedSogRenderPass {
     material.setFloat("meansUOffset", this.sogBuffers.storageOffsets.meansU);
     material.setFloat("quatsOffset", this.sogBuffers.storageOffsets.quats);
     material.setFloat("scalesOffset", this.sogBuffers.storageOffsets.scales);
+    material.setFloat("colorOffset", this.sogBuffers.storageOffsets.color);
+    material.setFloat("stateOffset", this.sogBuffers.storageOffsets.state);
     material.setFloat("scaleCodebookOffset", this.sogBuffers.storageOffsets.scaleCodebook);
   }
 

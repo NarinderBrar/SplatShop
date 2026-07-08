@@ -33,6 +33,8 @@ type SogStorageBufferOffsets = {
   meansU: number;
   quats: number;
   scales: number;
+  color: number;
+  state: number;
   scaleCodebook: number;
 };
 
@@ -59,6 +61,8 @@ class SogBuffers {
     meansU: 0,
     quats: 0,
     scales: 0,
+    color: 0,
+    state: 0,
     scaleCodebook: 0,
   };
   readonly bufferVersions = new BufferVersionTracker();
@@ -105,8 +109,8 @@ class SogBuffers {
     this.releaseArenaStorageBuffer("quats", "SogQuats", this.storage.quats);
     this.releaseArenaStorageBuffer("scales", "SogScales", this.storage.scales);
     this.releaseStorageBuffer("SogSh0", this.storage.sh0);
-    this.releaseStorageBuffer("SogColor", this.storage.color);
-    this.releaseStorageBuffer("SogStateDefault", this.storage.state);
+    this.releaseArenaStorageBuffer("color", "SogColor", this.storage.color);
+    this.releaseArenaStorageBuffer("state", "SogStateDefault", this.storage.state);
     this.releaseScaleCodebookBuffer(this.storage.scaleCodebook);
     this.releaseStorageBuffer("SogSh0Codebook", this.storage.sh0Codebook);
     this.releaseArenaStorageBuffer("centers", "SogCenters", this.storage.centers);
@@ -148,8 +152,8 @@ class SogBuffers {
       quats: this.makeArenaStorageBuffer("quats", "SogQuats", this.packed.quats, make),
       scales: this.makeArenaStorageBuffer("scales", "SogScales", this.packed.scales, make),
       sh0: make("SogSh0", this.packed.sh0),
-      color: make("SogColor", this.colorData),
-      state: make("SogStateDefault", state),
+      color: this.makeFloat32ArenaStorageBuffer("color", "SogColor", this.colorData, make),
+      state: this.makeArenaStorageBuffer("state", "SogStateDefault", state, make),
       scaleCodebook: this.makeScaleCodebookBuffer(make),
       sh0Codebook: make("SogSh0Codebook", this.packed.sh0Codebook),
       centers: this.makeFloat32ArenaStorageBuffer("centers", "SogCenters", centers, make),
@@ -262,7 +266,7 @@ class SogBuffers {
       colors[colorOffset + 2] = b;
     }
 
-    this.storage.color.update(colors, 0, colors.byteLength);
+    this.storage.color.update(colors, this.storageOffsets.color * Float32Array.BYTES_PER_ELEMENT, colors.byteLength);
     this.bufferVersions.bump(this.storage.color);
     this.stats.shRenderMode = "cpu";
     return performance.now() - start;
