@@ -183,8 +183,6 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let logScale = decodeScale(packedSplatIndex);
   let centerClip = uniforms.worldViewProjection * vec4f(center, 1.0);
 
-  #define CUSTOM_VERTEX_CENTER_FILTER
-
   if (uniforms.vizMode >= 1.0) {
     let pixelRadius = 2.0;
     let clipOffset = corner * pixelRadius * 2.0 / uniforms.viewport * centerClip.w;

@@ -16,13 +16,8 @@ uniform float vizMode;
 varying vec2 vCorner;
 varying vec4 vColor;
 
-#define CUSTOM_VERTEX_DEFINITIONS
-
 void main(void) {
   vec4 centerClip = worldViewProjection * vec4(position, 1.0);
-
-  #define CUSTOM_VERTEX_CENTER_FILTER
-
   float pixelRadius;
   if (vizMode >= 1.0) {
     pixelRadius = 2.0;

@@ -41,7 +41,6 @@ import {
   type SortMode,
 } from "./renderControls";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
-import { applySplatShaderModifierUniforms, buildSplatShaderVariant } from "./ShaderModifierPipeline";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import { getQualitySplatBudget, getSplatShaderQualityProfile } from "./qualityProfiles";
@@ -87,18 +86,6 @@ const GLSL_FRAGMENT_SOURCE = SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw.replaceAll
 const WGSL_VERTEX_SOURCE = SplatRenderPass_WGSL_VERTEX_SOURCE_raw;
 
 const WGSL_FRAGMENT_SOURCE = SplatRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(SHADER_QUALITY.alphaClip.toFixed(10)));
-
-const WGSL_SHADER_VARIANT = buildSplatShaderVariant({
-  language: "wgsl",
-  vertexSource: WGSL_VERTEX_SOURCE,
-  fragmentSource: WGSL_FRAGMENT_SOURCE,
-});
-
-const GLSL_SHADER_VARIANT = buildSplatShaderVariant({
-  language: "glsl",
-  vertexSource: GLSL_VERTEX_SOURCE,
-  fragmentSource: GLSL_FRAGMENT_SOURCE,
-});
 
 type SplatRenderStats = {
   renderSplats: number;
@@ -1360,13 +1347,12 @@ class SplatRenderPass {
 
   private createMaterial(scene: Scene): ShaderMaterial {
     const isWebGPU = scene.getEngine().isWebGPU;
-    const shaderVariant = isWebGPU ? WGSL_SHADER_VARIANT : GLSL_SHADER_VARIANT;
     const material = new ShaderMaterial(
       "SplatRenderPassMaterial",
       scene,
       {
-        vertexSource: shaderVariant.vertexSource,
-        fragmentSource: shaderVariant.fragmentSource,
+        vertexSource: isWebGPU ? WGSL_VERTEX_SOURCE : GLSL_VERTEX_SOURCE,
+        fragmentSource: isWebGPU ? WGSL_FRAGMENT_SOURCE : GLSL_FRAGMENT_SOURCE,
       },
       {
         attributes: isWebGPU ? ["position"] : ["position", "corner", "splatColor", "splatScale"],
@@ -1386,7 +1372,6 @@ class SplatRenderPass {
           "preBlurAmount",
           "renderSplatCount",
           "vizMode",
-          ...shaderVariant.uniformNames,
         ],
         storageBuffers: isWebGPU
           ? ["centerScaleBuffer", "scaleBuffer", "rotationBuffer", "colorBuffer", "colorGroupBuffer", "splatStateBuffer", "indexBuffer"]
@@ -1409,7 +1394,6 @@ class SplatRenderPass {
     material.setFloat("preBlurAmount", SHADER_QUALITY.preBlurAmount);
     material.setFloat("renderSplatCount", 0);
     material.setFloat("vizMode", 0);
-    applySplatShaderModifierUniforms(material, shaderVariant);
 
     return material;
   }

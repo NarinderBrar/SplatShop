@@ -43,7 +43,6 @@ import {
   type SortMode,
 } from "./renderControls";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
-import { applySplatShaderModifierUniforms, buildSplatShaderVariant } from "./ShaderModifierPipeline";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import { getQualitySplatBudget, getSplatShaderQualityProfile } from "./qualityProfiles";
@@ -98,12 +97,6 @@ const isCpuShEnabled = (): boolean => {
 const WGSL_VERTEX_SOURCE = PackedSogRenderPass_WGSL_VERTEX_SOURCE_raw;
 
 const WGSL_FRAGMENT_SOURCE = PackedSogRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(SHADER_QUALITY.alphaClip.toFixed(10)));
-
-const WGSL_SHADER_VARIANT = buildSplatShaderVariant({
-  language: "wgsl",
-  vertexSource: WGSL_VERTEX_SOURCE,
-  fragmentSource: WGSL_FRAGMENT_SOURCE,
-});
 
 type PackedSogRenderStats = {
   renderSplats: number;
@@ -1410,8 +1403,8 @@ class PackedSogRenderPass {
       "PackedSogRenderPassMaterial",
       scene,
       {
-        vertexSource: WGSL_SHADER_VARIANT.vertexSource,
-        fragmentSource: WGSL_SHADER_VARIANT.fragmentSource,
+        vertexSource: WGSL_VERTEX_SOURCE,
+        fragmentSource: WGSL_FRAGMENT_SOURCE,
       },
       {
         attributes: ["position"],
@@ -1439,7 +1432,6 @@ class PackedSogRenderPass {
           "colorOffset",
           "stateOffset",
           "scaleCodebookOffset",
-          ...WGSL_SHADER_VARIANT.uniformNames,
         ],
         storageBuffers: [
           "meansLBuffer",
@@ -1472,7 +1464,6 @@ class PackedSogRenderPass {
     material.setVector3("meansMin", Vector3.FromArray(this.sogBuffers.packed.meansMins));
     material.setVector3("meansMax", Vector3.FromArray(this.sogBuffers.packed.meansMaxs));
     this.setStorageOffsetUniforms(material);
-    applySplatShaderModifierUniforms(material, WGSL_SHADER_VARIANT);
     return material;
   }
 

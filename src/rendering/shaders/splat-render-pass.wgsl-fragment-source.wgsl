@@ -28,9 +28,5 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   if (alpha < max(uniforms.minAlpha, __WGSL_FRAGMENT_SOURCE_EXPR_0__)) {
     discard;
   }
-  var outputColor = vec4f(max(input.vColor.rgb, vec3f(0.0)) * alpha, alpha);
-
-  #define CUSTOM_FRAGMENT_COLOR_MODIFIERS
-
-  fragmentOutputs.color = outputColor;
+  fragmentOutputs.color = vec4f(max(input.vColor.rgb, vec3f(0.0)) * alpha, alpha);
 }

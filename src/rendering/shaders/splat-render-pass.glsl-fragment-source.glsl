@@ -10,8 +10,6 @@ uniform float blurAmount;
 const float EXP4 = 0.01831563888873418;
 const float INV_ONE_MINUS_EXP4 = 1.018657360363774;
 
-#define CUSTOM_FRAGMENT_DEFINITIONS
-
 float normExp(float x) {
   return (exp(-4.0 * x) - EXP4) * INV_ONE_MINUS_EXP4;
 }
@@ -29,9 +27,5 @@ void main(void) {
   if (alpha < max(minAlpha, __GLSL_FRAGMENT_SOURCE_EXPR_0__)) {
     discard;
   }
-  vec4 outputColor = vec4(max(vColor.rgb, vec3(0.0)) * alpha, alpha);
-
-  #define CUSTOM_FRAGMENT_COLOR_MODIFIERS
-
-  gl_FragColor = outputColor;
+  gl_FragColor = vec4(max(vColor.rgb, vec3(0.0)) * alpha, alpha);
 }
