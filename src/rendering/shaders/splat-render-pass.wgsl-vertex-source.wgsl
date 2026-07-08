@@ -147,6 +147,9 @@ fn main(input: VertexInputs) -> FragmentInputs {
   }
   let isSelected = (splatState & SPLAT_STATE_SELECTED) != 0u;
   let centerClip = uniforms.worldViewProjection * vec4f(centerScale.xyz, 1.0);
+  let center = centerScale.xyz;
+
+  #define CUSTOM_VERTEX_CENTER_FILTER
 
   if (uniforms.vizMode >= 1.0) {
     let pixelRadius = 2.0;
@@ -181,7 +184,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let modelView = uniforms.view * uniforms.world;
   
   let pos = initCornerCov(
-    centerScale.xyz, 
+    center, 
     rotation, 
     exp(logScale.xyz) * uniforms.gaussianScale, 
     corner, 

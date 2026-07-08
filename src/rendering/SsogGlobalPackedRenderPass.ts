@@ -33,6 +33,7 @@ import {
 import { BufferVersionTracker } from "./BufferVersionTracker";
 import { FrameDataSoA } from "./FrameDataSoA";
 import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
+import { applySplatShaderModifierUniforms, buildSplatShaderVariant } from "./ShaderModifierPipeline";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import SsogGlobalPackedRenderPass_GPU_INDEX_GATHER_SOURCE_raw from "./shaders/ssog-global-packed-render-pass.gpu-index-gather-source.wgsl?raw";
@@ -374,6 +375,12 @@ const GPU_INDEX_GATHER_SOURCE = SsogGlobalPackedRenderPass_GPU_INDEX_GATHER_SOUR
 const WGSL_VERTEX_SOURCE = SsogGlobalPackedRenderPass_WGSL_VERTEX_SOURCE_raw;
 
 const WGSL_FRAGMENT_SOURCE = SsogGlobalPackedRenderPass_WGSL_FRAGMENT_SOURCE_raw.replaceAll("__WGSL_FRAGMENT_SOURCE_EXPR_0__", String(SHADER_QUALITY.alphaClip.toFixed(10)));
+
+const WGSL_SHADER_VARIANT = buildSplatShaderVariant({
+  language: "wgsl",
+  vertexSource: WGSL_VERTEX_SOURCE,
+  fragmentSource: WGSL_FRAGMENT_SOURCE,
+});
 
 class SsogGlobalPackedRenderPass {
   private readonly mesh: Mesh;
@@ -1321,8 +1328,8 @@ class SsogGlobalPackedRenderPass {
       "SsogGlobalPackedRenderPassMaterial",
       scene,
       {
-        vertexSource: WGSL_VERTEX_SOURCE,
-        fragmentSource: WGSL_FRAGMENT_SOURCE,
+        vertexSource: WGSL_SHADER_VARIANT.vertexSource,
+        fragmentSource: WGSL_SHADER_VARIANT.fragmentSource,
       },
       {
         attributes: ["position"],
@@ -1341,6 +1348,7 @@ class SsogGlobalPackedRenderPass {
           "preBlurAmount",
           "renderSplatCount",
           "vizMode",
+          ...WGSL_SHADER_VARIANT.uniformNames,
         ],
         storageBuffers: [
           "meansLBuffer",
@@ -1372,6 +1380,7 @@ class SsogGlobalPackedRenderPass {
     material.setFloat("preBlurAmount", SHADER_QUALITY.preBlurAmount);
     material.setFloat("renderSplatCount", 0);
     material.setFloat("vizMode", 0);
+    applySplatShaderModifierUniforms(material, WGSL_SHADER_VARIANT);
     return material;
   }
 
