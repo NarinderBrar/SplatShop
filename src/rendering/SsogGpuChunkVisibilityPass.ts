@@ -7,6 +7,7 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { SsogChunkEntry } from "../splat/SplatAsset";
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import { GpuReadbackBufferPool, type GpuReadbackBufferPoolStats } from "./GpuReadbackBufferPool";
 import SsogGpuChunkVisibilityPass_SOURCE_raw from "./shaders/ssog-gpu-chunk-visibility-pass.compute-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 64;
@@ -31,6 +32,7 @@ type SsogGpuChunkVisibilityStats = {
   mismatch: number;
   resultGeneration: number;
   lastDispatchMs: number;
+  readbackPool: GpuReadbackBufferPoolStats;
 };
 
 class SsogGpuChunkVisibilityPass {
@@ -42,13 +44,16 @@ class SsogGpuChunkVisibilityPass {
   private readonly params: StorageBuffer;
   private readonly paramsData = new Float32Array(PARAM_FLOAT_COUNT);
   private readonly zeroCounters = new Uint32Array(COUNTER_COUNT);
+  private readonly counterReadback = new Uint32Array(COUNTER_COUNT);
   private readonly visibleIndexReadback: Uint32Array;
+  private readonly readbackPool: GpuReadbackBufferPool;
   private readbackPending = false;
   private dispatchCpuVisibleChunks = 0;
   private stats: SsogGpuChunkVisibilityStats;
 
   constructor(scene: Scene, entries: SsogChunkEntry[]) {
     const engine = scene.getEngine() as WebGPUEngine;
+    this.readbackPool = new GpuReadbackBufferPool(engine, "SsogGpuChunkVisibility");
     const boundsData = new Float32Array(Math.max(1, entries.length) * 8);
     for (let index = 0; index < entries.length; index++) {
       const entry = entries[index];
@@ -114,6 +119,7 @@ class SsogGpuChunkVisibilityPass {
       mismatch: 0,
       resultGeneration: 0,
       lastDispatchMs: 0,
+      readbackPool: this.readbackPool.getStats(),
     };
   }
 
@@ -127,6 +133,7 @@ class SsogGpuChunkVisibilityPass {
     this.visibleIndices.dispose();
     this.counters.dispose();
     this.params.dispose();
+    this.readbackPool.dispose();
   }
 
   dispatch(planes: Plane[], margin: number, cpuVisibleChunks: number): boolean {
@@ -198,6 +205,7 @@ class SsogGpuChunkVisibilityPass {
     return {
       ...this.stats,
       readbackPending: this.readbackPending,
+      readbackPool: this.readbackPool.getStats(),
     };
   }
 
@@ -206,18 +214,18 @@ class SsogGpuChunkVisibilityPass {
       return;
     }
     this.readbackPending = true;
-    void this.counters
-      .read(0, this.zeroCounters.byteLength)
+    void this.readbackPool
+      .readStorageBuffer(this.counters, 0, this.zeroCounters.byteLength, this.counterReadback)
       .then((counterView) => {
         const counters = new Uint32Array(counterView.buffer, counterView.byteOffset, counterView.byteLength / 4);
         const visibleChunks = counters[0] ?? 0;
         const compactVisibleChunks = Math.min(visibleChunks, this.stats.chunkCount);
-        return this.visibleIndices
-          .read(
+        return this.readbackPool
+          .readStorageBuffer(
+            this.visibleIndices,
             0,
             Math.max(1, compactVisibleChunks) * Uint32Array.BYTES_PER_ELEMENT,
             this.visibleIndexReadback,
-            true,
           )
           .then(() => {
             this.stats = {
@@ -235,6 +243,7 @@ class SsogGpuChunkVisibilityPass {
         this.stats = {
           ...this.stats,
           readbackPending: false,
+          readbackPool: this.readbackPool.getStats(),
         };
       });
   }

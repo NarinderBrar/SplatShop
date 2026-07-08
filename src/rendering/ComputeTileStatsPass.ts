@@ -6,6 +6,7 @@ import type { Matrix } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import { GpuReadbackBufferPool } from "./GpuReadbackBufferPool";
 import type { GpuUniformArena, GpuUniformArenaFloatSlice } from "./GpuUniformArena";
 import ComputeTileStatsPass_CLEAR_SOURCE_raw from "./shaders/compute-tile-stats-pass.clear-source.wgsl?raw";
 import ComputeTileStatsPass_BIN_SOURCE_raw from "./shaders/compute-tile-stats-pass.bin-source.wgsl?raw";
@@ -103,6 +104,10 @@ class ComputeTileStatsPass {
   private readonly params: StorageBuffer;
   private readonly paramsSlice?: GpuUniformArenaFloatSlice;
   private readonly paramsData = new Float32Array(25);
+  private readonly counterReadback = new Uint32Array(COUNTER_COUNT);
+  private readonly offsetReadback = new Uint32Array(OFFSET_COUNT);
+  private readonly cursorReadback = new Uint32Array(MAX_TILES);
+  private readonly readbackPool: GpuReadbackBufferPool;
   private readPending = false;
   private stats: ComputeTileStats;
 
@@ -115,6 +120,7 @@ class ComputeTileStatsPass {
     paramsArena?: GpuUniformArena,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
+    this.readbackPool = new GpuReadbackBufferPool(engine, "ComputeTileStats");
     const countersData = new Uint32Array(COUNTER_COUNT);
     this.counters = new StorageBuffer(engine, countersData.byteLength, undefined, "ComputeTileStatsCounters");
     this.counters.update(countersData);
@@ -259,6 +265,7 @@ class ComputeTileStatsPass {
     if (!this.paramsSlice) {
       this.params.dispose();
     }
+    this.readbackPool.dispose();
   }
 
   dispatch(transform: Matrix, viewportWidth: number, viewportHeight: number, splatCount = this.splatCount): boolean {
@@ -339,9 +346,9 @@ class ComputeTileStatsPass {
     }
     this.readPending = true;
     void Promise.all([
-      this.counters.read(0, COUNTER_COUNT * 4),
-      this.tileOffsets.read(0, OFFSET_COUNT * 4),
-      this.tileCursors.read(0, MAX_TILES * 4),
+      this.readbackPool.readStorageBuffer(this.counters, 0, this.counterReadback.byteLength, this.counterReadback),
+      this.readbackPool.readStorageBuffer(this.tileOffsets, 0, this.offsetReadback.byteLength, this.offsetReadback),
+      this.readbackPool.readStorageBuffer(this.tileCursors, 0, this.cursorReadback.byteLength, this.cursorReadback),
     ])
       .then(([counterView, offsetView, cursorView]) => {
         const counters = new Uint32Array(counterView.buffer, counterView.byteOffset, counterView.byteLength / 4);

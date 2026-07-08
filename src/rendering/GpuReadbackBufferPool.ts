@@ -8,6 +8,12 @@ type GpuReadbackBufferPoolStats = {
   peakBytes: number;
   allocationCount: number;
   reuseCount: number;
+  queuedReads: number;
+  inFlightReads: number;
+  completedReads: number;
+  failedReads: number;
+  totalReadBytes: number;
+  peakQueueDepth: number;
 };
 
 type GpuReadbackBufferLease = {
@@ -28,6 +34,14 @@ class GpuReadbackBufferPool {
   private peakBytes = 0;
   private allocationCount = 0;
   private reuseCount = 0;
+  private queuedReads = 0;
+  private inFlightReads = 0;
+  private completedReads = 0;
+  private failedReads = 0;
+  private totalReadBytes = 0;
+  private peakQueueDepth = 0;
+  private pendingReadCount = 0;
+  private readQueue: Promise<void> = Promise.resolve();
   private disposed = false;
 
   constructor(private readonly engine: WebGPUEngine, private readonly label: string) {}
@@ -71,6 +85,44 @@ class GpuReadbackBufferPool {
     };
   }
 
+  readStorageBuffer<T extends ArrayBufferView>(
+    source: StorageBuffer,
+    offset: number,
+    byteLength: number,
+    target: T,
+    noDelay = false,
+  ): Promise<T> {
+    if (this.disposed) {
+      return Promise.reject(new Error("GPU readback buffer pool is disposed."));
+    }
+
+    this.queuedReads++;
+    this.pendingReadCount++;
+    this.peakQueueDepth = Math.max(this.peakQueueDepth, this.pendingReadCount);
+
+    const read = this.readQueue.then(async () => {
+      this.pendingReadCount = Math.max(0, this.pendingReadCount - 1);
+      this.inFlightReads++;
+      try {
+        const result = await source.read(offset, byteLength, target, noDelay);
+        this.completedReads++;
+        this.totalReadBytes += byteLength;
+        return result as T;
+      } catch (error) {
+        this.failedReads++;
+        throw error;
+      } finally {
+        this.inFlightReads = Math.max(0, this.inFlightReads - 1);
+      }
+    });
+
+    this.readQueue = read.then(
+      () => undefined,
+      () => undefined,
+    );
+    return read;
+  }
+
   getStats(): GpuReadbackBufferPoolStats {
     return {
       freeBuffers: this.free.length,
@@ -79,6 +131,12 @@ class GpuReadbackBufferPool {
       peakBytes: this.peakBytes,
       allocationCount: this.allocationCount,
       reuseCount: this.reuseCount,
+      queuedReads: this.queuedReads,
+      inFlightReads: this.inFlightReads,
+      completedReads: this.completedReads,
+      failedReads: this.failedReads,
+      totalReadBytes: this.totalReadBytes,
+      peakQueueDepth: this.peakQueueDepth,
     };
   }
 

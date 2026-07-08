@@ -6,6 +6,7 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
 import { GpuBufferArena } from "./GpuBufferArena";
+import { GpuReadbackBufferPool } from "./GpuReadbackBufferPool";
 import GpuRadixSortPass_PREFIX_SCAN_SOURCE_raw from "./shaders/gpu-radix-sort-pass.prefix-scan-source.wgsl?raw";
 import GpuRadixSortPass_PREFIX_ADD_SOURCE_raw from "./shaders/gpu-radix-sort-pass.prefix-add-source.wgsl?raw";
 import GpuRadixSortPass_VALIDATION_CLEAR_SOURCE_raw from "./shaders/gpu-radix-sort-pass.validation-clear-source.wgsl?raw";
@@ -92,6 +93,7 @@ class GpuRadixSortPass {
   private readonly validationShader: ComputeShader;
   private readonly validationCounters: StorageBuffer;
   private readonly tempBufferArena: GpuBufferArena;
+  private readonly readbackPool: GpuReadbackBufferPool;
   private readonly validationReadback = new Uint32Array(8);
   private lastDispatchMs = 0;
   private lastDispatchSplats = 0;
@@ -117,6 +119,7 @@ class GpuRadixSortPass {
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     this.tempBufferArena = new GpuBufferArena(engine, "GpuRadixSortTemp");
+    this.readbackPool = new GpuReadbackBufferPool(engine, "GpuRadixSortValidation");
     const elementBytes = splatCount * 4;
     this.workgroupCount = Math.ceil(splatCount / ELEMENTS_PER_WORKGROUP);
     this.dispatchX = Math.min(this.workgroupCount, 65535);
@@ -192,6 +195,7 @@ class GpuRadixSortPass {
     this.validationCounters.dispose();
     this.blockSums.dispose();
     this.tempBufferArena.dispose();
+    this.readbackPool.dispose();
   }
 
   dispatch(): boolean {
@@ -297,11 +301,13 @@ class GpuRadixSortPass {
 
   private async readValidationCounters(): Promise<void> {
     try {
-      const result = await this.validationCounters.read(0, this.validationReadback.byteLength, this.validationReadback, true);
-      const counters =
-        result instanceof Uint32Array
-          ? result
-          : new Uint32Array(result.buffer, result.byteOffset, Math.floor(result.byteLength / 4));
+      const result = await this.readbackPool.readStorageBuffer(
+        this.validationCounters,
+        0,
+        this.validationReadback.byteLength,
+        this.validationReadback,
+      );
+      const counters = result;
       this.ascendingViolations = counters[0] ?? 0;
       this.descendingViolations = counters[1] ?? 0;
       this.outOfRangeIndices = counters[2] ?? 0;

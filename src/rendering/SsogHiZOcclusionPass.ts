@@ -7,6 +7,7 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { SsogChunkEntry } from "../splat/SplatAsset";
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import { GpuReadbackBufferPool, type GpuReadbackBufferPoolStats } from "./GpuReadbackBufferPool";
 import SsogHiZOcclusionPass_BUILD_SOURCE_raw from "./shaders/ssog-hiz-occlusion-pass.build-source.wgsl?raw";
 import SsogHiZOcclusionPass_CLEAR_SOURCE_raw from "./shaders/ssog-hiz-occlusion-pass.clear-source.wgsl?raw";
 import SsogHiZOcclusionPass_TEST_SOURCE_raw from "./shaders/ssog-hiz-occlusion-pass.test-source.wgsl?raw";
@@ -55,6 +56,7 @@ type SsogHiZOcclusionStats = {
   gridWidth: number;
   gridHeight: number;
   lastDispatchMs: number;
+  readbackPool: GpuReadbackBufferPoolStats;
 };
 
 class SsogHiZOcclusionPass {
@@ -69,8 +71,10 @@ class SsogHiZOcclusionPass {
   private readonly params: StorageBuffer;
   private readonly paramsData = new Float32Array(PARAM_FLOAT_COUNT);
   private readonly zeroCounters = new Uint32Array(COUNTER_COUNT);
+  private readonly counterReadback = new Uint32Array(COUNTER_COUNT);
   private readonly farDepthGrid: Uint32Array;
   private readonly visibleIndexReadback: Uint32Array;
+  private readonly readbackPool: GpuReadbackBufferPool;
   private readbackPending = false;
   private stats: SsogHiZOcclusionStats;
 
@@ -81,6 +85,7 @@ class SsogHiZOcclusionPass {
     private readonly gridHeight = 54,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
+    this.readbackPool = new GpuReadbackBufferPool(engine, "SsogHiZ");
     const boundsData = new Float32Array(Math.max(1, entries.length) * 8);
     for (let index = 0; index < entries.length; index++) {
       const entry = entries[index];
@@ -132,6 +137,7 @@ class SsogHiZOcclusionPass {
       gridWidth: this.gridWidth,
       gridHeight: this.gridHeight,
       lastDispatchMs: 0,
+      readbackPool: this.readbackPool.getStats(),
     };
   }
 
@@ -146,6 +152,7 @@ class SsogHiZOcclusionPass {
     this.counters.dispose();
     this.depthGrid.dispose();
     this.params.dispose();
+    this.readbackPool.dispose();
   }
 
   dispatch(
@@ -221,6 +228,7 @@ class SsogHiZOcclusionPass {
     return {
       ...this.stats,
       readbackPending: this.readbackPending,
+      readbackPool: this.readbackPool.getStats(),
     };
   }
 
@@ -280,17 +288,17 @@ class SsogHiZOcclusionPass {
       return;
     }
     this.readbackPending = true;
-    void this.counters
-      .read(0, this.zeroCounters.byteLength)
+    void this.readbackPool
+      .readStorageBuffer(this.counters, 0, this.zeroCounters.byteLength, this.counterReadback)
       .then((counterView) => {
         const counters = new Uint32Array(counterView.buffer, counterView.byteOffset, counterView.byteLength / 4);
         const visibleChunks = Math.min(counters[0] ?? 0, this.stats.chunkCount);
-        return this.visibleIndices
-          .read(
+        return this.readbackPool
+          .readStorageBuffer(
+            this.visibleIndices,
             0,
             Math.max(1, visibleChunks) * Uint32Array.BYTES_PER_ELEMENT,
             this.visibleIndexReadback,
-            true,
           )
           .then(() => {
             this.stats = {
@@ -308,6 +316,7 @@ class SsogHiZOcclusionPass {
         this.stats = {
           ...this.stats,
           readbackPending: false,
+          readbackPool: this.readbackPool.getStats(),
         };
       });
   }

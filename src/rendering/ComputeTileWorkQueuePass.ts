@@ -8,6 +8,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { ComputeTileDepthRangePass } from "./ComputeTileDepthRangePass";
 import type { ComputeTileStatsPass } from "./ComputeTileStatsPass";
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import { GpuReadbackBufferPool } from "./GpuReadbackBufferPool";
 import ComputeTileWorkQueuePass_CLEAR_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.clear-source.wgsl?raw";
 import ComputeTileWorkQueuePass_COMPACT_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.compact-source.wgsl?raw";
 import ComputeTileWorkQueuePass_DEPTH_BAND_COUNT_SOURCE_raw from "./shaders/compute-tile-work-queue-pass.depth-band-count-source.wgsl?raw";
@@ -252,6 +253,8 @@ class ComputeTileWorkQueuePass {
   private readonly depthBandOffsets: StorageBuffer;
   private readonly params: StorageBuffer;
   private readonly paramsData = new Uint32Array(6);
+  private readonly metadataReadback = new Uint32Array(METADATA_COUNT);
+  private readonly readbackPool: GpuReadbackBufferPool;
   private readonly maxSplatsPerWorkItem = getMaxSplatsPerWorkItem();
   private readonly workItemBudget = getWorkItemBudget();
   private readonly adaptiveWorkItemBudgetCap = getAdaptiveWorkItemBudgetCap();
@@ -292,6 +295,7 @@ class ComputeTileWorkQueuePass {
     private readonly tileDepthRangePass: ComputeTileDepthRangePass,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
+    this.readbackPool = new GpuReadbackBufferPool(engine, "ComputeTileWorkQueue");
     this.workQueue = new StorageBuffer(engine, MAX_WORK_ITEMS * 4 * 4, undefined, "ComputeTileWorkQueue");
     this.workQueue.update(new Uint32Array(MAX_WORK_ITEMS * 4));
     this.workDepthRanges = new StorageBuffer(engine, MAX_WORK_ITEMS * 4 * 4, undefined, "ComputeTileWorkDepthRanges");
@@ -467,6 +471,7 @@ class ComputeTileWorkQueuePass {
     this.depthBandCounters.dispose();
     this.depthBandOffsets.dispose();
     this.params.dispose();
+    this.readbackPool.dispose();
   }
 
   dispatch(): boolean {
@@ -550,8 +555,8 @@ class ComputeTileWorkQueuePass {
       return;
     }
     this.readPending = true;
-    void this.metadata
-      .read(0, METADATA_COUNT * 4)
+    void this.readbackPool
+      .readStorageBuffer(this.metadata, 0, this.metadataReadback.byteLength, this.metadataReadback)
       .then((metadataView) => {
         const metadata = new Uint32Array(
           metadataView.buffer,

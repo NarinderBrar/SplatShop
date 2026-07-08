@@ -7,6 +7,7 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { ComputeTileStatsPass } from "./ComputeTileStatsPass";
 import { canCreateComputeShader } from "./GpuDepthKeyPass";
+import { GpuReadbackBufferPool } from "./GpuReadbackBufferPool";
 import ComputeTileDepthRangePass_DEPTH_RANGE_SOURCE_raw from "./shaders/compute-tile-depth-range-pass.depth-range-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 64;
@@ -46,6 +47,8 @@ class ComputeTileDepthRangePass {
   private readonly depthRanges: StorageBuffer;
   private readonly params: StorageBuffer;
   private readonly paramsData = new Float32Array(PARAM_FLOAT_COUNT);
+  private readonly depthRangeReadback = new Float32Array(MAX_TILES * 4);
+  private readonly readbackPool: GpuReadbackBufferPool;
   private readPending = false;
   private stats: ComputeTileDepthRangeStats = {
     enabled: true,
@@ -67,6 +70,7 @@ class ComputeTileDepthRangePass {
     private readonly centerOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
+    this.readbackPool = new GpuReadbackBufferPool(engine, "ComputeTileDepthRange");
     const depthRangeData = new Float32Array(MAX_TILES * 4);
     this.depthRanges = new StorageBuffer(engine, depthRangeData.byteLength, undefined, "ComputeTileDepthRanges");
     this.depthRanges.update(depthRangeData);
@@ -103,6 +107,7 @@ class ComputeTileDepthRangePass {
   dispose(): void {
     this.depthRanges.dispose();
     this.params.dispose();
+    this.readbackPool.dispose();
   }
 
   dispatch(transform: Matrix, splatCount = this.splatCount): boolean {
@@ -147,8 +152,8 @@ class ComputeTileDepthRangePass {
       return;
     }
     this.readPending = true;
-    void this.depthRanges
-      .read(0, MAX_TILES * 4 * 4)
+    void this.readbackPool
+      .readStorageBuffer(this.depthRanges, 0, this.depthRangeReadback.byteLength, this.depthRangeReadback)
       .then((depthView) => {
         const ranges = new Float32Array(depthView.buffer, depthView.byteOffset, depthView.byteLength / 4);
         const spans = new Float32Array(tileCount);
