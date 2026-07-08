@@ -111,8 +111,7 @@ const getDeviceTier = (): SplatDeviceTier => {
   return "standard";
 };
 
-const getPlatformQualityProfile = (): PlatformQualityProfile => {
-  const preset = getQualityPreset();
+const getPlatformQualityProfileForPreset = (preset: SplatQualityPreset): PlatformQualityProfile => {
   const platform = getPlatformKind();
   const deviceTier = getDeviceTier();
   const budgets: Record<SplatDeviceTier, Record<SplatQualityPreset, number>> = {
@@ -185,6 +184,8 @@ const getPlatformQualityProfile = (): PlatformQualityProfile => {
     ssogSplatBudget: budget,
   };
 };
+
+const getPlatformQualityProfile = (): PlatformQualityProfile => getPlatformQualityProfileForPreset(getQualityPreset());
 
 const getSplatShaderQualityProfile = (): SplatShaderQualityProfile => {
   const preset = getQualityPreset();
@@ -296,13 +297,31 @@ const getQualitySplatBudget = (sourceSplats: number, options: { referenceParam?:
   return Math.min(sourceSplats, getPlatformQualityProfile().renderSplatBudget);
 };
 
+const getQualitySplatBudgetForPreset = (
+  sourceSplats: number,
+  preset: SplatQualityPreset,
+  options: { referenceParam?: string } = {},
+): number => {
+  const params = new URLSearchParams(window.location.search);
+  const explicitBudget = getExplicitSplatBudget();
+  if (explicitBudget !== undefined) {
+    return Math.min(sourceSplats, explicitBudget);
+  }
+  if (options.referenceParam && params.get(options.referenceParam) === "true") {
+    return sourceSplats;
+  }
+  return Math.min(sourceSplats, getPlatformQualityProfileForPreset(preset).renderSplatBudget);
+};
+
 export {
   getDeviceTier,
   getExplicitSplatBudget,
   getPlatformKind,
   getPlatformQualityProfile,
+  getPlatformQualityProfileForPreset,
   getQualityPreset,
   getQualitySplatBudget,
+  getQualitySplatBudgetForPreset,
   getSplatShaderQualityProfile,
 };
 export type { PlatformQualityProfile, SplatDeviceTier, SplatPlatformKind, SplatQualityPreset, SplatShaderQualityProfile };

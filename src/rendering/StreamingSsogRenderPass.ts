@@ -26,6 +26,13 @@ import { GpuBufferWriter } from "./GpuBufferWriter";
 import { renderDiagnostics } from "./RenderDiagnostics";
 import type { SsogLodTraversalRequest, SsogLodTraversalResponse } from "../workers/ssogLodTraversalTypes";
 import {
+  getMainSplatViewContext,
+  resolveSplatViewBudget,
+  resolveSplatViewCamera,
+  resolveSplatViewViewportHeight,
+  type SplatViewContext,
+} from "./SplatViewContext";
+import {
   getDeviceTier,
   getExplicitSplatBudget,
   getPlatformKind,
@@ -1066,6 +1073,7 @@ class StreamingSsogRenderPass {
   private readonly activeLodValues = new Set<number>();
   private readonly updateObserver: () => void;
   private readonly qualityPreset = getSsogQualityPreset();
+  private readonly mainView: SplatViewContext;
   private readonly sourceSplats: number;
   private readonly budgetHandle = Symbol("ssog-streaming-budget");
   private lodScale = getSsogLodScale();
@@ -1260,9 +1268,10 @@ class StreamingSsogRenderPass {
           getSsogHiZGridSize("ssogHiZGridHeight", 54),
         )
       : undefined;
-    this.updateObserver = () => this.updateLodSelection();
+    this.mainView = getMainSplatViewContext(scene, this.qualityPreset);
+    this.updateObserver = () => this.updateLodSelection(this.mainView);
     scene.registerBeforeRender(this.updateObserver);
-    this.updateLodSelection(true);
+    this.updateLodSelection(this.mainView, true);
   }
 
   dispose(): void {
@@ -1340,7 +1349,7 @@ class StreamingSsogRenderPass {
 
     this.lodScale = nextScale;
     SsogGlobalSplatBudgetCoordinator.updateLodScale(this.budgetHandle, this.lodScale);
-    this.updateLodSelection(true);
+    this.updateLodSelection(this.mainView, true);
   }
 
   getStats(): StreamingSsogRenderStats {
@@ -2240,10 +2249,10 @@ class StreamingSsogRenderPass {
     this.deferredUploadBytes = this.getDecodedUploadQueueBytes();
   }
 
-  private updateLodSelection(force = false): void {
+  private updateLodSelection(view = this.mainView, force = false): void {
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
     this.gpuBufferWriter?.beginFrame();
-    const camera = this.scene.activeCamera;
+    const camera = resolveSplatViewCamera(this.scene, view);
     if (!camera) {
       this.updateAdaptiveQuality();
       return;
@@ -2289,8 +2298,9 @@ class StreamingSsogRenderPass {
     this.prefetchCandidateChunks = this.prefetchEntryIndices.length;
 
     const fov = "fov" in camera && typeof camera.fov === "number" ? camera.fov : Math.PI / 3;
-    const viewportHeight = this.scene.getEngine().getRenderHeight(true);
+    const viewportHeight = resolveSplatViewViewportHeight(this.scene, view);
     const focalPixels = viewportHeight / Math.max(0.001, 2 * Math.tan(fov * 0.5));
+    const viewSplatBudget = resolveSplatViewBudget(this.sourceSplats, this.splatBudget, view);
     const visibleItems = this.fillSelectableItems(
       this.visibleSelectItems,
       this.visibleCandidateSoA,
@@ -2298,7 +2308,7 @@ class StreamingSsogRenderPass {
       false,
     );
     const visibleSelectionOptions = {
-      budget: this.splatBudget,
+      budget: viewSplatBudget,
       cameraPosition,
       cameraForward,
       focalPixels,
@@ -2337,7 +2347,7 @@ class StreamingSsogRenderPass {
             ),
             this.prefetchEntryIndices,
             {
-              budget: Math.min(this.sourceSplats, Math.floor(this.splatBudget * prefetchBudgetMultiplier)),
+              budget: Math.min(this.sourceSplats, Math.floor(viewSplatBudget * prefetchBudgetMultiplier)),
               cameraPosition,
               cameraForward,
               focalPixels,

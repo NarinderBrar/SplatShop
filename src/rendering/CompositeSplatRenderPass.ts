@@ -4,6 +4,13 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { SsogPackedChunk } from "../splat/SplatAsset";
 import { selectSsogLod } from "../splat/SsogLodSelector";
 import type { PackedSogRenderPass, PackedSogRenderStats } from "./PackedSogRenderPass";
+import {
+  getMainSplatViewContext,
+  resolveSplatViewBudget,
+  resolveSplatViewCamera,
+  resolveSplatViewViewportHeight,
+  type SplatViewContext,
+} from "./SplatViewContext";
 import type { SplatRenderPass, SplatRenderStats } from "./SplatRenderPass";
 import { getQualitySplatBudget } from "./qualityProfiles";
 
@@ -71,6 +78,7 @@ class CompositeSplatRenderPass {
   private activeChunks = 0;
   private selectedLods = 0;
   private lastLodBuildMs = 0;
+  private readonly mainView: SplatViewContext;
 
   constructor(options: CompositeSplatRenderPassOptions) {
     const { scene, chunks, passes } = options;
@@ -89,9 +97,10 @@ class CompositeSplatRenderPass {
     });
     this.sourceSplats = chunks.reduce((sum, chunk) => sum + chunk.data.numSplats, 0);
     this.splatBudget = getSplatBudget(this.sourceSplats);
-    this.updateObserver = () => this.updateLodSelection(scene);
+    this.mainView = getMainSplatViewContext(scene);
+    this.updateObserver = () => this.updateLodSelection(scene, this.mainView);
     scene.registerBeforeRender(this.updateObserver);
-    this.updateLodSelection(scene, true);
+    this.updateLodSelection(scene, this.mainView, true);
   }
 
   dispose(): void {
@@ -389,10 +398,10 @@ class CompositeSplatRenderPass {
     maybePass.setEnabled?.(enabled);
   }
 
-  private updateLodSelection(scene: Scene, force = false): void {
+  private updateLodSelection(scene: Scene, view = this.mainView, force = false): void {
     this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
 
-    const camera = scene.activeCamera;
+    const camera = resolveSplatViewCamera(scene, view);
     if (!camera) {
       return;
     }
@@ -408,8 +417,9 @@ class CompositeSplatRenderPass {
 
     const start = performance.now();
     const fov = "fov" in camera && typeof camera.fov === "number" ? camera.fov : Math.PI / 3;
-    const viewportHeight = scene.getEngine().getRenderHeight(true);
+    const viewportHeight = resolveSplatViewViewportHeight(scene, view);
     const focalPixels = viewportHeight / Math.max(0.001, 2 * Math.tan(fov * 0.5));
+    const splatBudget = resolveSplatViewBudget(this.sourceSplats, this.splatBudget, view);
     const selectedKeys = new Set(
       selectSsogLod(
         this.runtimes.map((runtime, index) => ({
@@ -424,7 +434,7 @@ class CompositeSplatRenderPass {
           wasSelected: runtime.active,
         })),
         {
-          budget: this.splatBudget,
+          budget: splatBudget,
           cameraPosition,
           focalPixels,
           lodRangeMin: this.lodRangeMin,
