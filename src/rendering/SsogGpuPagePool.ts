@@ -1,7 +1,15 @@
 type SsogGpuPageAllocation = {
   pages: number[];
+  spans: SsogGpuPageSpan[];
   overflowPages: number;
   splats: number;
+};
+
+type SsogGpuPageSpan = {
+  page: number;
+  pageOffset: number;
+  chunkOffset: number;
+  count: number;
 };
 
 type SsogGpuPagePoolStats = {
@@ -57,6 +65,7 @@ class SsogGpuPagePool {
 
     const allocation: SsogGpuPageAllocation = {
       pages,
+      spans: this.createPageSpans(pages, splats),
       overflowPages: requiredPages - pages.length,
       splats,
     };
@@ -74,6 +83,10 @@ class SsogGpuPagePool {
 
   getRequiredPages(splats: number): number {
     return Math.max(1, Math.ceil(splats / this.pageCapacitySplats));
+  }
+
+  getPageCapacitySplats(): number {
+    return this.pageCapacitySplats;
   }
 
   getFreePageCount(): number {
@@ -169,7 +182,25 @@ class SsogGpuPagePool {
       reusedKeys: this.reusedKeys,
     };
   }
+
+  private createPageSpans(pages: number[], splats: number): SsogGpuPageSpan[] {
+    const spans: SsogGpuPageSpan[] = [];
+    for (let index = 0; index < pages.length; index++) {
+      const chunkOffset = index * this.pageCapacitySplats;
+      const count = Math.max(0, Math.min(this.pageCapacitySplats, splats - chunkOffset));
+      if (count <= 0) {
+        break;
+      }
+      spans.push({
+        page: pages[index],
+        pageOffset: 0,
+        chunkOffset,
+        count,
+      });
+    }
+    return spans;
+  }
 }
 
 export { SsogGpuPagePool };
-export type { SsogGpuPageAllocation, SsogGpuPagePoolStats };
+export type { SsogGpuPageAllocation, SsogGpuPagePoolStats, SsogGpuPageSpan };

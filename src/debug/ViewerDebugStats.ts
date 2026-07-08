@@ -303,6 +303,10 @@ class ViewerDebugStats {
       gpuPagePoolOverflowAllocationRequests?: number;
       gpuPagePoolFreedPages?: number;
       gpuPagePoolReusedKeys?: number;
+      gpuPageTableRows?: number;
+      gpuPageTableCapacityRows?: number;
+      gpuPageTableVersion?: number;
+      gpuPageTableOverflowRows?: number;
       gpuPageEvictedChunks?: number;
       gpuPageEvictedPages?: number;
       gpuPageDeferredUploadChunks?: number;
@@ -641,6 +645,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.gpuPagePoolAllocationRequests !== undefined
         ? `SSOG GPU page ops: alloc ${formatCount(streamingStats.gpuPagePoolAllocationRequests)} / overflow alloc ${formatCount(streamingStats.gpuPagePoolOverflowAllocationRequests ?? 0)} / freed pages ${formatCount(streamingStats.gpuPagePoolFreedPages ?? 0)} / reused keys ${formatCount(streamingStats.gpuPagePoolReusedKeys ?? 0)}`
+        : "",
+      streamingStats.gpuPageTableRows !== undefined
+        ? `SSOG page table: ${formatCount(streamingStats.gpuPageTableRows)} rows / capacity ${formatCount(streamingStats.gpuPageTableCapacityRows ?? 0)} / overflow rows ${formatCount(streamingStats.gpuPageTableOverflowRows ?? 0)} / v${formatCount(streamingStats.gpuPageTableVersion ?? 0)}`
         : "",
       streamingStats.decodedCacheSplatLimit !== undefined
         ? `SSOG cache classes: fallback ${formatCount(streamingStats.protectedFallbackChunks ?? 0)} / near prefetch ${formatCount(streamingStats.nearPrefetchChunksLoaded ?? 0)} / idle prefetch ${formatCount(streamingStats.idlePrefetchChunksLoaded ?? 0)} / decoded limit ${formatCount(streamingStats.decodedCacheSplatLimit ?? 0)}`

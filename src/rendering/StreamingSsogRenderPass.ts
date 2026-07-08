@@ -1,3 +1,4 @@
+import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Plane } from "@babylonjs/core/Maths/math.plane";
 import type { Scene } from "@babylonjs/core/scene";
@@ -94,6 +95,10 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   gpuPagePoolOverflowAllocationRequests: number;
   gpuPagePoolFreedPages: number;
   gpuPagePoolReusedKeys: number;
+  gpuPageTableRows: number;
+  gpuPageTableCapacityRows: number;
+  gpuPageTableVersion: number;
+  gpuPageTableOverflowRows: number;
   gpuPageEvictedChunks: number;
   gpuPageEvictedPages: number;
   gpuPageDeferredUploadChunks: number;
@@ -610,6 +615,13 @@ const DEFAULT_MOVING_QUALITY_SCALE = 0.72;
 const DEFAULT_SETTLING_QUALITY_SCALE = 0.9;
 const DEFAULT_IDLE_QUALITY_SCALE = 1.18;
 const DEFAULT_SCREENSHOT_QUALITY_SCALE = 1.45;
+const SSOG_PAGE_TABLE_ROW_UINTS = 8;
+const SSOG_PAGE_TABLE_NULL_PAGE = 0xffffffff;
+const SSOG_PAGE_TABLE_FLAG_ACTIVE = 1 << 0;
+const SSOG_PAGE_TABLE_FLAG_SELECTED = 1 << 1;
+const SSOG_PAGE_TABLE_FLAG_FALLBACK = 1 << 2;
+const SSOG_PAGE_TABLE_FLAG_PREFETCH = 1 << 3;
+const SSOG_PAGE_TABLE_FLAG_OVERFLOW = 1 << 4;
 
 const chunkKey = (entry: SsogChunkEntry): string =>
   `${entry.fileIndex}:${entry.offset}:${entry.count}:${entry.lod}:${entry.nodeId}`;
@@ -1032,6 +1044,7 @@ class StreamingSsogRenderPass {
   private readonly chunkLoadAttempts = new Map<string, number>();
   private readonly chunkRetryReadyFrame = new Map<string, number>();
   private readonly entriesByKey = new Map<string, SsogChunkEntry>();
+  private readonly entryIndexByKey = new Map<string, number>();
   private readonly entriesByNode = new Map<number, SsogChunkEntry[]>();
   private readonly finestLodByNode = new Map<number, number>();
   private readonly entryKeys: string[];
@@ -1143,6 +1156,13 @@ class StreamingSsogRenderPass {
   private packedGlobalRuntime?: SsogGlobalPackedRenderPass;
   private expandedRuntime?: ExpandedRuntime;
   private activeVizMode = 0;
+  private gpuPageTableBuffer?: StorageBuffer;
+  private gpuPageTableData = new Uint32Array(0);
+  private gpuPageTableRows = 0;
+  private gpuPageTableCapacityRows = 0;
+  private gpuPageTableVersion = 0;
+  private gpuPageTableOverflowRows = 0;
+  private gpuPageTableDirty = true;
   private frame = 0;
   private generation = 0;
   private disposed = false;
@@ -1220,7 +1240,9 @@ class StreamingSsogRenderPass {
     this.hiZVisibleMarks = new Uint32Array(entries.length);
     this.hiZOccludedFrameCounts = new Uint8Array(entries.length);
     entries.forEach((entry, index) => {
-      this.entriesByKey.set(this.entryKeys[index], entry);
+      const key = this.entryKeys[index];
+      this.entriesByKey.set(key, entry);
+      this.entryIndexByKey.set(key, index);
       const nodeEntries = this.entriesByNode.get(entry.nodeId);
       if (nodeEntries) {
         nodeEntries.push(entry);
@@ -1292,6 +1314,8 @@ class StreamingSsogRenderPass {
     this.hiZOcclusionPass?.dispose();
     this.lodTraversalWorker?.terminate();
     this.lodTraversalWorker = undefined;
+    this.gpuPageTableBuffer?.dispose();
+    this.gpuPageTableBuffer = undefined;
     this.gpuLoaded.clear();
     this.decodedCache.clear();
     this.pending.clear();
@@ -1353,6 +1377,7 @@ class StreamingSsogRenderPass {
   }
 
   getStats(): StreamingSsogRenderStats {
+    this.updateGpuPageTableBuffer();
     const mergedKeys = this.getMergedKeys();
     const packedMetadata = this.getActivePackedMetadataStats();
     const gpuPagePoolStats = this.gpuPagePool.getStats();
@@ -1774,6 +1799,10 @@ class StreamingSsogRenderPass {
       gpuPagePoolOverflowAllocationRequests: gpuPagePoolStats.overflowAllocationRequests,
       gpuPagePoolFreedPages: gpuPagePoolStats.freedPages,
       gpuPagePoolReusedKeys: gpuPagePoolStats.reusedKeys,
+      gpuPageTableRows: this.gpuPageTableRows,
+      gpuPageTableCapacityRows: this.gpuPageTableCapacityRows,
+      gpuPageTableVersion: this.gpuPageTableVersion,
+      gpuPageTableOverflowRows: this.gpuPageTableOverflowRows,
       gpuPageEvictedChunks: this.gpuPageEvictedChunks,
       gpuPageEvictedPages: this.gpuPageEvictedPages,
       gpuPageDeferredUploadChunks: this.gpuPageDeferredUploadChunks,
@@ -2460,7 +2489,11 @@ class StreamingSsogRenderPass {
     for (const [key, gpu] of this.gpuLoaded) {
       const selected = this.selectedKeys.has(key);
       const fallback = this.fallbackKeys.has(key);
+      const wasActive = gpu.active;
       gpu.active = selected || fallback;
+      if (gpu.active !== wasActive || selected || fallback || this.prefetchKeys.has(key)) {
+        this.markGpuPageTableDirty();
+      }
       gpu.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && gpu.active);
       if (gpu.active && this.isChunkRepresentedByReadyRenderPath(key)) {
         this.debugBounds.dispose(key);
@@ -3166,6 +3199,7 @@ class StreamingSsogRenderPass {
       lastUsedFrame: this.generation,
       pageAllocation,
     });
+    this.markGpuPageTableDirty();
     if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
       this.debugBounds.dispose(key);
     } else if (this.debugChunkBoundsVisible) {
@@ -3266,6 +3300,7 @@ class StreamingSsogRenderPass {
     gpu.buffers.dispose();
     this.gpuPagePool.freeChunk(key);
     this.gpuLoaded.delete(key);
+    this.markGpuPageTableDirty();
     this.debugBounds.dispose(key);
     this.recentlyEvictedKeyFrames.set(key, this.generation);
     this.evictedChunks++;
@@ -3364,6 +3399,142 @@ class StreamingSsogRenderPass {
       }
       gpu.pageAllocation = this.gpuPagePool.allocateChunk(key, cached.chunk.data.numSplats);
     }
+    this.markGpuPageTableDirty();
+  }
+
+  private markGpuPageTableDirty(): void {
+    this.gpuPageTableDirty = true;
+  }
+
+  private updateGpuPageTableBuffer(): void {
+    if (!this.gpuPageTableDirty) {
+      return;
+    }
+
+    const estimatedRows = this.getGpuPageTableRowCount();
+    this.ensureGpuPageTableCapacity(estimatedRows);
+    this.gpuPageTableOverflowRows = 0;
+
+    let row = 0;
+    for (const [key, gpu] of this.gpuLoaded) {
+      const entry = this.entriesByKey.get(key);
+      const entryIndex = this.entryIndexByKey.get(key);
+      if (!entry || entryIndex === undefined) {
+        continue;
+      }
+
+      const flags = this.getGpuPageTableFlags(key, gpu);
+      const allocation = gpu.pageAllocation;
+      let spanSplats = 0;
+      for (const span of allocation.spans) {
+        spanSplats += span.count;
+        this.writeGpuPageTableRow(
+          row++,
+          entryIndex,
+          entry.nodeId,
+          span.page,
+          span.pageOffset,
+          span.chunkOffset,
+          span.count,
+          allocation.splats,
+          flags,
+        );
+      }
+
+      const overflowSplats = Math.max(0, allocation.splats - spanSplats);
+      if (overflowSplats > 0 || allocation.overflowPages > 0) {
+        this.gpuPageTableOverflowRows++;
+        this.writeGpuPageTableRow(
+          row++,
+          entryIndex,
+          entry.nodeId,
+          SSOG_PAGE_TABLE_NULL_PAGE,
+          0,
+          spanSplats,
+          overflowSplats,
+          allocation.splats,
+          flags | SSOG_PAGE_TABLE_FLAG_OVERFLOW,
+        );
+      }
+    }
+
+    this.gpuPageTableRows = row;
+    if (this.gpuPageTableData.length > 0) {
+      const updateUintCount = Math.max(SSOG_PAGE_TABLE_ROW_UINTS, row * SSOG_PAGE_TABLE_ROW_UINTS);
+      this.gpuPageTableBuffer?.update(this.gpuPageTableData.subarray(0, updateUintCount));
+    }
+    this.gpuPageTableVersion++;
+    this.gpuPageTableDirty = false;
+  }
+
+  private getGpuPageTableRowCount(): number {
+    let rows = 0;
+    for (const gpu of this.gpuLoaded.values()) {
+      rows += gpu.pageAllocation.spans.length;
+      if (gpu.pageAllocation.overflowPages > 0) {
+        rows++;
+      }
+    }
+    return rows;
+  }
+
+  private ensureGpuPageTableCapacity(rowCount: number): void {
+    const requiredRows = Math.max(1, rowCount);
+    if (this.gpuPageTableCapacityRows >= requiredRows && this.gpuPageTableBuffer) {
+      this.gpuPageTableData.fill(0, 0, requiredRows * SSOG_PAGE_TABLE_ROW_UINTS);
+      return;
+    }
+
+    let capacityRows = Math.max(16, this.gpuPageTableCapacityRows);
+    while (capacityRows < requiredRows) {
+      capacityRows *= 2;
+    }
+
+    this.gpuPageTableBuffer?.dispose();
+    this.gpuPageTableCapacityRows = capacityRows;
+    this.gpuPageTableData = new Uint32Array(capacityRows * SSOG_PAGE_TABLE_ROW_UINTS);
+    this.gpuPageTableBuffer = new StorageBuffer(
+      this.scene.getEngine() as WebGPUEngine,
+      this.gpuPageTableData.byteLength,
+      undefined,
+      "SsogChunkPageTable",
+    );
+  }
+
+  private writeGpuPageTableRow(
+    row: number,
+    entryIndex: number,
+    nodeId: number,
+    page: number,
+    pageOffset: number,
+    chunkOffset: number,
+    count: number,
+    splats: number,
+    flags: number,
+  ): void {
+    const offset = row * SSOG_PAGE_TABLE_ROW_UINTS;
+    this.gpuPageTableData[offset + 0] = entryIndex >>> 0;
+    this.gpuPageTableData[offset + 1] = nodeId >>> 0;
+    this.gpuPageTableData[offset + 2] = page >>> 0;
+    this.gpuPageTableData[offset + 3] = pageOffset >>> 0;
+    this.gpuPageTableData[offset + 4] = chunkOffset >>> 0;
+    this.gpuPageTableData[offset + 5] = Math.max(0, count) >>> 0;
+    this.gpuPageTableData[offset + 6] = splats >>> 0;
+    this.gpuPageTableData[offset + 7] = flags >>> 0;
+  }
+
+  private getGpuPageTableFlags(key: string, gpu: GpuResidentChunk): number {
+    let flags = gpu.active ? SSOG_PAGE_TABLE_FLAG_ACTIVE : 0;
+    if (this.selectedKeys.has(key)) {
+      flags |= SSOG_PAGE_TABLE_FLAG_SELECTED;
+    }
+    if (this.fallbackKeys.has(key)) {
+      flags |= SSOG_PAGE_TABLE_FLAG_FALLBACK;
+    }
+    if (this.prefetchKeys.has(key)) {
+      flags |= SSOG_PAGE_TABLE_FLAG_PREFETCH;
+    }
+    return flags;
   }
 
   private getGpuPageRepackPriority(key: string): number {
