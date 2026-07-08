@@ -1,7 +1,8 @@
 import { MappedReadFileSystem } from "./io";
-import { AssetLoader } from "./asset-loader";
+import { AssetLoader, type AssetLoadProgress } from "./asset-loader";
 import { SplatCloud } from "./splat/SplatCloud";
 import type { Scene } from "@babylonjs/core/scene";
+import type { ReadProgressEvent } from "./io/read/file-systems";
 
 type ImportFile = {
   filename: string;
@@ -40,6 +41,7 @@ const initFileHandler = (
   status: HTMLElement,
   onLoaded: (splatCloud: SplatCloud) => void,
   onImportStart?: (filename: string) => void,
+  onImportProgress?: (progress: AssetLoadProgress) => void,
 ): FileHandler => {
   let currentSplatCloud: SplatCloud | undefined;
 
@@ -66,7 +68,14 @@ const initFileHandler = (
       ? new URL(".", new URL(mainFile.url, window.location.href)).href
       : undefined;
 
-    const fileSystem = new MappedReadFileSystem(baseUrl);
+    const fileSystem = new MappedReadFileSystem(baseUrl, (event: ReadProgressEvent) => {
+      onImportProgress?.({
+        stage: "read",
+        filename: event.filename,
+        bytesLoaded: event.bytesLoaded,
+        totalBytes: event.totalBytes,
+      });
+    });
     files.forEach((f) => {
       if (f.contents) {
         fileSystem.addFile(f.filename, f.contents);
@@ -77,7 +86,7 @@ const initFileHandler = (
       files.length === 1 && !mainFile.contents && mainFile.url ? mainFile.url : mainFile.filename;
 
     onImportStart?.(filename);
-    const model = await assetLoader.load(filename, fileSystem, animationFrame);
+    const model = await assetLoader.load(filename, fileSystem, animationFrame, undefined, onImportProgress);
     const nextSplatCloud = new SplatCloud(model.filename, model.asset, scene);
     currentSplatCloud?.dispose();
     currentSplatCloud = nextSplatCloud;

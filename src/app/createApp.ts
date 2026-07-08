@@ -351,6 +351,11 @@ export async function createApp(
       loadingProgress.setCloud(splatCloud);
     },
     (filename) => loadingProgress.start(`Loading ${filename}`),
+    (progress) => {
+      if (progress.stage === "read") {
+        loadingProgress.setFileProgress(progress.filename, progress.bytesLoaded, progress.totalBytes);
+      }
+    },
   );
 
   const startupUrl = getStartupSplatUrl();

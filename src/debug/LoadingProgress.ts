@@ -45,6 +45,25 @@ class LoadingProgress {
     this.visible = true;
   }
 
+  setFileProgress(filename: string, bytesLoaded?: number, totalBytes?: number): void {
+    this.root.classList.add("is-visible");
+    this.visible = true;
+    this.title.textContent = `Loading ${filename}`;
+
+    if (totalBytes && totalBytes > 0 && bytesLoaded !== undefined) {
+      const progress = Math.min(0.98, bytesLoaded / totalBytes);
+      const percent = Math.max(2, Math.round(progress * 100));
+      this.root.classList.remove("is-indeterminate");
+      this.detail.textContent = `${formatBytes(bytesLoaded)} / ${formatBytes(totalBytes)} read`;
+      this.fill.style.width = `${percent}%`;
+      return;
+    }
+
+    this.root.classList.add("is-indeterminate");
+    this.detail.textContent = "Streaming splat data";
+    this.fill.style.width = "42%";
+  }
+
   setCloud(splatCloud: SplatCloud): void {
     const stats = splatCloud.renderPass.getStats() as StreamingProgressStats;
     const targetSplats = Math.max(0, stats.selectedSplats ?? stats.requestedSplats ?? splatCloud.bufferStats.numSplats);
@@ -99,5 +118,19 @@ class LoadingProgress {
     this.root.classList.remove("is-visible", "is-indeterminate");
   }
 }
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+};
 
 export { LoadingProgress };
