@@ -82,6 +82,93 @@ type SogRange = {
   count: number;
 };
 
+type SogDecodeMemberTiming = {
+  member: string;
+  bytes: number;
+  readMs: number;
+  decodeMs: number;
+  width: number;
+  height: number;
+};
+
+type SogDecodeDebugStats = {
+  filename: string;
+  decodeCount: number;
+  totalMs: number;
+  totalReadMs: number;
+  totalWebpDecodeMs: number;
+  totalRequestedSplats: number;
+  totalSourceSplats: number;
+  ranges: string[];
+};
+
+type SogDecodedBackingData = {
+  sourceCount: number;
+  textureWidth: number;
+  textureHeight: number;
+  meansL: Uint32Array;
+  meansU: Uint32Array;
+  quats: Uint32Array;
+  scales: Uint32Array;
+  sh0: Uint32Array;
+  scaleCodebook: Float32Array;
+  sh0Codebook: Float32Array;
+  shN?: SogPackedData["shN"];
+  meansMins: [number, number, number];
+  meansMaxs: [number, number, number];
+  centers: Float32Array;
+  boundsMin: [number, number, number];
+  boundsMax: [number, number, number];
+};
+
+const sogDecodeDebugStats = new Map<string, SogDecodeDebugStats>();
+
+const isSogDecodeDebugEnabled = (): boolean => {
+  const value = new URLSearchParams(window.location.search).get("ssogDecodeDebug");
+  return value === "true" || value === "1" || value === "debug";
+};
+
+const updateSogDecodeDebugStats = (
+  filename: string,
+  sourceCount: number,
+  offset: number,
+  count: number,
+  totalMs: number,
+  timings: SogDecodeMemberTiming[],
+): SogDecodeDebugStats => {
+  let stats = sogDecodeDebugStats.get(filename);
+  if (!stats) {
+    stats = {
+      filename,
+      decodeCount: 0,
+      totalMs: 0,
+      totalReadMs: 0,
+      totalWebpDecodeMs: 0,
+      totalRequestedSplats: 0,
+      totalSourceSplats: 0,
+      ranges: [],
+    };
+    sogDecodeDebugStats.set(filename, stats);
+  }
+
+  stats.decodeCount++;
+  stats.totalMs += totalMs;
+  stats.totalReadMs += timings.reduce((sum, timing) => sum + timing.readMs, 0);
+  stats.totalWebpDecodeMs += timings.reduce((sum, timing) => sum + timing.decodeMs, 0);
+  stats.totalRequestedSplats += count;
+  stats.totalSourceSplats += sourceCount;
+  stats.ranges.push(`${offset}:${count}`);
+  if (stats.ranges.length > 12) {
+    stats.ranges.shift();
+  }
+
+  (window as unknown as { __splatShopSogDecodeStats?: SogDecodeDebugStats[] }).__splatShopSogDecodeStats = Array.from(
+    sogDecodeDebugStats.values(),
+  );
+
+  return stats;
+};
+
 const dirname = (filename: string): string => {
   const index = filename.lastIndexOf("/");
   return index >= 0 ? filename.slice(0, index + 1) : "";
@@ -129,27 +216,56 @@ const decodeSogCenter = (
 
 const shCoeffCount = (bands: number): number => [0, 3, 8, 15][bands] ?? 0;
 
-const loadPackedSogData = async (
+const decodePackedSogBackingData = async (
   filename: string,
   fileSystem: ReadFileSystem,
-  range?: SogRange,
-): Promise<SogPackedData> => {
+): Promise<SogDecodedBackingData> => {
+  const debugDecode = isSogDecodeDebugEnabled();
+  const totalStart = performance.now();
   const lowerFilename = filename.toLowerCase();
   const isBundledSog = lowerFilename.endsWith(".sog");
   const source = isBundledSog ? await fileSystem.createSource(filename) : undefined;
   const sogFs = source ? new ZipReadFileSystem(source) : fileSystem;
   const metaFilename = isBundledSog ? "meta.json" : filename;
   const memberBase = isBundledSog ? "" : dirname(metaFilename);
+  const backingFilename = isBundledSog ? filename : metaFilename;
+  const decodeTimings: SogDecodeMemberTiming[] = [];
+  let metaReadMs = 0;
+  let decoderCreateMs = 0;
+  let primaryDecodeMs = 0;
+  let shNMs = 0;
+  let centersMs = 0;
 
   try {
+    const metaReadStart = performance.now();
     const metaBytes = await readBytes(sogFs, metaFilename);
+    metaReadMs = performance.now() - metaReadStart;
     const meta = JSON.parse(new TextDecoder().decode(metaBytes)) as SogMetaV2;
     if (meta.version !== 2) {
       throw new Error(`Packed SplatShop SOG currently supports SOG v2 only. Found v${meta.version}.`);
     }
 
+    const decoderCreateStart = performance.now();
     const decoder = await WebPCodec.create();
-    const decode = async (member: string) => decoder.decodeRGBA(await readBytes(sogFs, joinRelative(memberBase, member)));
+    decoderCreateMs = performance.now() - decoderCreateStart;
+    const decode = async (member: string) => {
+      const readStart = performance.now();
+      const bytes = await readBytes(sogFs, joinRelative(memberBase, member));
+      const readMs = performance.now() - readStart;
+      const decodeStart = performance.now();
+      const image = await decoder.decodeRGBA(bytes);
+      const decodeMs = performance.now() - decodeStart;
+      decodeTimings.push({
+        member,
+        bytes: bytes.byteLength,
+        readMs,
+        decodeMs,
+        width: image.width,
+        height: image.height,
+      });
+      return image;
+    };
+    const primaryDecodeStart = performance.now();
     const [meansLImage, meansUImage, quatsImage, scalesImage, sh0Image] = await Promise.all([
       decode(meta.means.files[0]),
       decode(meta.means.files[1]),
@@ -157,23 +273,14 @@ const loadPackedSogData = async (
       decode(meta.scales.files[0]),
       decode(meta.sh0.files[0]),
     ]);
+    primaryDecodeMs = performance.now() - primaryDecodeStart;
 
     const sourceCount = meta.count;
-    const rangeOffset = Math.max(0, Math.floor(range?.offset ?? 0));
-    const rangeCount = Math.max(0, Math.floor(range?.count ?? sourceCount - rangeOffset));
-    const start = Math.min(sourceCount, rangeOffset);
-    const end = Math.min(sourceCount, start + rangeCount);
-    const count = end - start;
-    const meansLSource = rgbaToUint32(meansLImage.rgba);
-    const meansUSource = rgbaToUint32(meansUImage.rgba);
-    const quatsSource = rgbaToUint32(quatsImage.rgba);
-    const scalesSource = rgbaToUint32(scalesImage.rgba);
-    const sh0Source = rgbaToUint32(sh0Image.rgba);
-    const meansL = meansLSource.slice(start, end);
-    const meansU = meansUSource.slice(start, end);
-    const quats = quatsSource.slice(start, end);
-    const scales = scalesSource.slice(start, end);
-    const sh0 = sh0Source.slice(start, end);
+    const meansL = rgbaToUint32(meansLImage.rgba).slice();
+    const meansU = rgbaToUint32(meansUImage.rgba).slice();
+    const quats = rgbaToUint32(quatsImage.rgba).slice();
+    const scales = rgbaToUint32(scalesImage.rgba).slice();
+    const sh0 = rgbaToUint32(sh0Image.rgba).slice();
     const loadShN = async (): Promise<SogPackedData["shN"]> => {
       const shN = meta.shN;
       if (!shN) {
@@ -203,7 +310,7 @@ const loadPackedSogData = async (
         coeffsPerChannel,
         paletteCount: shN.count,
         centroids: rgbaToUint32(centroidsImage.rgba).slice(),
-        labels: labelsSource.slice(start, end),
+        labels: labelsSource.slice(),
         codebook: new Float32Array(shN.codebook),
         codebookLength: shN.codebook.length,
         fileCount: shN.files.length,
@@ -211,8 +318,10 @@ const loadPackedSogData = async (
         centroidHeight: centroidsImage.height,
       };
     };
+    const shNStart = performance.now();
     const shN = await loadShN();
-    const centers = new Float32Array(count * 3);
+    shNMs = performance.now() - shNStart;
+    const centers = new Float32Array(sourceCount * 3);
     const boundsMin: [number, number, number] = [
       Number.POSITIVE_INFINITY,
       Number.POSITIVE_INFINITY,
@@ -224,7 +333,8 @@ const loadPackedSogData = async (
       Number.NEGATIVE_INFINITY,
     ];
 
-    for (let i = 0; i < count; i++) {
+    const centersStart = performance.now();
+    for (let i = 0; i < sourceCount; i++) {
       const center = decodeSogCenter(meta, meansL, meansU, i);
       const centerOffset = i * 3;
       centers[centerOffset + 0] = center[0];
@@ -236,16 +346,17 @@ const loadPackedSogData = async (
         boundsMax[axis] = Math.max(boundsMax[axis], center[axis]);
       }
     }
+    centersMs = performance.now() - centersStart;
 
-    return {
-      numSplats: count,
+    const result: SogDecodedBackingData = {
+      sourceCount,
       textureWidth: meansLImage.width,
       textureHeight: meansLImage.height,
-      meansL: meansL.slice(),
-      meansU: meansU.slice(),
-      quats: quats.slice(),
-      scales: scales.slice(),
-      sh0: sh0.slice(),
+      meansL,
+      meansU,
+      quats,
+      scales,
+      sh0,
       scaleCodebook: new Float32Array(meta.scales.codebook),
       sh0Codebook: new Float32Array(meta.sh0.codebook),
       shN,
@@ -255,12 +366,163 @@ const loadPackedSogData = async (
       boundsMin,
       boundsMax,
     };
+
+    if (debugDecode) {
+      const totalMs = performance.now() - totalStart;
+      const stats = updateSogDecodeDebugStats(backingFilename, sourceCount, 0, sourceCount, totalMs, decodeTimings);
+      const webpDecodeMs = decodeTimings.reduce((sum, timing) => sum + timing.decodeMs, 0);
+      const readMs = metaReadMs + decodeTimings.reduce((sum, timing) => sum + timing.readMs, 0);
+      console.info("[SplatShop][SOG decode]", {
+        filename: backingFilename,
+        requestedOffset: 0,
+        requestedCount: sourceCount,
+        sourceCount,
+        requestedSourceRatio: 1,
+        decodeCountForFile: stats.decodeCount,
+        totalMs,
+        readMs,
+        webpDecodeMs,
+        metaReadMs,
+        decoderCreateMs,
+        primaryDecodeMs,
+        shNMs,
+        centersMs,
+        members: decodeTimings,
+        recentRangesForFile: stats.ranges,
+      });
+    }
+
+    return result;
   } finally {
     if (sogFs instanceof ZipReadFileSystem) {
       sogFs.close();
     }
   }
 };
+
+const getSogRangeBounds = (sourceCount: number, range?: SogRange): { start: number; end: number; count: number } => {
+  const rangeOffset = Math.max(0, Math.floor(range?.offset ?? 0));
+  const rangeCount = Math.max(0, Math.floor(range?.count ?? sourceCount - rangeOffset));
+  const start = Math.min(sourceCount, rangeOffset);
+  const end = Math.min(sourceCount, start + rangeCount);
+  return { start, end, count: end - start };
+};
+
+const computeSogRangeBounds = (
+  centers: Float32Array,
+  count: number,
+): { boundsMin: [number, number, number]; boundsMax: [number, number, number] } => {
+  const boundsMin: [number, number, number] = [
+    Number.POSITIVE_INFINITY,
+    Number.POSITIVE_INFINITY,
+    Number.POSITIVE_INFINITY,
+  ];
+  const boundsMax: [number, number, number] = [
+    Number.NEGATIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ];
+
+  for (let i = 0; i < count; i++) {
+    const centerOffset = i * 3;
+    for (let axis = 0; axis < 3; axis++) {
+      const value = centers[centerOffset + axis];
+      boundsMin[axis] = Math.min(boundsMin[axis], value);
+      boundsMax[axis] = Math.max(boundsMax[axis], value);
+    }
+  }
+
+  return { boundsMin, boundsMax };
+};
+
+const createPackedSogDataRange = (backing: SogDecodedBackingData, range?: SogRange): SogPackedData => {
+  const { start, end, count } = getSogRangeBounds(backing.sourceCount, range);
+  const centers = backing.centers.slice(start * 3, end * 3);
+  const { boundsMin, boundsMax } = computeSogRangeBounds(centers, count);
+  const shN = backing.shN
+    ? {
+        ...backing.shN,
+        centroids: backing.shN.centroids,
+        labels: backing.shN.labels.slice(start, end),
+        codebook: backing.shN.codebook,
+      }
+    : undefined;
+
+  return {
+    numSplats: count,
+    textureWidth: backing.textureWidth,
+    textureHeight: backing.textureHeight,
+    meansL: backing.meansL.slice(start, end),
+    meansU: backing.meansU.slice(start, end),
+    quats: backing.quats.slice(start, end),
+    scales: backing.scales.slice(start, end),
+    sh0: backing.sh0.slice(start, end),
+    scaleCodebook: backing.scaleCodebook,
+    sh0Codebook: backing.sh0Codebook,
+    shN,
+    meansMins: backing.meansMins,
+    meansMaxs: backing.meansMaxs,
+    centers,
+    boundsMin,
+    boundsMax,
+  };
+};
+
+const loadPackedSogData = async (
+  filename: string,
+  fileSystem: ReadFileSystem,
+  range?: SogRange,
+): Promise<SogPackedData> => createPackedSogDataRange(await decodePackedSogBackingData(filename, fileSystem), range);
+
+class SogDecodedBackingStore {
+  private readonly decoded = new Map<string, SogDecodedBackingData>();
+  private readonly pendingDecoded = new Map<string, Promise<SogDecodedBackingData>>();
+  private readonly pendingRanges = new Map<string, Promise<SogPackedData>>();
+
+  async loadRange(filename: string, fileSystem: ReadFileSystem, range?: SogRange): Promise<SogPackedData> {
+    const rangeKey = this.getRangeKey(filename, range);
+    const pendingRange = this.pendingRanges.get(rangeKey);
+    if (pendingRange) {
+      return pendingRange;
+    }
+
+    const promise = this.loadBacking(filename, fileSystem).then((backing) => createPackedSogDataRange(backing, range));
+    this.pendingRanges.set(rangeKey, promise);
+    try {
+      return await promise;
+    } finally {
+      this.pendingRanges.delete(rangeKey);
+    }
+  }
+
+  private async loadBacking(filename: string, fileSystem: ReadFileSystem): Promise<SogDecodedBackingData> {
+    const decoded = this.decoded.get(filename);
+    if (decoded) {
+      return decoded;
+    }
+
+    const pendingDecoded = this.pendingDecoded.get(filename);
+    if (pendingDecoded) {
+      return pendingDecoded;
+    }
+
+    const promise = decodePackedSogBackingData(filename, fileSystem);
+    this.pendingDecoded.set(filename, promise);
+    try {
+      const result = await promise;
+      this.decoded.set(filename, result);
+      return result;
+    } finally {
+      this.pendingDecoded.delete(filename);
+    }
+  }
+
+  private getRangeKey(filename: string, range?: SogRange): string {
+    const offset = Math.max(0, Math.floor(range?.offset ?? 0));
+    const count = Math.max(0, Math.floor(range?.count ?? Number.POSITIVE_INFINITY));
+    return `${filename}:${offset}:${count}`;
+  }
+}
 
 const getSsogMaxChunks = (): number => {
   const params = new URLSearchParams(window.location.search);
@@ -363,6 +625,7 @@ const loadPackedSsogAsset = async (
   fileSystem: ReadFileSystem,
 ): Promise<SplatAsset> => {
   const metadata = JSON.parse(new TextDecoder().decode(await readBytes(fileSystem, filename))) as SsogMetadata;
+  const backingStore = new SogDecodedBackingStore();
   const entries = collectSsogEntries(metadata.tree)
     .sort((a, b) => a.lod - b.lod || a.fileIndex - b.fileIndex || a.offset - b.offset);
   const loadChunk = async (entry: SsogChunkEntry): Promise<SsogPackedChunk> => {
@@ -374,7 +637,7 @@ const loadPackedSsogAsset = async (
     return {
       ...entry,
       filename: chunkFilename,
-      data: await loadPackedSogData(chunkFilename, fileSystem, {
+      data: await backingStore.loadRange(chunkFilename, fileSystem, {
         offset: entry.offset,
         count: entry.count,
       }),
