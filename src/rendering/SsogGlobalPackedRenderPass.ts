@@ -69,6 +69,10 @@ type SsogGlobalPackedStats = {
   chunkCount: number;
   activeChunks: number;
   selectedLods: number;
+  globalPackedBuildArraysMs: number;
+  globalPackedUploadBytes: number;
+  globalPackedCreatedBuffers: number;
+  globalPackedCreateStorageBufferMs: number;
   rendererMode: string;
   rendererRequested: RequestedRendererMode;
   rendererEffective: EffectiveRendererMode;
@@ -502,6 +506,10 @@ class SsogGlobalPackedRenderPass {
   readonly numSplats: number;
   readonly chunkCount: number;
   readonly bufferVersions = new BufferVersionTracker();
+  private readonly globalPackedBuildArraysMs: number;
+  private readonly globalPackedUploadBytes: number;
+  private readonly globalPackedCreatedBuffers: number;
+  private readonly globalPackedCreateStorageBufferMs: number;
 
   constructor(private readonly scene: Scene, chunks: SsogGlobalPackedChunk[], initialSortView?: InitialSortView) {
     const engine = scene.getEngine();
@@ -519,7 +527,9 @@ class SsogGlobalPackedRenderPass {
     this.gpuSortVisibleMode = getSsogGpuSortVisibleMode(this.rendererBackend.requested, this.numSplats);
     this.cpuSortWorkerEnabled = this.gpuSortVisibleMode !== "radix" || !isSsogGpuSortForceVisible();
 
+    const buildArraysStart = performance.now();
     const packed = buildGlobalPackedArrays(chunks, initialSortView);
+    this.globalPackedBuildArraysMs = performance.now() - buildArraysStart;
     this.colorData = packed.color;
     this.dcColorData = packed.dcColor;
     this.shChunks = packed.shChunks;
@@ -534,29 +544,43 @@ class SsogGlobalPackedRenderPass {
     this.mesh.hasVertexAlpha = true;
     this.material = this.createMaterial(scene);
     this.mesh.material = this.material;
+    let createdBuffers = 0;
+    let uploadedBytes = 0;
+    const createTrackedStorageBuffer = (
+      name: string,
+      data: Uint32Array | Float32Array,
+    ): StorageBuffer => {
+      createdBuffers++;
+      uploadedBytes += data.byteLength;
+      return createStorageBuffer(engine, name, data);
+    };
+    const createStorageBufferStart = performance.now();
     this.buffers = {
-      meansL: createStorageBuffer(engine, "SsogGlobalMeansL", packed.meansL),
-      meansU: createStorageBuffer(engine, "SsogGlobalMeansU", packed.meansU),
-      quats: createStorageBuffer(engine, "SsogGlobalQuats", packed.quats),
-      scales: createStorageBuffer(engine, "SsogGlobalScales", packed.scales),
-      color: createStorageBuffer(engine, "SsogGlobalColor", packed.color),
-      state: createStorageBuffer(engine, "SsogGlobalState", new Uint32Array(this.numSplats)),
-      scaleCodebook: createStorageBuffer(engine, "SsogGlobalScaleCodebook", packed.scaleCodebook),
-      chunkInfo: createStorageBuffer(engine, "SsogGlobalChunkInfo", packed.chunkInfo),
-      chunkDebugColor: createStorageBuffer(engine, "SsogGlobalChunkDebugColor", packed.chunkDebugColor),
-      indices: createStorageBuffer(engine, "SsogGlobalIndices", this.indices),
+      meansL: createTrackedStorageBuffer("SsogGlobalMeansL", packed.meansL),
+      meansU: createTrackedStorageBuffer("SsogGlobalMeansU", packed.meansU),
+      quats: createTrackedStorageBuffer("SsogGlobalQuats", packed.quats),
+      scales: createTrackedStorageBuffer("SsogGlobalScales", packed.scales),
+      color: createTrackedStorageBuffer("SsogGlobalColor", packed.color),
+      state: createTrackedStorageBuffer("SsogGlobalState", new Uint32Array(this.numSplats)),
+      scaleCodebook: createTrackedStorageBuffer("SsogGlobalScaleCodebook", packed.scaleCodebook),
+      chunkInfo: createTrackedStorageBuffer("SsogGlobalChunkInfo", packed.chunkInfo),
+      chunkDebugColor: createTrackedStorageBuffer("SsogGlobalChunkDebugColor", packed.chunkDebugColor),
+      indices: createTrackedStorageBuffer("SsogGlobalIndices", this.indices),
       ...((isSsogGpuSortShadowEnabled(this.rendererBackend.requested, this.numSplats) ||
         isSsogComputeTileStatsEnabled(this.rendererBackend.requested) ||
         isSsogComputeTileOrderEnabled(this.rendererBackend.requested)) &&
       canCreateComputeShader(scene)
         ? {
-            centers: createStorageBuffer(engine, "SsogGlobalCenters", packed.centerScale),
-            depthKeys: createStorageBuffer(engine, "SsogGlobalDepthKeys", new Uint32Array(this.numSplats)),
-            gpuSortIndices: createStorageBuffer(engine, "SsogGlobalGpuSortIndices", new Uint32Array(this.numSplats)),
-            ordinalToPacked: createStorageBuffer(engine, "SsogGlobalOrdinalToPacked", packed.globalIndices),
+            centers: createTrackedStorageBuffer("SsogGlobalCenters", packed.centerScale),
+            depthKeys: createTrackedStorageBuffer("SsogGlobalDepthKeys", new Uint32Array(this.numSplats)),
+            gpuSortIndices: createTrackedStorageBuffer("SsogGlobalGpuSortIndices", new Uint32Array(this.numSplats)),
+            ordinalToPacked: createTrackedStorageBuffer("SsogGlobalOrdinalToPacked", packed.globalIndices),
           }
         : {}),
     };
+    this.globalPackedCreateStorageBufferMs = performance.now() - createStorageBufferStart;
+    this.globalPackedCreatedBuffers = createdBuffers;
+    this.globalPackedUploadBytes = uploadedBytes;
     this.bufferVersions.trackAll(this.buffers as unknown as Record<string, StorageBuffer | undefined>);
     if (this.buffers.centers && this.buffers.depthKeys && this.buffers.gpuSortIndices) {
       this.gpuDepthKeyPass = new GpuDepthKeyPass(
@@ -713,6 +737,10 @@ class SsogGlobalPackedRenderPass {
       chunkCount: this.chunkCount,
       activeChunks: this.chunkCount,
       selectedLods: this.chunkCount,
+      globalPackedBuildArraysMs: this.globalPackedBuildArraysMs,
+      globalPackedUploadBytes: this.globalPackedUploadBytes,
+      globalPackedCreatedBuffers: this.globalPackedCreatedBuffers,
+      globalPackedCreateStorageBufferMs: this.globalPackedCreateStorageBufferMs,
       rendererMode:
         this.computeTileRasterStrictPreviewOnly && this.computeTileRasterPreviewPass
           ? "ssog-global-packed-compute-preview-strict"

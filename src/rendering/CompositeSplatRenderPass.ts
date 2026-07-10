@@ -32,6 +32,14 @@ type ChunkRuntime = {
 
 const LOD_SELECT_INTERVAL_FRAMES = 15;
 
+const joinFallbackReasons = (reasons: string[]): string => {
+  const counts = new Map<string, number>();
+  reasons.filter(Boolean).forEach((reason) => counts.set(reason, (counts.get(reason) ?? 0) + 1));
+  return Array.from(counts.entries())
+    .map(([reason, count]) => (count > 1 ? `${reason} x${count}` : reason))
+    .join("; ");
+};
+
 const getSplatBudget = (sourceSplats: number): number => getQualitySplatBudget(sourceSplats);
 
 const getLodRangeMin = (): number => {
@@ -132,7 +140,7 @@ class CompositeSplatRenderPass {
       reverseDepthRequested: first?.reverseDepthRequested ?? "off",
       reverseDepthActive: stats.some((item) => item.reverseDepthActive),
       reverseDepthSupported: stats.some((item) => item.reverseDepthSupported),
-      reverseDepthFallbackReason: stats.map((item) => item.reverseDepthFallbackReason).filter(Boolean).join("; "),
+      reverseDepthFallbackReason: joinFallbackReasons(stats.map((item) => item.reverseDepthFallbackReason)),
       reverseDepthClearValue: stats.some((item) => item.reverseDepthActive) ? 0 : 1,
       reverseDepthCompare: stats.some((item) => item.reverseDepthActive) ? "greater" : "less",
       reverseDepthNear: first?.reverseDepthNear ?? 0,
@@ -148,7 +156,7 @@ class CompositeSplatRenderPass {
       frameTargetsHasDepth: stats.some((item) => item.frameTargetsHasDepth),
       frameTargetsSamples: first?.frameTargetsSamples ?? 1,
       frameTargetsVersion: Math.max(0, ...stats.map((item) => item.frameTargetsVersion)),
-      frameTargetsFallbackReason: stats.map((item) => item.frameTargetsFallbackReason).filter(Boolean).join("; "),
+      frameTargetsFallbackReason: joinFallbackReasons(stats.map((item) => item.frameTargetsFallbackReason)),
       temporalMode: first?.temporalMode ?? "off",
       temporalEnabled: stats.some((item) => item.temporalEnabled),
       temporalStable: stats.some((item) => item.temporalStable),

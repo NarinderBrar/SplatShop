@@ -20,6 +20,7 @@ import { SsogDebugBounds } from "../debug/SsogDebugBounds";
 import { PackedSogRenderPass, type PackedSogRenderStats } from "./PackedSogRenderPass";
 import { SplatRenderPass } from "./SplatRenderPass";
 import { SsogGlobalPackedRenderPass } from "./SsogGlobalPackedRenderPass";
+import { SsogResidentPageRenderPass, type ResidentGlobalChunk } from "./SsogResidentPageRenderPass";
 import { SsogGpuChunkVisibilityPass, type SsogGpuChunkVisibilityStats } from "./SsogGpuChunkVisibilityPass";
 import { SsogHiZOcclusionPass, type SsogHiZOcclusionStats } from "./SsogHiZOcclusionPass";
 import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
@@ -153,6 +154,22 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   globalSortEffective: SsogGlobalSortMode | "group-merged";
   globalSortFallbackReason: string;
   globalSortBuildPending: boolean;
+  globalPackedRebuilds: number;
+  globalPackedBuildArraysMs: number;
+  globalPackedUploadBytes: number;
+  globalPackedCreatedBuffers: number;
+  globalPackedCreateStorageBufferMs: number;
+  residentGlobalActive: boolean;
+  residentGlobalRebuilds: number;
+  residentGlobalMetadataBytesUploaded: number;
+  residentGlobalAttributeBytesReused: number;
+  residentGlobalBuildMs: number;
+  residentGlobalActiveChunks: number;
+  residentGlobalDrawSplats: number;
+  residentGlobalGpuDepthMs: number;
+  residentGlobalGpuSortMs: number;
+  residentGlobalGpuGatherMs: number;
+  residentGlobalGpuSorted: boolean;
   packedMetadataMode: "none" | "shared" | "per-chunk";
   packedMetadataGroups: number;
   packedMergeCompatible: boolean;
@@ -325,7 +342,7 @@ type ExpandedRuntime = {
   pass: SplatRenderPass;
 };
 
-type SsogGlobalSortMode = "off" | "packed" | "expanded";
+type SsogGlobalSortMode = "off" | "packed" | "expanded" | "resident";
 type SsogChunkSortMode = "near" | "center" | "far";
 type SsogGpuChunkVisibilityMode = "off" | "debug" | "drive";
 type SsogHiZOcclusionMode = "off" | "debug" | "drive";
@@ -362,6 +379,14 @@ type SsogQualityProfile = {
   chunkSortScale: number;
   chunkSortHysteresis: number;
   globalRuntimeRebuildIntervalFrames: number;
+};
+
+const joinFallbackReasons = (reasons: string[]): string => {
+  const counts = new Map<string, number>();
+  reasons.filter(Boolean).forEach((reason) => counts.set(reason, (counts.get(reason) ?? 0) + 1));
+  return Array.from(counts.entries())
+    .map(([reason, count]) => (count > 1 ? `${reason} x${count}` : reason))
+    .join("; ");
 };
 
 class ChunkIndexBuffer {
@@ -894,7 +919,7 @@ const getSsogGlobalSortMode = (): SsogGlobalSortMode => {
   }
 
   const value = params.get("ssogGlobalSort");
-  if (value === "off" || value === "expanded") {
+  if (value === "off" || value === "expanded" || value === "resident") {
     return value;
   }
   if (value === "packed") {
@@ -1154,6 +1179,7 @@ class StreamingSsogRenderPass {
   private readonly pendingSelections = new Map<number, { key: string; frames: number }>();
   private readonly transitionLocks = new Map<number, number>();
   private packedGlobalRuntime?: SsogGlobalPackedRenderPass;
+  private residentGlobalRuntime?: SsogResidentPageRenderPass;
   private expandedRuntime?: ExpandedRuntime;
   private activeVizMode = 0;
   private gpuPageTableBuffer?: StorageBuffer;
@@ -1188,6 +1214,7 @@ class StreamingSsogRenderPass {
   private globalSortBuildPending = false;
   private readonly packedMetadataFingerprints = new WeakMap<SogPackedData, string>();
   private lastGlobalSortBuildMs = 0;
+  private globalPackedRebuilds = 0;
   private lastGlobalRuntimeRebuildFrame = Number.NEGATIVE_INFINITY;
   private lastChunkLoadMs = 0;
   private lastChunkUploadMs = 0;
@@ -1307,6 +1334,7 @@ class StreamingSsogRenderPass {
     this.gpuPagePool.clear();
     this.disposeMergedRuntimes();
     this.disposePackedGlobalRuntime();
+    this.disposeResidentGlobalRuntime();
     this.disposeExpandedRuntime();
     this.debugBounds.disposeAll();
     this.gpuBufferWriter?.dispose();
@@ -1360,6 +1388,9 @@ class StreamingSsogRenderPass {
     if (this.packedGlobalRuntime) {
       this.packedGlobalRuntime.setVizMode(mode);
     }
+    if (this.residentGlobalRuntime) {
+      this.residentGlobalRuntime.setVizMode(mode);
+    }
     if (this.expandedRuntime) {
       this.expandedRuntime.pass.setVizMode(mode);
     }
@@ -1387,14 +1418,21 @@ class StreamingSsogRenderPass {
     const renderOrderStats = this.getRenderOrderBucketStats();
     const selectedKeys = Array.from(this.selectedKeys);
     const gpuActiveChunks = Array.from(this.gpuLoaded.values()).filter((gpu) => gpu.active).length;
+    const packedGlobalStats = this.packedGlobalRuntime?.getStats();
+    const residentGlobalStats = this.residentGlobalRuntime?.getStats();
+    const residentGlobalActive = residentGlobalStats?.residentGlobalActive ?? false;
     const activeStats = [
       ...(this.expandedRuntime ? [this.expandedRuntime.pass.getStats()] : []),
-      ...(this.packedGlobalRuntime ? [this.packedGlobalRuntime.getStats()] : []),
+      ...(packedGlobalStats ? [packedGlobalStats] : []),
       ...Array.from(this.mergedRuntimes.values()).map((runtime) => runtime.pass.getStats()),
       ...Array.from(this.gpuLoaded.entries())
         .filter(
           ([key, gpu]) =>
-            !this.expandedRuntime && !this.packedGlobalRuntime && gpu.active && !mergedKeys.has(key),
+            !this.expandedRuntime &&
+            !this.packedGlobalRuntime &&
+            !residentGlobalActive &&
+            gpu.active &&
+            !mergedKeys.has(key),
         )
         .map(([, gpu]) => gpu.pass.getStats()),
     ];
@@ -1445,9 +1483,13 @@ class StreamingSsogRenderPass {
       (sum, item) => sum + (item.computeTileRasterPreviewWindowSplats ?? 0),
       0,
     );
+    const renderSplats = residentGlobalActive
+      ? residentGlobalStats?.residentGlobalDrawSplats ?? 0
+      : activeStats.reduce((sum, item) => sum + item.renderSplats, 0);
+    const rendererModeSuffix = residentGlobalActive ? "gpu-radix" : first?.rendererMode ?? "loading";
 
     return {
-      renderSplats: activeStats.reduce((sum, item) => sum + item.renderSplats, 0),
+      renderSplats,
       chunkCount: this.entries.length,
       activeChunks: this.activeChunks,
       selectedLods: this.selectedLods,
@@ -1456,17 +1498,19 @@ class StreamingSsogRenderPass {
           ? "expanded-global-"
           : this.packedGlobalRuntime
             ? "packed-global-"
-            : this.mergedRuntimes.size > 0
-              ? "group-merged-"
-              : ""
-      }${first?.rendererMode ?? "loading"}`,
+            : this.residentGlobalRuntime
+              ? "resident-global-"
+              : this.mergedRuntimes.size > 0
+                ? "group-merged-"
+                : ""
+      }${rendererModeSuffix}`,
       rendererRequested: first?.rendererRequested ?? "auto",
       rendererEffective: first?.rendererEffective ?? "cpu",
       rendererFallbackReason: first?.rendererFallbackReason ?? "",
       reverseDepthRequested: first?.reverseDepthRequested ?? "off",
       reverseDepthActive: activeStats.some((item) => item.reverseDepthActive),
       reverseDepthSupported: activeStats.some((item) => item.reverseDepthSupported),
-      reverseDepthFallbackReason: activeStats.map((item) => item.reverseDepthFallbackReason).filter(Boolean).join("; "),
+      reverseDepthFallbackReason: joinFallbackReasons(activeStats.map((item) => item.reverseDepthFallbackReason)),
       reverseDepthClearValue: activeStats.some((item) => item.reverseDepthActive) ? 0 : 1,
       reverseDepthCompare: activeStats.some((item) => item.reverseDepthActive) ? "greater" : "less",
       reverseDepthNear: first?.reverseDepthNear ?? 0,
@@ -1482,7 +1526,7 @@ class StreamingSsogRenderPass {
       frameTargetsHasDepth: activeStats.some((item) => item.frameTargetsHasDepth),
       frameTargetsSamples: first?.frameTargetsSamples ?? 1,
       frameTargetsVersion: Math.max(0, ...activeStats.map((item) => item.frameTargetsVersion)),
-      frameTargetsFallbackReason: activeStats.map((item) => item.frameTargetsFallbackReason).filter(Boolean).join("; "),
+      frameTargetsFallbackReason: joinFallbackReasons(activeStats.map((item) => item.frameTargetsFallbackReason)),
       temporalMode: first?.temporalMode ?? "off",
       temporalEnabled: activeStats.some((item) => item.temporalEnabled),
       temporalStable: activeStats.some((item) => item.temporalStable),
@@ -1669,10 +1713,15 @@ class StreamingSsogRenderPass {
       lastSortMs: activeStats.reduce((sum, item) => sum + item.lastSortMs, 0),
       lastUploadMs: activeStats.reduce((sum, item) => sum + item.lastUploadMs, 0),
       lastLodBuildMs: this.lastLodBuildMs + activeStats.reduce((sum, item) => sum + item.lastLodBuildMs, 0),
-      gpuDepthKeyEnabled: activeStats.some((item) => item.gpuDepthKeyEnabled),
-      gpuDepthKeyDispatched: activeStats.some((item) => item.gpuDepthKeyDispatched),
-      lastGpuDepthKeyMs: activeStats.reduce((sum, item) => sum + item.lastGpuDepthKeyMs, 0),
-      lastGpuDepthKeySplats: activeStats.reduce((sum, item) => sum + item.lastGpuDepthKeySplats, 0),
+      gpuDepthKeyEnabled: residentGlobalActive || activeStats.some((item) => item.gpuDepthKeyEnabled),
+      gpuDepthKeyDispatched:
+        residentGlobalActive ? residentGlobalStats?.residentGlobalGpuSorted ?? false : activeStats.some((item) => item.gpuDepthKeyDispatched),
+      lastGpuDepthKeyMs: residentGlobalActive
+        ? residentGlobalStats?.residentGlobalGpuDepthMs ?? 0
+        : activeStats.reduce((sum, item) => sum + item.lastGpuDepthKeyMs, 0),
+      lastGpuDepthKeySplats: residentGlobalActive
+        ? residentGlobalStats?.residentGlobalDrawSplats ?? 0
+        : activeStats.reduce((sum, item) => sum + item.lastGpuDepthKeySplats, 0),
       gpuSortHistogramEnabled: activeStats.some((item) => item.gpuSortHistogramEnabled),
       gpuSortHistogramDispatched: activeStats.some((item) => item.gpuSortHistogramDispatched),
       lastGpuSortHistogramMs: activeStats.reduce((sum, item) => sum + item.lastGpuSortHistogramMs, 0),
@@ -1687,14 +1736,19 @@ class StreamingSsogRenderPass {
       gpuSortScatterDispatched: activeStats.some((item) => item.gpuSortScatterDispatched),
       lastGpuSortScatterMs: activeStats.reduce((sum, item) => sum + item.lastGpuSortScatterMs, 0),
       lastGpuSortScatterSplats: activeStats.reduce((sum, item) => sum + item.lastGpuSortScatterSplats, 0),
-      gpuRadixSortEnabled: activeStats.some((item) => item.gpuRadixSortEnabled),
-      gpuRadixSortDispatched: activeStats.some((item) => item.gpuRadixSortDispatched),
-      lastGpuRadixSortMs: activeStats.reduce((sum, item) => sum + item.lastGpuRadixSortMs, 0),
-      lastGpuRadixSortSplats: activeStats.reduce((sum, item) => sum + item.lastGpuRadixSortSplats, 0),
-      gpuRadixSortBits: first?.gpuRadixSortBits ?? 0,
-      gpuRadixSortPasses: first?.gpuRadixSortPasses ?? 0,
-      gpuSortVisibleMode: first?.gpuSortVisibleMode ?? "cpu",
-      gpuSortVisibleEffective: first?.gpuSortVisibleEffective ?? "cpu",
+      gpuRadixSortEnabled: residentGlobalActive || activeStats.some((item) => item.gpuRadixSortEnabled),
+      gpuRadixSortDispatched:
+        residentGlobalActive ? residentGlobalStats?.residentGlobalGpuSorted ?? false : activeStats.some((item) => item.gpuRadixSortDispatched),
+      lastGpuRadixSortMs: residentGlobalActive
+        ? residentGlobalStats?.residentGlobalGpuSortMs ?? 0
+        : activeStats.reduce((sum, item) => sum + item.lastGpuRadixSortMs, 0),
+      lastGpuRadixSortSplats: residentGlobalActive
+        ? residentGlobalStats?.residentGlobalDrawSplats ?? 0
+        : activeStats.reduce((sum, item) => sum + item.lastGpuRadixSortSplats, 0),
+      gpuRadixSortBits: residentGlobalActive ? 20 : first?.gpuRadixSortBits ?? 0,
+      gpuRadixSortPasses: residentGlobalActive ? 5 : first?.gpuRadixSortPasses ?? 0,
+      gpuSortVisibleMode: residentGlobalActive ? "radix" : first?.gpuSortVisibleMode ?? "cpu",
+      gpuSortVisibleEffective: residentGlobalActive ? "radix" : first?.gpuSortVisibleEffective ?? "cpu",
       gpuRadixValidationEnabled: activeStats.some((item) => item.gpuRadixValidationEnabled),
       gpuRadixValidationPending: activeStats.some((item) => item.gpuRadixValidationPending),
       gpuRadixValidationSamples: activeStats.reduce((sum, item) => sum + item.gpuRadixValidationSamples, 0),
@@ -1862,6 +1916,22 @@ class StreamingSsogRenderPass {
       globalSortEffective: this.getGlobalSortEffectiveMode(),
       globalSortFallbackReason: this.globalSortFallbackReason,
       globalSortBuildPending: this.globalSortBuildPending,
+      globalPackedRebuilds: this.globalPackedRebuilds,
+      globalPackedBuildArraysMs: packedGlobalStats?.globalPackedBuildArraysMs ?? 0,
+      globalPackedUploadBytes: packedGlobalStats?.globalPackedUploadBytes ?? 0,
+      globalPackedCreatedBuffers: packedGlobalStats?.globalPackedCreatedBuffers ?? 0,
+      globalPackedCreateStorageBufferMs: packedGlobalStats?.globalPackedCreateStorageBufferMs ?? 0,
+      residentGlobalActive: residentGlobalStats?.residentGlobalActive ?? false,
+      residentGlobalRebuilds: residentGlobalStats?.residentGlobalRebuilds ?? 0,
+      residentGlobalMetadataBytesUploaded: residentGlobalStats?.residentGlobalMetadataBytesUploaded ?? 0,
+      residentGlobalAttributeBytesReused: residentGlobalStats?.residentGlobalAttributeBytesReused ?? 0,
+      residentGlobalBuildMs: residentGlobalStats?.residentGlobalBuildMs ?? 0,
+      residentGlobalActiveChunks: residentGlobalStats?.residentGlobalActiveChunks ?? 0,
+      residentGlobalDrawSplats: residentGlobalStats?.residentGlobalDrawSplats ?? 0,
+      residentGlobalGpuDepthMs: residentGlobalStats?.residentGlobalGpuDepthMs ?? 0,
+      residentGlobalGpuSortMs: residentGlobalStats?.residentGlobalGpuSortMs ?? 0,
+      residentGlobalGpuGatherMs: residentGlobalStats?.residentGlobalGpuGatherMs ?? 0,
+      residentGlobalGpuSorted: residentGlobalStats?.residentGlobalGpuSorted ?? false,
       packedMetadataMode: packedMetadata.mode,
       packedMetadataGroups: packedMetadata.groups,
       packedMergeCompatible: packedMetadata.mergeCompatible,
@@ -2494,7 +2564,10 @@ class StreamingSsogRenderPass {
       if (gpu.active !== wasActive || selected || fallback || this.prefetchKeys.has(key)) {
         this.markGpuPageTableDirty();
       }
-      gpu.pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && gpu.active);
+      gpu.pass.setEnabled(
+        (this.globalSortMode === "resident" || (this.globalSortMode === "off" && !this.mergedRendering)) &&
+          gpu.active,
+      );
       if (gpu.active && this.isChunkRepresentedByReadyRenderPath(key)) {
         this.debugBounds.dispose(key);
         activeChunks++;
@@ -2532,7 +2605,9 @@ class StreamingSsogRenderPass {
     this.lastLodCameraPosition.copyFrom(cameraPosition);
     this.lastLodCameraForward.copyFrom(cameraForward);
     this.updateLoadedChunkSortDepth(cameraPosition, cameraForward);
-    if (this.globalSortMode === "packed") {
+    if (this.globalSortMode === "resident") {
+      this.updateResidentGlobalRuntime();
+    } else if (this.globalSortMode === "packed") {
       this.updatePackedGlobalRuntime();
     } else if (this.globalSortMode === "expanded") {
       this.updateExpandedRuntime();
@@ -3190,7 +3265,7 @@ class StreamingSsogRenderPass {
     const pass = new PackedSogRenderPass(this.scene, buffers);
     pass.setVizMode(this.activeVizMode);
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
-    pass.setEnabled(this.globalSortMode === "off" && !this.mergedRendering && active);
+    pass.setEnabled((this.globalSortMode === "resident" || (this.globalSortMode === "off" && !this.mergedRendering)) && active);
     const pageAllocation = this.gpuPagePool.allocateChunk(key, chunk.data.numSplats);
     this.gpuLoaded.set(key, {
       buffers,
@@ -3245,7 +3320,9 @@ class StreamingSsogRenderPass {
       this.evictDecodedCache();
     }
 
-    if (this.globalSortMode === "packed") {
+    if (this.globalSortMode === "resident") {
+      this.updateResidentGlobalRuntime();
+    } else if (this.globalSortMode === "packed") {
       this.updatePackedGlobalRuntime();
     } else if (this.globalSortMode === "expanded") {
       this.updateExpandedRuntime();
@@ -3937,7 +4014,63 @@ class StreamingSsogRenderPass {
     this.packedGlobalRuntime.setEnabled(true);
     this.globalSortFallbackReason = "";
     this.lastGlobalSortBuildMs = performance.now() - buildStart;
+    this.globalPackedRebuilds++;
     this.markGlobalRuntimeRebuilt();
+  }
+
+  private updateResidentGlobalRuntime(): void {
+    if (this.globalSortMode !== "resident") {
+      this.disposeResidentGlobalRuntime();
+      return;
+    }
+
+    this.disposePackedGlobalRuntime();
+    this.disposeExpandedRuntime();
+    this.disposeMergedRuntimes();
+    const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
+
+    if (activeEntries.length === 0) {
+      this.disposeResidentGlobalRuntime();
+      this.globalSortFallbackReason = "";
+      return;
+    }
+
+    if (!this.canBuildGlobalRuntime(activeEntries)) {
+      this.globalSortBuildPending = true;
+      return;
+    }
+    this.globalSortBuildPending = false;
+
+    const camera = this.scene.activeCamera;
+    const cameraPosition = camera?.globalPosition ?? new Vector3(0, 0, 0);
+    const cameraForward = camera?.getDirection(Vector3.Forward()) ?? Vector3.Forward();
+    const chunks = activeEntries
+      .map(([key, gpu]): ResidentGlobalChunk | undefined => {
+        const cached = this.decodedCache.get(key);
+        if (!cached || !gpu.pageAllocation) {
+          return undefined;
+        }
+        return {
+          key,
+          buffers: gpu.buffers,
+          pageAllocation: gpu.pageAllocation,
+          splatCount: cached.chunk.data.numSplats,
+          boundsMin: cached.entry.bound.min,
+          boundsMax: cached.entry.bound.max,
+          lod: cached.entry.lod,
+        };
+      })
+      .filter((chunk): chunk is ResidentGlobalChunk => !!chunk);
+
+    if (!this.residentGlobalRuntime) {
+      this.residentGlobalRuntime = new SsogResidentPageRenderPass(this.scene);
+    }
+    this.residentGlobalRuntime.updateActiveChunks({ chunks, cameraPosition, cameraForward });
+    this.residentGlobalRuntime.setVizMode(this.activeVizMode);
+    this.residentGlobalRuntime.setEnabled(true);
+    activeEntries.forEach(([, gpu]) => gpu.pass.setEnabled(false));
+    this.globalSortFallbackReason = "";
+    this.lastGlobalSortBuildMs = this.residentGlobalRuntime.getStats().residentGlobalBuildMs;
   }
 
   private updateExpandedRuntime(force = false): void {
@@ -4010,6 +4143,15 @@ class StreamingSsogRenderPass {
 
     this.packedGlobalRuntime.dispose();
     this.packedGlobalRuntime = undefined;
+  }
+
+  private disposeResidentGlobalRuntime(): void {
+    if (!this.residentGlobalRuntime) {
+      return;
+    }
+
+    this.residentGlobalRuntime.dispose();
+    this.residentGlobalRuntime = undefined;
   }
 
   private updateMergedRuntime(preserveFallbackReason = false): void {
@@ -4109,6 +4251,9 @@ class StreamingSsogRenderPass {
     }
     if (this.expandedRuntime) {
       return "expanded";
+    }
+    if (this.residentGlobalRuntime) {
+      return "resident";
     }
     if (this.mergedRuntimes.size > 0) {
       return "group-merged";
@@ -4267,7 +4412,7 @@ class StreamingSsogRenderPass {
         return true;
       }
     }
-    return this.globalSortMode === "off";
+    return this.globalSortMode === "off" || this.globalSortMode === "resident";
   }
 
   private hasReadyRenderedNode(nodeId: number): boolean {

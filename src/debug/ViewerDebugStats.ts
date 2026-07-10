@@ -354,6 +354,22 @@ class ViewerDebugStats {
       globalSortEffective?: string;
       globalSortFallbackReason?: string;
       globalSortBuildPending?: boolean;
+      globalPackedRebuilds?: number;
+      globalPackedBuildArraysMs?: number;
+      globalPackedUploadBytes?: number;
+      globalPackedCreatedBuffers?: number;
+      globalPackedCreateStorageBufferMs?: number;
+      residentGlobalActive?: boolean;
+      residentGlobalRebuilds?: number;
+      residentGlobalMetadataBytesUploaded?: number;
+      residentGlobalAttributeBytesReused?: number;
+      residentGlobalBuildMs?: number;
+      residentGlobalActiveChunks?: number;
+      residentGlobalDrawSplats?: number;
+      residentGlobalGpuDepthMs?: number;
+      residentGlobalGpuSortMs?: number;
+      residentGlobalGpuGatherMs?: number;
+      residentGlobalGpuSorted?: boolean;
       packedMetadataMode?: string;
       packedMetadataGroups?: number;
       packedMergeCompatible?: boolean;
@@ -697,6 +713,12 @@ class ViewerDebugStats {
       streamingStats.globalSortRequested !== undefined
         ? `SSOG global build: ${streamingStats.globalSortBuildPending ? "pending chunks" : formatMs(streamingStats.lastGlobalSortBuildMs ?? 0) + " ms"}`
         : "",
+      streamingStats.globalPackedRebuilds !== undefined && streamingStats.globalPackedRebuilds > 0
+        ? `SSOG packed global: rebuilds ${formatCount(streamingStats.globalPackedRebuilds)} / arrays ${formatMs(streamingStats.globalPackedBuildArraysMs ?? 0)} ms / buffers ${formatCount(streamingStats.globalPackedCreatedBuffers ?? 0)} in ${formatMs(streamingStats.globalPackedCreateStorageBufferMs ?? 0)} ms / upload ${formatBytes(streamingStats.globalPackedUploadBytes ?? 0)}`
+        : "",
+      streamingStats.residentGlobalActive
+        ? `SSOG resident global: chunks ${formatCount(streamingStats.residentGlobalActiveChunks ?? 0)} / draw ${formatCount(streamingStats.residentGlobalDrawSplats ?? 0)} / meta ${formatBytes(streamingStats.residentGlobalMetadataBytesUploaded ?? 0)} / reused attrs ${formatBytes(streamingStats.residentGlobalAttributeBytesReused ?? 0)} / build ${formatMs(streamingStats.residentGlobalBuildMs ?? 0)} ms / gpu ${streamingStats.residentGlobalGpuSorted ? "sorted" : "pending"} d ${formatMs(streamingStats.residentGlobalGpuDepthMs ?? 0)} ms / r ${formatMs(streamingStats.residentGlobalGpuSortMs ?? 0)} ms / g ${formatMs(streamingStats.residentGlobalGpuGatherMs ?? 0)} ms / rebuilds ${formatCount(streamingStats.residentGlobalRebuilds ?? 0)}`
+        : "",
       streamingStats.packedMetadataMode !== undefined
         ? `SSOG packed metadata: ${streamingStats.packedMetadataMode} / groups ${formatCount(streamingStats.packedMetadataGroups ?? 0)} / merge ${streamingStats.packedMergeCompatible ? "yes" : "no"}`
         : "",
@@ -826,15 +848,22 @@ class ViewerDebugStats {
       groups.get(getDebugGroupKey(trimmed))?.lines.push(trimmed);
     }
 
+    const openStates = new Map<DebugGroupKey, boolean>();
+    for (const el of this.root.querySelectorAll<HTMLDetailsElement>("details[data-group]")) {
+      openStates.set(el.dataset.group as DebugGroupKey, el.open);
+    }
+
     const fragment = document.createDocumentFragment();
     for (const group of groups.values()) {
       if (group.lines.length === 0) {
         continue;
       }
-      const section = document.createElement("section");
+      const section = document.createElement("details");
       section.className = "debug-stats-section";
+      section.dataset.group = group.key;
+      section.open = openStates.get(group.key) ?? false;
 
-      const title = document.createElement("div");
+      const title = document.createElement("summary");
       title.className = "debug-stats-section__title";
       title.textContent = group.title;
       section.appendChild(title);

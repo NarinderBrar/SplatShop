@@ -398,6 +398,7 @@ function createPropertiesPanel(
     debugTab.classList.toggle("is-active", tab === "debug");
     propertiesContent.classList.toggle("is-visible", tab === "properties");
     debugContent.classList.toggle("is-visible", tab === "debug");
+    panel.classList.toggle("is-expanded", tab === "debug");
   }
 
   return {

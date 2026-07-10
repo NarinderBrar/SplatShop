@@ -203,4 +203,4 @@ class SsogGpuPagePool {
 }
 
 export { SsogGpuPagePool };
-export type { SsogGpuPageAllocation, SsogGpuPagePoolStats, SsogGpuPageSpan };
+export type { SsogGpuPageAllocation, SsogGpuPageSpan, SsogGpuPagePoolStats };

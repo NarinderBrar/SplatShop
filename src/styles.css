@@ -132,8 +132,8 @@ body {
 }
 
 #debug-stats {
-  display: grid;
-  gap: 8px;
+  columns: 3 240px;
+  column-gap: 6px;
   padding: 2px;
   color: #dbe7ea;
   font-family:
@@ -143,6 +143,7 @@ body {
 }
 
 .debug-stats-section {
+  break-inside: avoid;
   display: grid;
   gap: 3px;
   padding: 6px 0;
@@ -152,6 +153,28 @@ body {
 .debug-stats-section:first-child {
   padding-top: 0;
   border-top: 0;
+}
+
+.debug-stats-section summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.debug-stats-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.debug-stats-section summary::before {
+  content: "\25B6";
+  display: inline-block;
+  margin-right: 5px;
+  font-size: 8px;
+  color: rgb(154 204 255 / 0.6);
+  transition: transform 0.15s ease;
+}
+
+.debug-stats-section[open] summary::before {
+  transform: rotate(90deg);
 }
 
 .debug-stats-section__title {
@@ -447,6 +470,11 @@ body {
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
   pointer-events: auto;
   overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+.properties-panel.is-expanded {
+  width: min(50vw, 960px);
 }
 
 .properties-tabs {

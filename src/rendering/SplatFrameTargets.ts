@@ -52,6 +52,7 @@ class SplatFrameTargets {
   private height = 0;
   private version = 0;
   private fallbackReason = "";
+  private allocationFailedForSize = "";
 
   constructor(private readonly scene: Scene) {}
 
@@ -75,10 +76,22 @@ class SplatFrameTargets {
     if (this.target && this.width === width && this.height === height) {
       return;
     }
+    const sizeKey = `${width}x${height}:${this.samples}`;
+    if (this.allocationFailedForSize === sizeKey) {
+      this.width = width;
+      this.height = height;
+      return;
+    }
 
     this.disposeTarget();
     this.width = width;
     this.height = height;
+    const engineWithMrt = engine as typeof engine & { createMultipleRenderTarget?: unknown };
+    if (typeof engineWithMrt.createMultipleRenderTarget !== "function") {
+      this.fallbackReason = "mrt-createMultipleRenderTarget-unavailable";
+      this.allocationFailedForSize = sizeKey;
+      return;
+    }
     try {
       this.target = new MultiRenderTarget(
         "SplatFrameTargets",
@@ -122,6 +135,7 @@ class SplatFrameTargets {
     } catch (error) {
       this.disposeTarget();
       this.fallbackReason = error instanceof Error ? error.message : "mrt-allocation-failed";
+      this.allocationFailedForSize = sizeKey;
     }
   }
 
