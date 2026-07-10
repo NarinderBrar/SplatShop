@@ -144,8 +144,10 @@ class SsogResidentPageRenderPass {
   private depthKeysBuffer: StorageBuffer;
   private depthParamsBuffer: StorageBuffer;
   private gatherParamsBuffer: StorageBuffer;
-  private chunkTableData = new Float32Array(0);
-  private drawRefsData = new Uint32Array(0);
+  private chunkTableData = new Float32Array(4);
+  private drawRefsData = new Uint32Array(1);
+  private chunkTableCapacity = 4;
+  private drawRefCapacity = 1;
   private depthParamsData = new Float32Array(16);
   private gatherParamsData = new Uint32Array(4);
   private depthKeyShader?: ComputeShader;
@@ -179,8 +181,8 @@ class SsogResidentPageRenderPass {
     this.mesh.doNotSyncBoundingInfo = true;
     this.material = this.createMaterial(scene);
     this.mesh.material = this.material;
-    this.chunkTableBuffer = createStorageBuffer(engine, "SsogResidentChunkTable", new Float32Array(4));
-    this.drawRefsBuffer = createStorageBuffer(engine, "SsogResidentDrawRefs", new Uint32Array(1));
+    this.chunkTableBuffer = createStorageBuffer(engine, "SsogResidentChunkTable", this.chunkTableData);
+    this.drawRefsBuffer = createStorageBuffer(engine, "SsogResidentDrawRefs", this.drawRefsData);
     this.sortedOrdinalsBuffer = createStorageBuffer(engine, "SsogResidentSortedOrdinals", new Uint32Array(1));
     this.sortedRefsBuffer = createStorageBuffer(engine, "SsogResidentSortedRefs", new Uint32Array(1));
     this.depthKeysBuffer = createStorageBuffer(engine, "SsogResidentDepthKeys", new Uint32Array(1));
@@ -321,20 +323,9 @@ class SsogResidentPageRenderPass {
     this.lastMetadataSignature = signature;
     const chunkTableLength = Math.max(4, chunks.length * CHUNK_TABLE_FLOATS);
     const drawRefLength = Math.max(1, this.drawSplats);
-    if (this.chunkTableData.length !== chunkTableLength) {
-      this.chunkTableData = new Float32Array(chunkTableLength);
-      this.chunkTableBuffer.dispose();
-      this.chunkTableBuffer = createStorageBuffer(this.engine, "SsogResidentChunkTable", this.chunkTableData);
-      this.bufferVersions.track(this.chunkTableBuffer);
-    } else {
-      this.chunkTableData.fill(0);
-    }
-    if (this.drawRefsData.length !== drawRefLength) {
-      this.drawRefsData = new Uint32Array(drawRefLength);
-      this.recreateSortBuffers(drawRefLength);
-    } else {
-      this.drawRefsData.fill(0);
-    }
+    this.ensureChunkTableCapacity(chunkTableLength);
+    this.ensureSortBufferCapacity(drawRefLength);
+    this.chunkTableData.fill(0, 0, chunkTableLength);
 
     let drawOffset = 0;
     chunks.forEach((chunk, ordinal) => {
@@ -348,11 +339,12 @@ class SsogResidentPageRenderPass {
       }
     });
 
-    this.chunkTableBuffer.update(this.chunkTableData, 0, this.chunkTableData.byteLength);
-    this.drawRefsBuffer.update(this.drawRefsData, 0, this.drawRefsData.byteLength);
+    this.chunkTableBuffer.update(this.chunkTableData, 0, chunkTableLength * Float32Array.BYTES_PER_ELEMENT);
+    this.drawRefsBuffer.update(this.drawRefsData, 0, drawRefLength * Uint32Array.BYTES_PER_ELEMENT);
     this.bufferVersions.bump(this.chunkTableBuffer);
     this.bufferVersions.bump(this.drawRefsBuffer);
-    this.metadataBytesUploaded = this.chunkTableData.byteLength + this.drawRefsData.byteLength;
+    this.metadataBytesUploaded =
+      chunkTableLength * Float32Array.BYTES_PER_ELEMENT + drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
     this.rebuilds++;
     this.bindStorageBuffers();
   }
@@ -385,7 +377,7 @@ class SsogResidentPageRenderPass {
     this.lastDepthMs = depthDispatched ? performance.now() - depthStart : 0;
 
     const sortStart = performance.now();
-    const sorted = depthDispatched && this.radixSortPass.dispatch();
+    const sorted = depthDispatched && this.radixSortPass.dispatch(this.drawSplats);
     const radixStats: GpuRadixSortStats | undefined = this.radixSortPass.getStats();
     this.lastSortMs = sorted ? radixStats.lastDispatchMs || performance.now() - sortStart : 0;
 
@@ -397,17 +389,51 @@ class SsogResidentPageRenderPass {
     this.bufferVersions.bump(this.sortedRefsBuffer);
   }
 
-  private recreateSortBuffers(drawRefLength: number): void {
+  private ensureChunkTableCapacity(requiredLength: number): void {
+    if (requiredLength <= this.chunkTableCapacity) {
+      return;
+    }
+
+    this.chunkTableCapacity = roundUpPowerOfTwo(requiredLength);
+    this.chunkTableData = new Float32Array(this.chunkTableCapacity);
+    this.chunkTableBuffer.dispose();
+    this.chunkTableBuffer = createStorageBuffer(this.engine, "SsogResidentChunkTable", this.chunkTableData);
+    this.bufferVersions.track(this.chunkTableBuffer);
+    this.bindStorageBuffers();
+  }
+
+  private ensureSortBufferCapacity(requiredLength: number): void {
+    if (requiredLength <= this.drawRefCapacity) {
+      return;
+    }
+
+    this.drawRefCapacity = roundUpPowerOfTwo(requiredLength);
+    this.drawRefsData = new Uint32Array(this.drawRefCapacity);
+    this.recreateSortBuffers(this.drawRefCapacity);
+  }
+
+  private recreateSortBuffers(drawRefCapacity: number): void {
     this.drawRefsBuffer.dispose();
     this.sortedOrdinalsBuffer.dispose();
     this.sortedRefsBuffer.dispose();
     this.depthKeysBuffer.dispose();
     this.radixSortPass?.dispose();
     this.drawRefsBuffer = createStorageBuffer(this.engine, "SsogResidentDrawRefs", this.drawRefsData);
-    this.sortedOrdinalsBuffer = createStorageBuffer(this.engine, "SsogResidentSortedOrdinals", new Uint32Array(drawRefLength));
-    this.sortedRefsBuffer = createStorageBuffer(this.engine, "SsogResidentSortedRefs", new Uint32Array(drawRefLength));
-    this.depthKeysBuffer = createStorageBuffer(this.engine, "SsogResidentDepthKeys", new Uint32Array(drawRefLength));
-    this.radixSortPass = new GpuRadixSortPass(this.scene, this.depthKeysBuffer, this.sortedOrdinalsBuffer, drawRefLength, undefined, true);
+    this.sortedOrdinalsBuffer = createStorageBuffer(
+      this.engine,
+      "SsogResidentSortedOrdinals",
+      new Uint32Array(drawRefCapacity),
+    );
+    this.sortedRefsBuffer = createStorageBuffer(this.engine, "SsogResidentSortedRefs", new Uint32Array(drawRefCapacity));
+    this.depthKeysBuffer = createStorageBuffer(this.engine, "SsogResidentDepthKeys", new Uint32Array(drawRefCapacity));
+    this.radixSortPass = new GpuRadixSortPass(
+      this.scene,
+      this.depthKeysBuffer,
+      this.sortedOrdinalsBuffer,
+      drawRefCapacity,
+      undefined,
+      true,
+    );
     this.depthKeyShader = this.createDepthKeyShader();
     this.gatherShader = this.createGatherShader();
     this.bufferVersions.track(this.drawRefsBuffer);

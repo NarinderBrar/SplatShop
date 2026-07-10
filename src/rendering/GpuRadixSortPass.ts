@@ -41,6 +41,7 @@ type GpuRadixSortStats = {
   dispatched: boolean;
   lastDispatchMs: number;
   lastDispatchSplats: number;
+  capacity: number;
   sortBits: number;
   passes: number;
   validationEnabled: boolean;
@@ -77,9 +78,7 @@ type PrefixPass = {
 class GpuRadixSortPass {
   private readonly params: StorageBuffer;
   private readonly paramsData = new Uint32Array(4);
-  private readonly workgroupCount: number;
-  private readonly dispatchX: number;
-  private readonly dispatchY: number;
+  private readonly workgroupCapacity: number;
   private readonly keyScratchA: StorageBuffer;
   private readonly keyScratchB: StorageBuffer;
   private readonly initialValues: StorageBuffer;
@@ -113,30 +112,26 @@ class GpuRadixSortPass {
     scene: Scene,
     private readonly inputKeys: StorageBuffer,
     private readonly outputIndices: StorageBuffer,
-    private readonly splatCount: number,
+    private readonly capacity: number,
     private readonly sortBits = DEFAULT_SORT_BITS,
     private readonly validationEnabled = true,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     this.tempBufferArena = new GpuBufferArena(engine, "GpuRadixSortTemp");
     this.readbackPool = new GpuReadbackBufferPool(engine, "GpuRadixSortValidation");
-    const elementBytes = splatCount * 4;
-    this.workgroupCount = Math.ceil(splatCount / ELEMENTS_PER_WORKGROUP);
-    this.dispatchX = Math.min(this.workgroupCount, 65535);
-    this.dispatchY = Math.ceil(this.workgroupCount / this.dispatchX);
+    const elementBytes = capacity * 4;
+    this.workgroupCapacity = Math.ceil(capacity / ELEMENTS_PER_WORKGROUP);
     this.params = new StorageBuffer(engine, this.paramsData.byteLength, undefined, "GpuRadixSortParams");
     this.keyScratchA = new StorageBuffer(engine, elementBytes, undefined, "GpuRadixSortKeyScratchA");
     this.keyScratchB = new StorageBuffer(engine, elementBytes, undefined, "GpuRadixSortKeyScratchB");
     this.initialValues = new StorageBuffer(engine, elementBytes, undefined, "GpuRadixSortInitialValues");
     this.valueScratchA = new StorageBuffer(engine, elementBytes, undefined, "GpuRadixSortValueScratchA");
     this.valueScratchB = new StorageBuffer(engine, elementBytes, undefined, "GpuRadixSortValueScratchB");
-    this.initialValues.update(this.createSequentialIndices(splatCount));
+    this.initialValues.update(this.createSequentialIndices(capacity));
     this.validationCounters = new StorageBuffer(engine, this.validationReadback.byteLength, undefined, "GpuRadixValidationCounters");
-    this.expectedIndexSum = this.computeExpectedIndexSum(splatCount);
-    this.expectedIndexXor = this.computeExpectedIndexXor(splatCount);
     this.blockSums = new StorageBuffer(
       engine,
-      BUCKET_COUNT * this.workgroupCount * 4,
+      BUCKET_COUNT * this.workgroupCapacity * 4,
       undefined,
       "GpuRadixSortBlockSums",
     );
@@ -178,7 +173,7 @@ class GpuRadixSortPass {
     this.validationShader.setStorageBuffer("counters", this.validationCounters);
     this.validationShader.setStorageBuffer("paramsBuffer", this.params);
 
-    this.createPrefixPasses(engine, this.blockSums, BUCKET_COUNT * this.workgroupCount);
+    this.createPrefixPasses(engine, this.blockSums, BUCKET_COUNT * this.workgroupCapacity);
   }
 
   static isSupported(scene: Scene): boolean {
@@ -198,14 +193,18 @@ class GpuRadixSortPass {
     this.readbackPool.dispose();
   }
 
-  dispatch(): boolean {
-    if (this.splatCount <= 0) {
+  dispatch(count = this.capacity): boolean {
+    const activeCount = Math.max(0, Math.min(this.capacity, Math.floor(count)));
+    if (activeCount <= 0) {
       return false;
     }
 
     const start = performance.now();
-    this.paramsData[0] = this.workgroupCount;
-    this.paramsData[1] = this.splatCount;
+    const workgroupCount = Math.ceil(activeCount / ELEMENTS_PER_WORKGROUP);
+    const dispatchX = Math.min(workgroupCount, 65535);
+    const dispatchY = Math.ceil(workgroupCount / dispatchX);
+    this.paramsData[0] = workgroupCount;
+    this.paramsData[1] = activeCount;
     this.paramsData[2] = 0;
     this.paramsData[3] = 0;
     this.params.update(this.paramsData);
@@ -225,9 +224,9 @@ class GpuRadixSortPass {
       histogram.setStorageBuffer("inputKeys", inputKeys);
       histogram.setStorageBuffer("blockSums", this.blockSums);
       histogram.setStorageBuffer("paramsBuffer", this.params);
-      dispatched = histogram.dispatch(this.dispatchX, this.dispatchY, 1) && dispatched;
+      dispatched = histogram.dispatch(dispatchX, dispatchY, 1) && dispatched;
 
-      this.dispatchPrefixPasses();
+      this.dispatchPrefixPasses(BUCKET_COUNT * workgroupCount);
 
       reorder.setStorageBuffer("inputKeys", inputKeys);
       reorder.setStorageBuffer("outputKeys", outputKeys);
@@ -235,7 +234,7 @@ class GpuRadixSortPass {
       reorder.setStorageBuffer("inputValues", inputValues);
       reorder.setStorageBuffer("outputValues", isLastPass ? this.outputIndices : outputValues);
       reorder.setStorageBuffer("paramsBuffer", this.params);
-      dispatched = reorder.dispatch(this.dispatchX, this.dispatchY, 1) && dispatched;
+      dispatched = reorder.dispatch(dispatchX, dispatchY, 1) && dispatched;
 
       if (!isLastPass) {
         inputKeys = outputKeys;
@@ -246,9 +245,9 @@ class GpuRadixSortPass {
     }
 
     if (dispatched) {
-      this.dispatchValidation();
+      this.dispatchValidation(activeCount);
       this.lastDispatchMs = performance.now() - start;
-      this.lastDispatchSplats = this.splatCount;
+      this.lastDispatchSplats = activeCount;
     }
     return dispatched;
   }
@@ -260,6 +259,7 @@ class GpuRadixSortPass {
       dispatched: this.lastDispatchSplats > 0,
       lastDispatchMs: this.lastDispatchMs,
       lastDispatchSplats: this.lastDispatchSplats,
+      capacity: this.capacity,
       sortBits: this.sortBits,
       passes: this.getPassCount(),
       validationEnabled: this.validationEnabled,
@@ -270,7 +270,7 @@ class GpuRadixSortPass {
       outOfRangeIndices: this.outOfRangeIndices,
       duplicateAdjacentIndices: this.duplicateAdjacentIndices,
       checksumValid:
-        this.validatedIndexCount === this.splatCount &&
+        this.validatedIndexCount === this.lastDispatchSplats &&
         this.indexSum === this.expectedIndexSum &&
         this.indexXor === this.expectedIndexXor,
       indexSum: this.indexSum,
@@ -287,15 +287,17 @@ class GpuRadixSortPass {
     };
   }
 
-  private dispatchValidation(): void {
+  private dispatchValidation(activeCount: number): void {
     if (!this.validationEnabled || this.validationPending) {
       return;
     }
 
+    this.expectedIndexSum = this.computeExpectedIndexSum(activeCount);
+    this.expectedIndexXor = this.computeExpectedIndexXor(activeCount);
     this.validationClearShader.dispatch(1);
-    this.validationShader.dispatch(Math.ceil(this.splatCount / THREADS_PER_WORKGROUP));
+    this.validationShader.dispatch(Math.ceil(activeCount / THREADS_PER_WORKGROUP));
     this.validationPending = true;
-    this.validationSamples = Math.max(0, this.splatCount - 1);
+    this.validationSamples = Math.max(0, activeCount - 1);
     void this.readValidationCounters();
   }
 
@@ -446,20 +448,25 @@ class GpuRadixSortPass {
     }
   }
 
-  private dispatchPrefixPasses(): void {
+  private dispatchPrefixPasses(rootCount: number): void {
+    let count = rootCount;
+    const dispatchCounts: number[] = [];
     for (const pass of this.prefixPasses) {
-      pass.paramsData[0] = pass.count;
+      const dispatchCount = Math.ceil(count / PREFIX_ITEMS_PER_WORKGROUP);
+      dispatchCounts.push(dispatchCount);
+      pass.paramsData[0] = count;
       pass.paramsData[1] = 0;
       pass.paramsData[2] = 0;
       pass.paramsData[3] = 0;
       pass.params.update(pass.paramsData);
-      pass.scanShader.dispatch(pass.dispatchCount);
+      pass.scanShader.dispatch(dispatchCount);
+      count = dispatchCount;
     }
 
     for (let i = this.prefixPasses.length - 1; i >= 0; i--) {
       const pass = this.prefixPasses[i];
       if (pass.addShader) {
-        pass.addShader.dispatch(pass.dispatchCount);
+        pass.addShader.dispatch(dispatchCounts[i] ?? pass.dispatchCount);
       }
     }
   }
