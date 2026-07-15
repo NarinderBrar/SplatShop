@@ -67,7 +67,7 @@ const SELECTION_TOOLS: ToolId[] = ["pointSelect", "circleSelect", "marqueeSelect
 const isSelectionTool = (t: ToolId) => SELECTION_TOOLS.includes(t);
 
 export function createUI(callbacks?: ToolCallbacks, statsElement?: HTMLElement): UIController {
-  let activeTool: ToolId = "pointSelect";
+  let activeTool: ToolId = "move";
 
   const toolbar = document.createElement("div");
   toolbar.className = "tool-rail";

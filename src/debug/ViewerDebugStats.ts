@@ -354,6 +354,8 @@ class ViewerDebugStats {
       globalSortEffective?: string;
       globalSortFallbackReason?: string;
       globalSortBuildPending?: boolean;
+      globalSortBuildPendingFrames?: number;
+      globalSortBuildPendingTransitions?: number;
       globalPackedRebuilds?: number;
       globalPackedBuildArraysMs?: number;
       globalPackedUploadBytes?: number;
@@ -712,6 +714,9 @@ class ViewerDebugStats {
         : "",
       streamingStats.globalSortRequested !== undefined
         ? `SSOG global build: ${streamingStats.globalSortBuildPending ? "pending chunks" : formatMs(streamingStats.lastGlobalSortBuildMs ?? 0) + " ms"}`
+        : "",
+      streamingStats.globalSortBuildPendingFrames !== undefined
+        ? `SSOG global pending: frames ${formatCount(streamingStats.globalSortBuildPendingFrames)} / entries ${formatCount(streamingStats.globalSortBuildPendingTransitions ?? 0)}`
         : "",
       streamingStats.globalPackedRebuilds !== undefined && streamingStats.globalPackedRebuilds > 0
         ? `SSOG packed global: rebuilds ${formatCount(streamingStats.globalPackedRebuilds)} / arrays ${formatMs(streamingStats.globalPackedBuildArraysMs ?? 0)} ms / buffers ${formatCount(streamingStats.globalPackedCreatedBuffers ?? 0)} in ${formatMs(streamingStats.globalPackedCreateStorageBufferMs ?? 0)} ms / upload ${formatBytes(streamingStats.globalPackedUploadBytes ?? 0)}`

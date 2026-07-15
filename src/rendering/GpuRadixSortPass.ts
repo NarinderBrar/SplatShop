@@ -332,19 +332,25 @@ class GpuRadixSortPass {
   }
 
   private computeExpectedIndexSum(count: number): number {
-    let sum = 0;
-    for (let i = 0; i < count; i++) {
-      sum = (sum + i) >>> 0;
-    }
-    return sum;
+    return ((count * (count - 1)) / 2) >>> 0;
   }
 
   private computeExpectedIndexXor(count: number): number {
-    let xor = 0;
-    for (let i = 0; i < count; i++) {
-      xor = (xor ^ i) >>> 0;
+    if (count <= 0) {
+      return 0;
     }
-    return xor;
+
+    const last = count - 1;
+    switch (last & 3) {
+      case 0:
+        return last >>> 0;
+      case 1:
+        return 1;
+      case 2:
+        return (last + 1) >>> 0;
+      default:
+        return 0;
+    }
   }
 
   private getPassCount(): number {

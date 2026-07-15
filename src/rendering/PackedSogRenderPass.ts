@@ -329,24 +329,34 @@ class PackedSogRenderPass {
   private readonly lodRangeMax = getPositiveNumberParam("lodRangeMax", 0.15);
   private readonly lodUnderfillLimit = getPositiveNumberParam("lodUnderfillLimit", 0.85);
   private readonly rendererBackend: RendererBackend;
-  private readonly reverseDepthStats: ReverseDepthStats;
+  private reverseDepthStats: ReverseDepthStats = {
+    reverseDepthRequested: "off",
+    reverseDepthActive: false,
+    reverseDepthSupported: false,
+    reverseDepthFallbackReason: "sort-infrastructure-not-initialized",
+    reverseDepthClearValue: 1,
+    reverseDepthCompare: "less",
+    reverseDepthNear: 0,
+    reverseDepthFar: 0,
+    reverseDepthFarToNearRatio: 0,
+  };
   private readonly frameTargets: ReturnType<typeof getSplatFrameTargets>;
   private readonly temporalAccumulation: ReturnType<typeof getSplatTemporalAccumulation>;
   private readonly uniformArena?: GpuUniformArena;
-  private readonly gpuDepthKeyPass?: GpuDepthKeyPass;
-  private readonly gpuSortHistogramPass?: GpuSortHistogramPass;
-  private readonly gpuSortPrefixSumPass?: GpuSortPrefixSumPass;
-  private readonly gpuSortScatterPass?: GpuSortScatterPass;
-  private readonly gpuRadixSortPass?: GpuRadixSortPass;
-  private readonly computeTileStatsPass?: ComputeTileStatsPass;
-  private readonly computeTileDepthRangePass?: ComputeTileDepthRangePass;
-  private readonly computeTileWorkQueuePass?: ComputeTileWorkQueuePass;
-  private readonly computeTileOrderPass?: ComputeTileOrderPass;
-  private readonly computeTilePreviewPass?: ComputeTilePreviewPass;
-  private readonly computeTileSplatPreviewPass?: ComputeTileSplatPreviewPass;
-  private readonly computeTileRasterPreviewPass?: ComputeTileSplatPreviewPass;
-  private readonly computeTileDensityOverlayPass?: ComputeTileDensityOverlayPass;
-  private readonly colorSegmentationPass?: ColorSegmentationPass;
+  private gpuDepthKeyPass?: GpuDepthKeyPass;
+  private gpuSortHistogramPass?: GpuSortHistogramPass;
+  private gpuSortPrefixSumPass?: GpuSortPrefixSumPass;
+  private gpuSortScatterPass?: GpuSortScatterPass;
+  private gpuRadixSortPass?: GpuRadixSortPass;
+  private computeTileStatsPass?: ComputeTileStatsPass;
+  private computeTileDepthRangePass?: ComputeTileDepthRangePass;
+  private computeTileWorkQueuePass?: ComputeTileWorkQueuePass;
+  private computeTileOrderPass?: ComputeTileOrderPass;
+  private computeTilePreviewPass?: ComputeTilePreviewPass;
+  private computeTileSplatPreviewPass?: ComputeTileSplatPreviewPass;
+  private computeTileRasterPreviewPass?: ComputeTileSplatPreviewPass;
+  private computeTileDensityOverlayPass?: ComputeTileDensityOverlayPass;
+  private colorSegmentationPass?: ColorSegmentationPass;
   private readonly gpuSortMode = getGpuSortMode();
   private readonly gpuSortVisibleMode = getGpuSortVisibleMode();
   private readonly cpuShEnabled = isCpuShEnabled();
@@ -395,6 +405,7 @@ class PackedSogRenderPass {
   private lastUploadMs = 0;
   private lastLodBuildMs = 0;
   private lastCpuShMs = 0;
+  private sortInfrastructureReady = false;
   private dirtyPassDispatches = 0;
   private dirtyPassSkips = 0;
   private lastTransparentSortIndex: number | undefined;
@@ -417,25 +428,6 @@ class PackedSogRenderPass {
     this.mesh.material = this.material = this.createMaterial(scene);
     this.lodManager = new SogLodManager(sogBuffers.packed.centers);
     this.renderBudget = getRenderSplatBudget(sogBuffers.packed.numSplats);
-    this.gpuDepthKeyPass = this.createGpuDepthKeyPass(scene);
-    this.gpuSortHistogramPass = this.createGpuSortHistogramPass(scene);
-    this.gpuSortPrefixSumPass = this.createGpuSortPrefixSumPass(scene);
-    this.gpuSortScatterPass = this.createGpuSortScatterPass(scene);
-    this.gpuRadixSortPass = this.createGpuRadixSortPass(scene);
-    this.computeTileStatsPass = this.createComputeTileStatsPass(scene);
-    this.computeTileDepthRangePass = this.createComputeTileDepthRangePass(scene);
-    this.computeTileWorkQueuePass = this.createComputeTileWorkQueuePass(scene);
-    this.computeTileOrderPass = this.createComputeTileOrderPass(scene);
-    this.computeTilePreviewPass = this.createComputeTilePreviewPass(scene);
-    this.computeTileSplatPreviewPass = this.createComputeTileSplatPreviewPass(scene);
-    this.computeTileRasterPreviewPass = this.createComputeTileRasterPreviewPass(scene);
-    this.computeTileDensityOverlayPass = this.createComputeTileDensityOverlayPass(scene);
-    this.colorSegmentationPass = this.createColorSegmentationPass(scene);
-    this.reverseDepthStats = configureReverseDepth(scene, {
-      passName: "packed-sog",
-      depthWriteDisabled: true,
-      usesComputeDepthRanges: !!this.computeTileDepthRangePass,
-    });
 
     this.buildGeometry();
     this.bindStorageBuffers();
@@ -463,6 +455,34 @@ class PackedSogRenderPass {
     };
     scene.registerBeforeRender(this.updateViewport);
     this.updateViewport();
+  }
+
+  private initializeSortInfrastructure(scene: Scene): void {
+    if (this.sortInfrastructureReady) {
+      return;
+    }
+
+    this.gpuDepthKeyPass = this.createGpuDepthKeyPass(scene);
+    this.gpuSortHistogramPass = this.createGpuSortHistogramPass(scene);
+    this.gpuSortPrefixSumPass = this.createGpuSortPrefixSumPass(scene);
+    this.gpuSortScatterPass = this.createGpuSortScatterPass(scene);
+    this.gpuRadixSortPass = this.createGpuRadixSortPass(scene);
+    this.computeTileStatsPass = this.createComputeTileStatsPass(scene);
+    this.computeTileDepthRangePass = this.createComputeTileDepthRangePass(scene);
+    this.computeTileWorkQueuePass = this.createComputeTileWorkQueuePass(scene);
+    this.computeTileOrderPass = this.createComputeTileOrderPass(scene);
+    this.computeTilePreviewPass = this.createComputeTilePreviewPass(scene);
+    this.computeTileSplatPreviewPass = this.createComputeTileSplatPreviewPass(scene);
+    this.computeTileRasterPreviewPass = this.createComputeTileRasterPreviewPass(scene);
+    this.computeTileDensityOverlayPass = this.createComputeTileDensityOverlayPass(scene);
+    this.colorSegmentationPass = this.createColorSegmentationPass(scene);
+    this.reverseDepthStats = configureReverseDepth(scene, {
+      passName: "packed-sog",
+      depthWriteDisabled: true,
+      usesComputeDepthRanges: !!this.computeTileDepthRangePass,
+    });
+    this.bindStorageBuffers();
+    this.sortInfrastructureReady = true;
   }
 
   setSplatStateBuffer(buffer: StorageBuffer): void {
@@ -1583,8 +1603,7 @@ class PackedSogRenderPass {
   }
 
   private updateSort(scene: Scene): void {
-    const gpuSortOwnsDraw = this.canUseGpuSortForDraw();
-    if (!this.enabled || (!gpuSortOwnsDraw && !this.sortWorker)) {
+    if (!this.enabled) {
       return;
     }
 
@@ -1604,6 +1623,15 @@ class PackedSogRenderPass {
     const shouldSortView = initialSort || moved || turned;
     const tinyMoved = Vector3.DistanceSquared(cameraPosition, this.lastCameraPosition) <= this.sortTinyMoveEpsilonSq;
     const tinyTurned = Vector3.Dot(cameraForward, this.lastCameraForward) >= this.sortTinyForwardDotThreshold;
+
+    if (shouldSortView && !this.sortInfrastructureReady) {
+      this.initializeSortInfrastructure(scene);
+    }
+
+    const gpuSortOwnsDraw = this.canUseGpuSortForDraw();
+    if (!gpuSortOwnsDraw && !this.sortWorker) {
+      return;
+    }
 
     if (this.pendingSortView && !this.sortPending && this.canDispatchSortNow()) {
       this.flushPendingSortView();

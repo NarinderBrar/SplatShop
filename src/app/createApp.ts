@@ -148,7 +148,7 @@ export async function createApp(
   const assetLoader = new AssetLoader();
   let activeVizMode = 0;
   let debugVisible = false;
-  let activeTool: ToolId = "pointSelect";
+  let activeTool: ToolId = "move";
   let selectionThreshold = 0.14;
   let selectionMode: SelectionMode = "normal";
   let selectBehind = true;
@@ -198,7 +198,7 @@ export async function createApp(
   let selectionGesture: SelectionGesture | undefined;
 
   canvas.addEventListener("pointerdown", (event: PointerEvent) => {
-    if (!currentSplatCloud?.hasSelection) {
+    if (!currentSplatCloud?.hasSelection || (activeTool !== "pointSelect" && !isDragSelectionTool(activeTool))) {
       return;
     }
 
