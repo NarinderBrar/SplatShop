@@ -166,7 +166,8 @@ class SsogResidentPageRenderPass {
   private lastViewportWidth = 0;
   private lastViewportHeight = 0;
   private lastVizMode = 0;
-  private lastMetadataSignature = "";
+  private lastChunkTableSignature = Number.NaN;
+  private lastDrawRefsSignature = Number.NaN;
 
   constructor(private readonly scene: Scene) {
     const engine = scene.getEngine();
@@ -315,38 +316,86 @@ class SsogResidentPageRenderPass {
   }
 
   private updateMetadata(chunks: ResidentGlobalChunk[]): void {
-    const signature = chunks.map((chunk) => `${chunk.key}:${chunk.splatCount}:${chunk.lod}`).join("|");
-    if (signature === this.lastMetadataSignature) {
+    const chunkTableSignature = this.computeChunkTableSignature(chunks);
+    const drawRefsSignature = this.computeDrawRefsSignature(chunks);
+    const chunkTableChanged = chunkTableSignature !== this.lastChunkTableSignature;
+    const drawRefsChanged = drawRefsSignature !== this.lastDrawRefsSignature;
+    if (!chunkTableChanged && !drawRefsChanged) {
       this.metadataBytesUploaded = 0;
       return;
     }
-    this.lastMetadataSignature = signature;
+
     const chunkTableLength = Math.max(4, chunks.length * CHUNK_TABLE_FLOATS);
     const drawRefLength = Math.max(1, this.drawSplats);
-    this.ensureChunkTableCapacity(chunkTableLength);
-    this.ensureSortBufferCapacity(drawRefLength);
-    this.chunkTableData.fill(0, 0, chunkTableLength);
+    let uploadedBytes = 0;
 
-    let drawOffset = 0;
-    chunks.forEach((chunk, ordinal) => {
-      const allocation = this.allocations.get(chunk.key);
-      if (!allocation) {
-        return;
-      }
-      this.writeChunkTableRow(ordinal, allocation, chunk);
-      for (let localIndex = 0; localIndex < chunk.splatCount; localIndex++) {
-        this.drawRefsData[drawOffset++] = (ordinal << DRAW_REF_LOCAL_BITS) | localIndex;
-      }
-    });
+    if (chunkTableChanged) {
+      this.ensureChunkTableCapacity(chunkTableLength);
+      this.chunkTableData.fill(0, 0, chunkTableLength);
+      chunks.forEach((chunk, ordinal) => {
+        const allocation = this.allocations.get(chunk.key);
+        if (!allocation) {
+          return;
+        }
+        this.writeChunkTableRow(ordinal, allocation, chunk);
+      });
+      this.chunkTableBuffer.update(this.chunkTableData, 0, chunkTableLength * Float32Array.BYTES_PER_ELEMENT);
+      this.bufferVersions.bump(this.chunkTableBuffer);
+      uploadedBytes += chunkTableLength * Float32Array.BYTES_PER_ELEMENT;
+      this.lastChunkTableSignature = chunkTableSignature;
+    }
 
-    this.chunkTableBuffer.update(this.chunkTableData, 0, chunkTableLength * Float32Array.BYTES_PER_ELEMENT);
-    this.drawRefsBuffer.update(this.drawRefsData, 0, drawRefLength * Uint32Array.BYTES_PER_ELEMENT);
-    this.bufferVersions.bump(this.chunkTableBuffer);
-    this.bufferVersions.bump(this.drawRefsBuffer);
-    this.metadataBytesUploaded =
-      chunkTableLength * Float32Array.BYTES_PER_ELEMENT + drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
+    if (drawRefsChanged) {
+      this.ensureSortBufferCapacity(drawRefLength);
+      let drawOffset = 0;
+      chunks.forEach((chunk, ordinal) => {
+        for (let localIndex = 0; localIndex < chunk.splatCount; localIndex++) {
+          this.drawRefsData[drawOffset++] = (ordinal << DRAW_REF_LOCAL_BITS) | localIndex;
+        }
+      });
+      this.drawRefsBuffer.update(this.drawRefsData, 0, drawRefLength * Uint32Array.BYTES_PER_ELEMENT);
+      this.bufferVersions.bump(this.drawRefsBuffer);
+      uploadedBytes += drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
+      this.lastDrawRefsSignature = drawRefsSignature;
+    }
+
+    this.metadataBytesUploaded = uploadedBytes;
     this.rebuilds++;
     this.bindStorageBuffers();
+  }
+
+  private computeChunkTableSignature(chunks: ResidentGlobalChunk[]): number {
+    let hash = 0x811c9dc5;
+    for (const chunk of chunks) {
+      hash = this.hashString(hash, chunk.key);
+      hash = this.hashNumber(hash, chunk.splatCount);
+      hash = this.hashNumber(hash, chunk.lod);
+      hash = this.hashNumber(hash, chunk.pageAllocation.splats);
+      hash = this.hashNumber(hash, chunk.pageAllocation.spans.length);
+      hash = this.hashNumber(hash, chunk.pageAllocation.overflowPages);
+    }
+    return hash >>> 0;
+  }
+
+  private computeDrawRefsSignature(chunks: ResidentGlobalChunk[]): number {
+    let hash = 0x811c9dc5;
+    for (const chunk of chunks) {
+      hash = this.hashString(hash, chunk.key);
+      hash = this.hashNumber(hash, chunk.splatCount);
+    }
+    return hash >>> 0;
+  }
+
+  private hashString(hash: number, value: string): number {
+    let out = this.hashNumber(hash, value.length);
+    for (let index = 0; index < value.length; index++) {
+      out = this.hashNumber(out, value.charCodeAt(index));
+    }
+    return out;
+  }
+
+  private hashNumber(hash: number, value: number): number {
+    return Math.imul(hash ^ (value | 0), 16777619);
   }
 
   private dispatchGpuSort(update: ResidentGlobalUpdate): void {
