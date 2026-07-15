@@ -1434,16 +1434,17 @@ class StreamingSsogRenderPass {
 
   private getPass(key: string): PackedSogRenderPass | null {
     const gpu = this.gpuLoaded.get(key);
-    if (!gpu) {
-      return null;
+    return gpu?.pass ?? null;
+  }
+
+  private shouldUseStandaloneChunkPass(active: boolean): boolean {
+    if (!active) {
+      return false;
     }
-    if (gpu.pass) {
-      return gpu.pass;
+    if (this.globalSortMode === "resident") {
+      return this.globalSortBuildPending;
     }
-    if (gpu.resident) {
-      return this.ensureFullPass(key);
-    }
-    return null;
+    return this.globalSortMode === "off" && !this.mergedRendering;
   }
 
   private disposeGpuResidentContents(gpu: GpuResidentChunk): void {
@@ -2617,11 +2618,9 @@ class StreamingSsogRenderPass {
       if (gpu.active !== wasActive || selected || fallback || this.prefetchKeys.has(key)) {
         this.markGpuPageTableDirty();
       }
-      const pass = gpu.active ? this.ensureFullPass(key) : gpu.pass;
-      pass?.setEnabled(
-        (this.globalSortMode === "resident" || (this.globalSortMode === "off" && !this.mergedRendering)) &&
-          gpu.active,
-      );
+      const standaloneActive = this.shouldUseStandaloneChunkPass(gpu.active);
+      const pass = standaloneActive ? this.ensureFullPass(key) : gpu.pass;
+      pass?.setEnabled(standaloneActive);
       if (gpu.active && this.isChunkRepresentedByReadyRenderPath(key)) {
         this.debugBounds.dispose(key);
         activeChunks++;
@@ -3319,11 +3318,12 @@ class StreamingSsogRenderPass {
     const buffers = new SogBuffers(this.scene.getEngine(), chunk.data, this.gpuBufferWriter, "ssog-streaming-chunk");
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
     const pageAllocation = this.gpuPagePool.allocateChunk(key, chunk.data.numSplats);
-    const pass = active ? new PackedSogRenderPass(this.scene, buffers) : null;
-    const resident = active ? null : new ChunkGpuResident(buffers, pageAllocation);
+    const needsStandalonePass = this.shouldUseStandaloneChunkPass(active);
+    const pass = needsStandalonePass ? new PackedSogRenderPass(this.scene, buffers) : null;
+    const resident = pass ? null : new ChunkGpuResident(buffers, pageAllocation);
     if (pass) {
       pass.setVizMode(this.activeVizMode);
-      pass.setEnabled((this.globalSortMode === "resident" || (this.globalSortMode === "off" && !this.mergedRendering)) && active);
+      pass.setEnabled(true);
     }
     this.gpuLoaded.set(key, {
       buffers,
@@ -4107,6 +4107,7 @@ class StreamingSsogRenderPass {
 
     if (!this.canBuildGlobalRuntime(activeEntries)) {
       this.setGlobalSortBuildPending(true);
+      activeEntries.forEach(([key]) => this.ensureFullPass(key)?.setEnabled(true));
       return;
     }
     this.setGlobalSortBuildPending(false);
