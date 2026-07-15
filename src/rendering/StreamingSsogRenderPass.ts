@@ -173,6 +173,9 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   residentGlobalGpuSortMs: number;
   residentGlobalGpuGatherMs: number;
   residentGlobalGpuSorted: boolean;
+  residentGlobalMetadataUpdateFrames: number;
+  residentGlobalMetadataSkippedFrames: number;
+  residentGlobalViewSortFrames: number;
   packedMetadataMode: "none" | "shared" | "per-chunk";
   packedMetadataGroups: number;
   packedMergeCompatible: boolean;
@@ -1220,6 +1223,7 @@ class StreamingSsogRenderPass {
   private globalSortBuildPendingTransitions = 0;
   private readonly packedMetadataFingerprints = new WeakMap<SogPackedData, string>();
   private lastGlobalSortBuildMs = 0;
+  private lastResidentGlobalSignature = Number.NaN;
   private globalPackedRebuilds = 0;
   private lastGlobalRuntimeRebuildFrame = Number.NEGATIVE_INFINITY;
   private lastChunkLoadMs = 0;
@@ -1986,6 +1990,9 @@ class StreamingSsogRenderPass {
       residentGlobalGpuSortMs: residentGlobalStats?.residentGlobalGpuSortMs ?? 0,
       residentGlobalGpuGatherMs: residentGlobalStats?.residentGlobalGpuGatherMs ?? 0,
       residentGlobalGpuSorted: residentGlobalStats?.residentGlobalGpuSorted ?? false,
+      residentGlobalMetadataUpdateFrames: residentGlobalStats?.residentGlobalMetadataUpdateFrames ?? 0,
+      residentGlobalMetadataSkippedFrames: residentGlobalStats?.residentGlobalMetadataSkippedFrames ?? 0,
+      residentGlobalViewSortFrames: residentGlobalStats?.residentGlobalViewSortFrames ?? 0,
       packedMetadataMode: packedMetadata.mode,
       packedMetadataGroups: packedMetadata.groups,
       packedMergeCompatible: packedMetadata.mergeCompatible,
@@ -4102,6 +4109,7 @@ class StreamingSsogRenderPass {
     if (activeEntries.length === 0) {
       this.disposeResidentGlobalRuntime();
       this.globalSortFallbackReason = "";
+      this.lastResidentGlobalSignature = Number.NaN;
       return;
     }
 
@@ -4115,33 +4123,72 @@ class StreamingSsogRenderPass {
     const camera = this.scene.activeCamera;
     const cameraPosition = camera?.globalPosition ?? new Vector3(0, 0, 0);
     const cameraForward = camera?.getDirection(Vector3.Forward()) ?? Vector3.Forward();
-    const chunks = activeEntries
-      .map(([key, gpu]): ResidentGlobalChunk | undefined => {
-        const cached = this.decodedCache.get(key);
-        if (!cached || !gpu.pageAllocation) {
-          return undefined;
-        }
-        return {
-          key,
-          buffers: gpu.buffers,
-          pageAllocation: gpu.pageAllocation,
-          splatCount: cached.chunk.data.numSplats,
-          boundsMin: cached.entry.bound.min,
-          boundsMax: cached.entry.bound.max,
-          lod: cached.entry.lod,
-        };
-      })
-      .filter((chunk): chunk is ResidentGlobalChunk => !!chunk);
 
     if (!this.residentGlobalRuntime) {
       this.residentGlobalRuntime = new SsogResidentPageRenderPass(this.scene);
     }
-    this.residentGlobalRuntime.updateActiveChunks({ chunks, cameraPosition, cameraForward });
+
+    const residentSignature = this.computeResidentGlobalSignature(activeEntries);
+    const residentMetadataChanged = residentSignature !== this.lastResidentGlobalSignature;
+    if (residentMetadataChanged) {
+      const chunks = activeEntries
+        .map(([key, gpu]): ResidentGlobalChunk | undefined => {
+          const cached = this.decodedCache.get(key);
+          if (!cached || !gpu.pageAllocation) {
+            return undefined;
+          }
+          return {
+            key,
+            buffers: gpu.buffers,
+            pageAllocation: gpu.pageAllocation,
+            splatCount: cached.chunk.data.numSplats,
+            boundsMin: cached.entry.bound.min,
+            boundsMax: cached.entry.bound.max,
+            lod: cached.entry.lod,
+          };
+        })
+        .filter((chunk): chunk is ResidentGlobalChunk => !!chunk);
+      this.residentGlobalRuntime.updateActiveChunks(chunks);
+      this.lastResidentGlobalSignature = residentSignature;
+    }
+    this.residentGlobalRuntime.updateView(cameraPosition, cameraForward);
     this.residentGlobalRuntime.setVizMode(this.activeVizMode);
     this.residentGlobalRuntime.setEnabled(true);
     activeEntries.forEach(([, gpu]) => gpu.pass?.setEnabled(false));
     this.globalSortFallbackReason = "";
     this.lastGlobalSortBuildMs = this.residentGlobalRuntime.getStats().residentGlobalBuildMs;
+  }
+
+  private computeResidentGlobalSignature(activeEntries: Array<[string, GpuResidentChunk]>): number {
+    let hash = 0x811c9dc5;
+    for (const [key, gpu] of activeEntries) {
+      const cached = this.decodedCache.get(key);
+      hash = this.hashResidentSignatureString(hash, key);
+      hash = this.hashResidentSignatureNumber(hash, cached?.chunk.data.numSplats ?? 0);
+      hash = this.hashResidentSignatureNumber(hash, cached?.entry.lod ?? -1);
+      hash = this.hashResidentSignatureNumber(hash, gpu.pageAllocation.splats);
+      hash = this.hashResidentSignatureNumber(hash, gpu.pageAllocation.overflowPages);
+      hash = this.hashResidentSignatureNumber(hash, gpu.pageAllocation.spans.length);
+      for (const span of gpu.pageAllocation.spans) {
+        hash = this.hashResidentSignatureNumber(hash, span.page);
+        hash = this.hashResidentSignatureNumber(hash, span.pageOffset);
+        hash = this.hashResidentSignatureNumber(hash, span.chunkOffset);
+        hash = this.hashResidentSignatureNumber(hash, span.count);
+      }
+    }
+    return hash >>> 0;
+  }
+
+  private hashResidentSignatureString(hash: number, value: string): number {
+    let out = this.hashResidentSignatureNumber(hash, value.length);
+    for (let index = 0; index < value.length; index++) {
+      out = this.hashResidentSignatureNumber(out, value.charCodeAt(index));
+    }
+    return out;
+  }
+
+  private hashResidentSignatureNumber(hash: number, value: number): number {
+    return Math.imul(hash ^ (value | 0), 16777619);
   }
 
   private updateExpandedRuntime(force = false): void {
@@ -4218,11 +4265,13 @@ class StreamingSsogRenderPass {
 
   private disposeResidentGlobalRuntime(): void {
     if (!this.residentGlobalRuntime) {
+      this.lastResidentGlobalSignature = Number.NaN;
       return;
     }
 
     this.residentGlobalRuntime.dispose();
     this.residentGlobalRuntime = undefined;
+    this.lastResidentGlobalSignature = Number.NaN;
   }
 
   private updateMergedRuntime(preserveFallbackReason = false): void {

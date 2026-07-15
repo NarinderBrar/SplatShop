@@ -47,6 +47,9 @@ type SsogResidentPageStats = {
   residentGlobalGpuSortMs: number;
   residentGlobalGpuGatherMs: number;
   residentGlobalGpuSorted: boolean;
+  residentGlobalMetadataUpdateFrames: number;
+  residentGlobalMetadataSkippedFrames: number;
+  residentGlobalViewSortFrames: number;
 };
 
 type ResidentChunkAllocation = {
@@ -168,6 +171,13 @@ class SsogResidentPageRenderPass {
   private lastVizMode = 0;
   private lastChunkTableSignature = Number.NaN;
   private lastDrawRefsSignature = Number.NaN;
+  private activeBounds: { min: [number, number, number]; max: [number, number, number] } = {
+    min: [0, 0, 0],
+    max: [0, 0, 0],
+  };
+  private metadataUpdateFrames = 0;
+  private metadataSkippedFrames = 0;
+  private viewSortFrames = 0;
 
   constructor(private readonly scene: Scene) {
     const engine = scene.getEngine();
@@ -211,16 +221,21 @@ class SsogResidentPageRenderPass {
     this.updateViewport();
   }
 
-  updateActiveChunks(update: ResidentGlobalUpdate): void {
+  updateActiveChunks(chunks: ResidentGlobalChunk[]): void {
     const start = performance.now();
-    this.activeChunks = update.chunks.length;
-    this.drawSplats = update.chunks.reduce((sum, chunk) => sum + chunk.splatCount, 0);
-    this.attributeBytesReused = update.chunks.reduce((sum, chunk) => sum + getResidentAttributeBytes(chunk), 0);
-    this.ensureChunksUploaded(update.chunks);
-    this.updateMetadata(update.chunks);
-    this.dispatchGpuSort(update);
+    this.activeChunks = chunks.length;
+    this.drawSplats = chunks.reduce((sum, chunk) => sum + chunk.splatCount, 0);
+    this.attributeBytesReused = chunks.reduce((sum, chunk) => sum + getResidentAttributeBytes(chunk), 0);
+    this.activeBounds = this.computeActiveBounds(chunks);
+    this.ensureChunksUploaded(chunks);
+    this.updateMetadata(chunks);
     this.setRenderCount(this.drawSplats);
     this.buildMs = performance.now() - start;
+  }
+
+  updateView(cameraPosition: Vector3, cameraForward: Vector3): void {
+    this.viewSortFrames++;
+    this.dispatchGpuSort(cameraPosition, cameraForward);
   }
 
   setVizMode(mode: number): void {
@@ -249,6 +264,9 @@ class SsogResidentPageRenderPass {
       residentGlobalGpuSortMs: this.lastSortMs,
       residentGlobalGpuGatherMs: this.lastGatherMs,
       residentGlobalGpuSorted: !!this.radixSortPass?.getStats().dispatched,
+      residentGlobalMetadataUpdateFrames: this.metadataUpdateFrames,
+      residentGlobalMetadataSkippedFrames: this.metadataSkippedFrames,
+      residentGlobalViewSortFrames: this.viewSortFrames,
     };
   }
 
@@ -322,6 +340,7 @@ class SsogResidentPageRenderPass {
     const drawRefsChanged = drawRefsSignature !== this.lastDrawRefsSignature;
     if (!chunkTableChanged && !drawRefsChanged) {
       this.metadataBytesUploaded = 0;
+      this.metadataSkippedFrames++;
       return;
     }
 
@@ -360,8 +379,8 @@ class SsogResidentPageRenderPass {
     }
 
     this.metadataBytesUploaded = uploadedBytes;
+    this.metadataUpdateFrames++;
     this.rebuilds++;
-    this.bindStorageBuffers();
   }
 
   private computeChunkTableSignature(chunks: ResidentGlobalChunk[]): number {
@@ -398,7 +417,7 @@ class SsogResidentPageRenderPass {
     return Math.imul(hash ^ (value | 0), 16777619);
   }
 
-  private dispatchGpuSort(update: ResidentGlobalUpdate): void {
+  private dispatchGpuSort(cameraPosition: Vector3, cameraForward: Vector3): void {
     if (this.drawSplats <= 0 || !this.radixSortPass) {
       this.lastDepthMs = 0;
       this.lastSortMs = 0;
@@ -406,16 +425,15 @@ class SsogResidentPageRenderPass {
       return;
     }
 
-    const bounds = this.computeActiveBounds(update.chunks);
-    const minDepth = this.projectBounds(bounds.min, bounds.max, update.cameraPosition, update.cameraForward, Math.min);
-    const maxDepth = this.projectBounds(bounds.min, bounds.max, update.cameraPosition, update.cameraForward, Math.max);
+    const minDepth = this.projectBounds(this.activeBounds.min, this.activeBounds.max, cameraPosition, cameraForward, Math.min);
+    const maxDepth = this.projectBounds(this.activeBounds.min, this.activeBounds.max, cameraPosition, cameraForward, Math.max);
     const invDepthRange = maxDepth - minDepth > 1e-6 ? 1 / (maxDepth - minDepth) : 0;
-    this.depthParamsData[0] = update.cameraPosition.x;
-    this.depthParamsData[1] = update.cameraPosition.y;
-    this.depthParamsData[2] = update.cameraPosition.z;
-    this.depthParamsData[4] = update.cameraForward.x;
-    this.depthParamsData[5] = update.cameraForward.y;
-    this.depthParamsData[6] = update.cameraForward.z;
+    this.depthParamsData[0] = cameraPosition.x;
+    this.depthParamsData[1] = cameraPosition.y;
+    this.depthParamsData[2] = cameraPosition.z;
+    this.depthParamsData[4] = cameraForward.x;
+    this.depthParamsData[5] = cameraForward.y;
+    this.depthParamsData[6] = cameraForward.z;
     this.depthParamsData[8] = this.drawSplats;
     this.depthParamsData[9] = minDepth;
     this.depthParamsData[10] = invDepthRange;
