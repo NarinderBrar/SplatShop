@@ -372,6 +372,14 @@ class ViewerDebugStats {
       residentGlobalGpuSortMs?: number;
       residentGlobalGpuGatherMs?: number;
       residentGlobalGpuSorted?: boolean;
+      residentGlobalMetadataUpdateFrames?: number;
+      residentGlobalMetadataSkippedFrames?: number;
+      residentGlobalViewSortFrames?: number;
+      residentSignatureChangeCount?: number;
+      residentSignatureReasonActiveSet?: number;
+      residentSignatureReasonLod?: number;
+      residentSignatureReasonSplats?: number;
+      residentSignatureReasonPageAlloc?: number;
       packedMetadataMode?: string;
       packedMetadataGroups?: number;
       packedMergeCompatible?: boolean;
@@ -723,6 +731,12 @@ class ViewerDebugStats {
         : "",
       streamingStats.residentGlobalActive
         ? `SSOG resident global: chunks ${formatCount(streamingStats.residentGlobalActiveChunks ?? 0)} / draw ${formatCount(streamingStats.residentGlobalDrawSplats ?? 0)} / meta ${formatBytes(streamingStats.residentGlobalMetadataBytesUploaded ?? 0)} / reused attrs ${formatBytes(streamingStats.residentGlobalAttributeBytesReused ?? 0)} / build ${formatMs(streamingStats.residentGlobalBuildMs ?? 0)} ms / gpu ${streamingStats.residentGlobalGpuSorted ? "sorted" : "pending"} d ${formatMs(streamingStats.residentGlobalGpuDepthMs ?? 0)} ms / r ${formatMs(streamingStats.residentGlobalGpuSortMs ?? 0)} ms / g ${formatMs(streamingStats.residentGlobalGpuGatherMs ?? 0)} ms / rebuilds ${formatCount(streamingStats.residentGlobalRebuilds ?? 0)}`
+        : "",
+      streamingStats.residentGlobalActive
+        ? `SSOG resident frames: metadata update ${formatCount(streamingStats.residentGlobalMetadataUpdateFrames ?? 0)} / skipped ${formatCount(streamingStats.residentGlobalMetadataSkippedFrames ?? 0)} / view sort ${formatCount(streamingStats.residentGlobalViewSortFrames ?? 0)}`
+        : "",
+      (streamingStats.residentSignatureChangeCount ?? 0) > 0
+        ? `SSOG signature changes: ${formatCount(streamingStats.residentSignatureChangeCount ?? 0)} / active_set ${formatCount(streamingStats.residentSignatureReasonActiveSet ?? 0)} / lod ${formatCount(streamingStats.residentSignatureReasonLod ?? 0)} / splats ${formatCount(streamingStats.residentSignatureReasonSplats ?? 0)} / page_alloc ${formatCount(streamingStats.residentSignatureReasonPageAlloc ?? 0)}`
         : "",
       streamingStats.packedMetadataMode !== undefined
         ? `SSOG packed metadata: ${streamingStats.packedMetadataMode} / groups ${formatCount(streamingStats.packedMetadataGroups ?? 0)} / merge ${streamingStats.packedMergeCompatible ? "yes" : "no"}`

@@ -176,6 +176,11 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   residentGlobalMetadataUpdateFrames: number;
   residentGlobalMetadataSkippedFrames: number;
   residentGlobalViewSortFrames: number;
+  residentSignatureChangeCount: number;
+  residentSignatureReasonActiveSet: number;
+  residentSignatureReasonLod: number;
+  residentSignatureReasonSplats: number;
+  residentSignatureReasonPageAlloc: number;
   packedMetadataMode: "none" | "shared" | "per-chunk";
   packedMetadataGroups: number;
   packedMergeCompatible: boolean;
@@ -639,8 +644,10 @@ const FALLBACK_EVICTION_REASON_TTL_FRAMES = 120;
 const ADAPTIVE_QUALITY_TARGET_FRAME_MS = 1000 / 55;
 const ADAPTIVE_QUALITY_MIN_SCALE = 0.45;
 const ADAPTIVE_QUALITY_MAX_SCALE = 1.15;
-const ADAPTIVE_QUALITY_RECOVERY_RATE = 0.015;
+const ADAPTIVE_QUALITY_RECOVERY_RATE = 0.008;
 const ADAPTIVE_QUALITY_DECAY_RATE = 0.08;
+const ADAPTIVE_QUALITY_BUDGET_DEAD_ZONE = 0.02;
+const RESIDENT_SIGNATURE_LOG_LIMIT = 80;
 const DEFAULT_IDLE_REFINE_FRAMES = 24;
 const DEFAULT_SETTLE_FRAMES = 8;
 const DEFAULT_MOVING_QUALITY_SCALE = 0.72;
@@ -666,6 +673,76 @@ const getPositiveNumberParam = (name: string, fallback: number): number => {
 const getNonNegativeNumberParam = (name: string, fallback: number): number => {
   const value = Number(new URLSearchParams(window.location.search).get(name));
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+};
+
+type ResidentSignatureLogEntry = {
+  log: string;
+  frame: number;
+  generation: number;
+  reasons: {
+    activeSet: boolean;
+    lod: boolean;
+    splats: boolean;
+    pageAlloc: boolean;
+    order: boolean;
+  };
+  active: {
+    previous: number;
+    next: number;
+    added: string[];
+    removed: string[];
+  };
+  changedKeys: {
+    lod: string[];
+    splats: string[];
+    pageAlloc: string[];
+  };
+  budget: {
+    splatBudget: number;
+    selectedSplats: number;
+    adaptiveQualityScale: number;
+    adaptiveInteractionScale: number;
+    adaptiveFrameMs: number;
+    state: StreamingSsogRenderStats["qualityInteractionState"];
+  };
+  queues: {
+    pending: number;
+    queued: number;
+    upload: number;
+    globalPending: boolean;
+  };
+  visibility: {
+    candidates: number;
+    frustumVisible: number;
+    selected: number;
+    fallbacks: number;
+    selectedNodes: number;
+    stableFrames: number;
+    pendingReplacements: number;
+    lodTransitions: number;
+    gpuMode: SsogGpuChunkVisibilityMode;
+    gpuDriving: boolean;
+    gpuGeneration: number;
+    hiZMode: SsogHiZOcclusionMode;
+    hiZDriving: boolean;
+    hiZGeneration: number;
+  };
+};
+
+type ResidentSignatureLogGlobal = typeof globalThis & {
+  __splatShopResidentSignatureLogs?: ResidentSignatureLogEntry[];
+  _spltShopResidentSignnatureLogs?: ResidentSignatureLogEntry[];
+};
+
+type ResidentNodeState = {
+  key: string;
+  lod: number;
+  splats: number;
+};
+
+const getBooleanParam = (name: string): boolean => {
+  const value = new URLSearchParams(window.location.search).get(name);
+  return value === "true" || value === "1" || value === "yes" || value === "debug";
 };
 
 const getSsogQualityPreset = (): SsogQualityPreset => getQualityPreset();
@@ -953,9 +1030,12 @@ const getSsogForceFineViewDot = (): number => {
 
 const getSsogSelectionStableFrames = (): number => {
   const params = new URLSearchParams(window.location.search);
-  const explicit = Number(params.get("ssogSelectionStableFrames"));
-  if (Number.isFinite(explicit) && explicit >= 0) {
-    return Math.floor(explicit);
+  const raw = params.get("ssogSelectionStableFrames");
+  if (raw !== null) {
+    const explicit = Number(raw);
+    if (Number.isFinite(explicit) && explicit >= 0) {
+      return Math.floor(explicit);
+    }
   }
 
   return getSsogQualityProfile().selectionStableFrames;
@@ -1135,6 +1215,10 @@ class StreamingSsogRenderPass {
   private readonly mainView: SplatViewContext;
   private readonly sourceSplats: number;
   private readonly budgetHandle = Symbol("ssog-streaming-budget");
+  private readonly lodSelectIntervalFrames = Math.max(
+    1,
+    Math.floor(getPositiveNumberParam("ssogLodSelectIntervalFrames", LOD_SELECT_INTERVAL_FRAMES)),
+  );
   private lodScale = getSsogLodScale();
   private baseSplatBudget: number;
   private splatBudget: number;
@@ -1217,6 +1301,7 @@ class StreamingSsogRenderPass {
   private adaptiveInteractionScale = 1;
   private adaptiveFrameMs = ADAPTIVE_QUALITY_TARGET_FRAME_MS;
   private lastAdaptiveFrameTime = performance.now();
+  private lastAppliedSplatBudget = 0;
   private qualityInteractionState: StreamingSsogRenderStats["qualityInteractionState"] = "idle";
   private idleFrames = 0;
   private lastQualityCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
@@ -1238,6 +1323,20 @@ class StreamingSsogRenderPass {
   private readonly packedMetadataFingerprints = new WeakMap<SogPackedData, string>();
   private lastGlobalSortBuildMs = 0;
   private lastResidentGlobalSignature = Number.NaN;
+  private lastResidentGlobalActiveKeys: string[] = [];
+  private lastResidentGlobalLodMap: Map<string, number> = new Map();
+  private lastResidentGlobalNodeState: Map<number, ResidentNodeState> = new Map();
+  private lastResidentGlobalPageAllocSummary: Map<string, string> = new Map();
+  private residentSignatureReasonActiveSet = 0;
+  private residentSignatureReasonLod = 0;
+  private residentSignatureReasonSplats = 0;
+  private residentSignatureReasonPageAlloc = 0;
+  private residentSignatureChangeCount = 0;
+  private readonly residentSignatureLogEnabled = getBooleanParam("ssogResidentSignatureLog");
+  private readonly residentSignatureLogLimit = Math.floor(
+    getPositiveNumberParam("ssogResidentSignatureLogLimit", RESIDENT_SIGNATURE_LOG_LIMIT),
+  );
+  private residentSignatureLogCount = 0;
   private globalPackedRebuilds = 0;
   private lastGlobalRuntimeRebuildFrame = Number.NEGATIVE_INFINITY;
   private lastChunkLoadMs = 0;
@@ -2007,6 +2106,11 @@ class StreamingSsogRenderPass {
       residentGlobalMetadataUpdateFrames: residentGlobalStats?.residentGlobalMetadataUpdateFrames ?? 0,
       residentGlobalMetadataSkippedFrames: residentGlobalStats?.residentGlobalMetadataSkippedFrames ?? 0,
       residentGlobalViewSortFrames: residentGlobalStats?.residentGlobalViewSortFrames ?? 0,
+      residentSignatureChangeCount: this.residentSignatureChangeCount,
+      residentSignatureReasonActiveSet: this.residentSignatureReasonActiveSet,
+      residentSignatureReasonLod: this.residentSignatureReasonLod,
+      residentSignatureReasonSplats: this.residentSignatureReasonSplats,
+      residentSignatureReasonPageAlloc: this.residentSignatureReasonPageAlloc,
       packedMetadataMode: packedMetadata.mode,
       packedMetadataGroups: packedMetadata.groups,
       packedMergeCompatible: packedMetadata.mergeCompatible,
@@ -2259,12 +2363,13 @@ class StreamingSsogRenderPass {
     const now = performance.now();
     const frameMs = Math.min(250, Math.max(0, now - this.lastAdaptiveFrameTime));
     this.lastAdaptiveFrameTime = now;
-    this.adaptiveFrameMs = this.adaptiveFrameMs * 0.9 + frameMs * 0.1;
+    this.adaptiveFrameMs = this.adaptiveFrameMs * 0.95 + frameMs * 0.05;
 
     if (!this.adaptiveQualityEnabled) {
       this.adaptiveQualityScale = 1;
       this.adaptiveInteractionScale = 1;
       this.splatBudget = this.baseSplatBudget;
+      this.lastAppliedSplatBudget = this.splatBudget;
       this.maxPendingLoads = this.baseMaxPendingLoads;
       this.prefetchMultiplier = this.basePrefetchMultiplier;
       this.uploadBudgetBytes = this.baseUploadBudgetBytes;
@@ -2282,7 +2387,7 @@ class StreamingSsogRenderPass {
     const frameOverTarget = this.adaptiveFrameMs / ADAPTIVE_QUALITY_TARGET_FRAME_MS;
     const pressure = Math.max(cachePressure, queuePressure);
     const overloaded = frameOverTarget > 1.12 || pressure > 0.92;
-    const comfortable = frameOverTarget < 0.82 && pressure < 0.68;
+    const comfortable = frameOverTarget < 0.78 && pressure < 0.68;
 
     if (overloaded) {
       const severity = Math.max(frameOverTarget - 1, pressure - 0.88, 0);
@@ -2298,11 +2403,17 @@ class StreamingSsogRenderPass {
     }
 
     this.adaptiveInteractionScale = this.getInteractionQualityScale();
-    const effectiveBudget = Math.max(
+    const rawBudget = Math.max(
       1,
       Math.floor(this.baseSplatBudget * this.adaptiveQualityScale * this.adaptiveInteractionScale),
     );
-    this.splatBudget = Math.min(this.sourceSplats, effectiveBudget);
+    const cappedBudget = Math.min(this.sourceSplats, rawBudget);
+    const lastBudget = this.lastAppliedSplatBudget;
+    const budgetDelta = lastBudget > 0 ? Math.abs(cappedBudget - lastBudget) / lastBudget : 1;
+    this.splatBudget = budgetDelta >= ADAPTIVE_QUALITY_BUDGET_DEAD_ZONE || cappedBudget < lastBudget
+      ? cappedBudget
+      : lastBudget;
+    this.lastAppliedSplatBudget = this.splatBudget;
     const loadScale = Math.max(0.45, Math.min(1.25, this.adaptiveQualityScale * this.adaptiveInteractionScale));
     this.maxPendingLoads = Math.max(1, Math.floor(this.baseMaxPendingLoads * loadScale));
     this.prefetchMultiplier = 1 + Math.max(0, this.basePrefetchMultiplier - 1) * loadScale;
@@ -2424,7 +2535,7 @@ class StreamingSsogRenderPass {
   }
 
   private updateLodSelection(view = this.mainView, force = false): void {
-    this.frame = (this.frame + 1) % LOD_SELECT_INTERVAL_FRAMES;
+    this.frame = (this.frame + 1) % this.lodSelectIntervalFrames;
     this.gpuBufferWriter?.beginFrame();
     const camera = resolveSplatViewCamera(this.scene, view);
     if (!camera) {
@@ -2568,10 +2679,6 @@ class StreamingSsogRenderPass {
       }
       const fallbackCandidates = this.getResidencyFallbackCandidates(item);
       for (const fallback of fallbackCandidates) {
-        const fallbackKey = chunkKey(fallback);
-        if (this.gpuLoaded.has(fallbackKey)) {
-          this.fallbackKeys.add(fallbackKey);
-        }
         this.requestChunk(fallback);
       }
     }
@@ -4145,6 +4252,7 @@ class StreamingSsogRenderPass {
     const residentSignature = this.computeResidentGlobalSignature(activeEntries);
     const residentMetadataChanged = residentSignature !== this.lastResidentGlobalSignature;
     if (residentMetadataChanged) {
+      this.diffResidentGlobalSignature(activeEntries);
       const chunks = activeEntries
         .map(([key, gpu]): ResidentGlobalChunk | undefined => {
           const cached = this.decodedCache.get(key);
@@ -4203,6 +4311,186 @@ class StreamingSsogRenderPass {
 
   private hashResidentSignatureNumber(hash: number, value: number): number {
     return Math.imul(hash ^ (value | 0), 16777619);
+  }
+
+  private diffResidentGlobalSignature(activeEntries: Array<[string, GpuResidentChunk]>): void {
+    const newKeys: string[] = [];
+    const newLodMap = new Map<string, number>();
+    const newNodeState = new Map<number, ResidentNodeState>();
+    const newPageAllocSummary = new Map<string, string>();
+    let activeSetChanged = false;
+    let lodChanged = false;
+    let splatsChanged = false;
+    let pageAllocChanged = false;
+    const lodChangedKeys: string[] = [];
+    const splatChangedKeys: string[] = [];
+    const pageAllocChangedKeys: string[] = [];
+
+    for (const [key, gpu] of activeEntries) {
+      newKeys.push(key);
+      const cached = this.decodedCache.get(key);
+      const lod = cached?.entry.lod ?? -1;
+      const numSplats = cached?.chunk.data.numSplats ?? 0;
+      const alloc = gpu.pageAllocation;
+      const allocSummary = [
+        alloc.splats,
+        alloc.overflowPages,
+        alloc.spans.length,
+        ...alloc.spans.flatMap((span) => [span.page, span.pageOffset, span.chunkOffset, span.count]),
+      ].join(":");
+
+      newLodMap.set(key, lod);
+      if (cached) {
+        newNodeState.set(cached.entry.nodeId, { key, lod, splats: numSplats });
+      }
+      newPageAllocSummary.set(key, allocSummary);
+
+      if (this.lastResidentGlobalLodMap.has(key)) {
+        if (this.lastResidentGlobalPageAllocSummary.get(key) !== allocSummary) {
+          pageAllocChanged = true;
+          if (pageAllocChangedKeys.length < 6) pageAllocChangedKeys.push(key);
+        }
+      }
+    }
+
+    for (const [nodeId, next] of newNodeState) {
+      const previous = this.lastResidentGlobalNodeState.get(nodeId);
+      if (!previous || previous.key === next.key) {
+        continue;
+      }
+      if (previous.lod !== next.lod) {
+        lodChanged = true;
+        if (lodChangedKeys.length < 6) {
+          lodChangedKeys.push(`node ${nodeId}: lod ${previous.lod} -> ${next.lod}`);
+        }
+      }
+      if (previous.splats !== next.splats) {
+        splatsChanged = true;
+        if (splatChangedKeys.length < 6) {
+          splatChangedKeys.push(`node ${nodeId}: splats ${previous.splats} -> ${next.splats}`);
+        }
+      }
+    }
+
+    if (
+      newKeys.length !== this.lastResidentGlobalActiveKeys.length ||
+      newKeys.some((key, index) => key !== this.lastResidentGlobalActiveKeys[index])
+    ) {
+      activeSetChanged = true;
+    }
+
+    if (activeSetChanged) this.residentSignatureReasonActiveSet++;
+    if (lodChanged) this.residentSignatureReasonLod++;
+    if (splatsChanged) this.residentSignatureReasonSplats++;
+    if (pageAllocChanged) this.residentSignatureReasonPageAlloc++;
+    this.residentSignatureChangeCount++;
+
+    this.logResidentSignatureChange({
+      activeSetChanged,
+      lodChanged,
+      splatsChanged,
+      pageAllocChanged,
+      previousKeys: this.lastResidentGlobalActiveKeys,
+      nextKeys: newKeys,
+      lodChangedKeys,
+      splatChangedKeys,
+      pageAllocChangedKeys,
+    });
+
+    this.lastResidentGlobalActiveKeys = newKeys;
+    this.lastResidentGlobalLodMap = newLodMap;
+    this.lastResidentGlobalNodeState = newNodeState;
+    this.lastResidentGlobalPageAllocSummary = newPageAllocSummary;
+  }
+
+  private logResidentSignatureChange(change: {
+    activeSetChanged: boolean;
+    lodChanged: boolean;
+    splatsChanged: boolean;
+    pageAllocChanged: boolean;
+    previousKeys: string[];
+    nextKeys: string[];
+    lodChangedKeys: string[];
+    splatChangedKeys: string[];
+    pageAllocChangedKeys: string[];
+  }): void {
+    if (!this.residentSignatureLogEnabled || this.residentSignatureLogCount >= this.residentSignatureLogLimit) {
+      return;
+    }
+
+    const previousSet = new Set(change.previousKeys);
+    const nextSet = new Set(change.nextKeys);
+    const added = change.nextKeys.filter((key) => !previousSet.has(key)).slice(0, 6);
+    const removed = change.previousKeys.filter((key) => !nextSet.has(key)).slice(0, 6);
+    const orderChanged =
+      change.previousKeys.length === change.nextKeys.length &&
+      change.previousKeys.some((key, index) => key !== change.nextKeys[index]) &&
+      added.length === 0 &&
+      removed.length === 0;
+
+    this.residentSignatureLogCount++;
+    const entry: ResidentSignatureLogEntry = {
+      log: `${this.residentSignatureLogCount}/${this.residentSignatureLogLimit}`,
+      frame: this.frame,
+      generation: this.generation,
+      reasons: {
+        activeSet: change.activeSetChanged,
+        lod: change.lodChanged,
+        splats: change.splatsChanged,
+        pageAlloc: change.pageAllocChanged,
+        order: orderChanged,
+      },
+      active: {
+        previous: change.previousKeys.length,
+        next: change.nextKeys.length,
+        added,
+        removed,
+      },
+      changedKeys: {
+        lod: change.lodChangedKeys,
+        splats: change.splatChangedKeys,
+        pageAlloc: change.pageAllocChangedKeys,
+      },
+      budget: {
+        splatBudget: this.splatBudget,
+        selectedSplats: this.selectedSplats,
+        adaptiveQualityScale: Number(this.adaptiveQualityScale.toFixed(4)),
+        adaptiveInteractionScale: Number(this.adaptiveInteractionScale.toFixed(4)),
+        adaptiveFrameMs: Number(this.adaptiveFrameMs.toFixed(2)),
+        state: this.qualityInteractionState,
+      },
+      queues: {
+        pending: this.pending.size,
+        queued: this.queued.size,
+        upload: this.decodedUploadQueue.size,
+        globalPending: this.globalSortBuildPending,
+      },
+      visibility: {
+        candidates: this.candidateChunks,
+        frustumVisible: this.frustumVisibleChunks,
+        selected: this.selectedKeys.size,
+        fallbacks: this.fallbackKeys.size,
+        selectedNodes: this.selectedNodes,
+        stableFrames: this.selectionStableFrames,
+        pendingReplacements: this.pendingReplacementNodes,
+        lodTransitions: this.lodTransitionCount,
+        gpuMode: this.gpuChunkVisibilityMode,
+        gpuDriving: this.gpuChunkVisibilityDriving,
+        gpuGeneration: this.gpuChunkVisibilityPass?.getStats().resultGeneration ?? 0,
+        hiZMode: this.hiZOcclusionMode,
+        hiZDriving: this.hiZOcclusionDriving,
+        hiZGeneration: this.hiZOcclusionPass?.getStats().resultGeneration ?? 0,
+      },
+    };
+    const globals = globalThis as ResidentSignatureLogGlobal;
+    const logs = globals.__splatShopResidentSignatureLogs ?? [];
+    logs.push(entry);
+    if (logs.length > this.residentSignatureLogLimit) {
+      logs.splice(0, logs.length - this.residentSignatureLogLimit);
+    }
+    globals.__splatShopResidentSignatureLogs = logs;
+    globals._spltShopResidentSignnatureLogs = logs;
+    console.debug("[SplatShop][resident-signature]", JSON.stringify(entry));
   }
 
   private updateExpandedRuntime(force = false): void {
@@ -4280,12 +4568,20 @@ class StreamingSsogRenderPass {
   private disposeResidentGlobalRuntime(): void {
     if (!this.residentGlobalRuntime) {
       this.lastResidentGlobalSignature = Number.NaN;
+      this.lastResidentGlobalActiveKeys = [];
+      this.lastResidentGlobalLodMap = new Map();
+      this.lastResidentGlobalNodeState = new Map();
+      this.lastResidentGlobalPageAllocSummary = new Map();
       return;
     }
 
     this.residentGlobalRuntime.dispose();
     this.residentGlobalRuntime = undefined;
     this.lastResidentGlobalSignature = Number.NaN;
+    this.lastResidentGlobalActiveKeys = [];
+    this.lastResidentGlobalLodMap = new Map();
+    this.lastResidentGlobalNodeState = new Map();
+    this.lastResidentGlobalPageAllocSummary = new Map();
   }
 
   private updateMergedRuntime(preserveFallbackReason = false): void {
