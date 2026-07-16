@@ -97,11 +97,11 @@ const resolveRendererBackend = (scene: Scene): RendererBackend => {
   };
 };
 
-const getSortIntervalFrames = (): number => Math.max(1, Math.floor(getPositiveNumberParam("sortInterval", 6)));
+const getSortIntervalFrames = (): number => Math.max(1, Math.floor(getPositiveNumberParam("sortInterval", 1)));
 
 const getGpuSortIntervalFrames = (): number => Math.max(1, Math.floor(getPositiveNumberParam("gpuSortInterval", 30)));
 
-const getSortMinIntervalMs = (): number => getPositiveNumberParam("sortMinIntervalMs", 50);
+const getSortMinIntervalMs = (): number => getPositiveNumberParam("sortMinIntervalMs", 16);
 
 const getSortMoveEpsilonSq = (): number => {
   const epsilon = getPositiveNumberParam("sortMoveEpsilon", 0.01);

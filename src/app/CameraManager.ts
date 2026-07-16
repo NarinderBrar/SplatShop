@@ -34,6 +34,9 @@ class CameraManager {
     );
     this.camera.upVector = getViewerUpVector();
     this.camera.attachControl(canvas, true);
+    // Splat blending is view-order dependent. Camera inertia can advance the
+    // visible view between completed sort frames, especially for large SSOGs.
+    this.camera.inertia = 0;
     this.camera.minZ = 0.01;
     this.camera.wheelPrecision = 45;
     this.camera.lowerRadiusLimit = MIN_RADIUS_FALLBACK;

@@ -7,6 +7,7 @@ import { ViewerDebugStats } from "../debug/ViewerDebugStats";
 import { initFileHandler } from "../file-handler";
 import { createEngine } from "../rendering/createEngine";
 import { renderDiagnostics } from "../rendering/RenderDiagnostics";
+import { WebGpuRenderPipeline } from "../rendering/customRendering/WebGpuRenderPipeline";
 import { createUI } from "./createUI";
 import { CameraManager } from "./CameraManager";
 import type { SplatCloud } from "../splat/SplatCloud";
@@ -137,6 +138,9 @@ export async function createApp(
   const { engine, mode } = await createEngine(canvas);
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.03, 0.035, 0.04, 1);
+  if (engine.isWebGPU) {
+    new WebGpuRenderPipeline(scene);
+  }
   const cameraManager = new CameraManager(canvas, scene);
   const overlayRoot = createDomOverlayRoot();
 

@@ -46,6 +46,8 @@ import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import { getQualitySplatBudget, getSplatShaderQualityProfile } from "./qualityProfiles";
+import { getWebGpuRenderPipeline } from "./customRendering/WebGpuRenderPipeline";
+import { WebGpuSplatRasterPass } from "./customRendering/WebGpuSplatRasterPass";
 import PackedSogRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-vertex-source.wgsl?raw";
 import PackedSogRenderPass_WGSL_FRAGMENT_SOURCE_raw from "./shaders/packed-sog-render-pass.wgsl-fragment-source.wgsl?raw";
 
@@ -410,6 +412,9 @@ class PackedSogRenderPass {
   private dirtyPassSkips = 0;
   private lastTransparentSortIndex: number | undefined;
   private radixVisibleActive = false;
+  private customRasterPass?: WebGpuSplatRasterPass;
+  private unregisterCustomRasterPass?: () => void;
+  private customStateBuffer?: StorageBuffer;
 
   constructor(scene: Scene, private readonly sogBuffers: SogBuffers) {
     if (!sogBuffers.storage || !scene.getEngine().isWebGPU) {
@@ -455,6 +460,47 @@ class PackedSogRenderPass {
     };
     scene.registerBeforeRender(this.updateViewport);
     this.updateViewport();
+
+    const customPipeline = getWebGpuRenderPipeline(scene);
+    if (customPipeline) {
+      const storage = sogBuffers.storage;
+      this.customStateBuffer = storage.state;
+      this.customRasterPass = new WebGpuSplatRasterPass({
+        kind: "packed-sog",
+        scene,
+        pipeline: customPipeline,
+        splatCapacity: sogBuffers.stats.numSplats,
+        quality: {
+          gaussianScale: 1,
+          minPixelRadius: SHADER_QUALITY.minPixelRadius,
+          maxPixelRadius: SHADER_QUALITY.maxPixelRadius,
+          maxStdDev: SHADER_QUALITY.maxStdDev,
+          clipXY: SHADER_QUALITY.clipXY,
+          preBlurAmount: SHADER_QUALITY.preBlurAmount,
+          minAlpha: SHADER_QUALITY.minAlpha,
+          blurAmount: SHADER_QUALITY.blurAmount,
+          alphaClip: SHADER_QUALITY.alphaClip,
+        },
+        getBuffers: () => [
+          storage.meansL,
+          storage.meansU,
+          storage.quats,
+          storage.scales,
+          storage.color,
+          this.colorSegmentationPass?.getColorGroupBuffer(),
+          this.customStateBuffer,
+          storage.scaleCodebook,
+          storage.indices,
+        ],
+        getRenderCount: () => this.renderSplats,
+        getVizMode: () => this.lastVizMode,
+        getEnabled: () => this.enabled && !this.disposed,
+        getOrder: () => this.mesh.alphaIndex,
+        getPackedBounds: () => ({ min: sogBuffers.packed.meansMins, max: sogBuffers.packed.meansMaxs }),
+        getPackedOffsets: () => sogBuffers.storageOffsets,
+      });
+      this.unregisterCustomRasterPass = customPipeline.register(this.customRasterPass);
+    }
   }
 
   private initializeSortInfrastructure(scene: Scene): void {
@@ -486,12 +532,15 @@ class PackedSogRenderPass {
   }
 
   setSplatStateBuffer(buffer: StorageBuffer): void {
+    this.customStateBuffer = buffer;
     this.sogBuffers.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", buffer);
     this.material.setFloat("stateOffset", 0);
   }
 
   dispose(): void {
     this.disposed = true;
+    this.unregisterCustomRasterPass?.();
+    this.customRasterPass?.dispose();
     this.sortWorker?.terminate();
     this.gpuDepthKeyPass?.dispose();
     this.gpuSortHistogramPass?.dispose();

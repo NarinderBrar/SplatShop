@@ -11,6 +11,8 @@ import type { Scene } from "@babylonjs/core/scene";
 
 import type { SogBuffers } from "../splat/SogBuffers";
 import { BufferVersionTracker } from "./BufferVersionTracker";
+import { getWebGpuRenderPipeline } from "./customRendering/WebGpuRenderPipeline";
+import { WebGpuSplatRasterPass } from "./customRendering/WebGpuSplatRasterPass";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
 import { getSplatShaderQualityProfile } from "./qualityProfiles";
 import type { SsogGpuPageAllocation } from "./SsogGpuPagePool";
@@ -186,6 +188,8 @@ class SsogResidentPageRenderPass {
   private lastSortedMetadataGeneration = -1;
   private readonly lastSortedCameraPosition = new Vector3(Number.NaN, Number.NaN, Number.NaN);
   private readonly lastSortedCameraForward = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private customRasterPass?: WebGpuSplatRasterPass;
+  private unregisterCustomRasterPass?: () => void;
 
   constructor(private readonly scene: Scene) {
     const engine = scene.getEngine();
@@ -227,6 +231,43 @@ class SsogResidentPageRenderPass {
     };
     scene.registerBeforeRender(this.updateViewport);
     this.updateViewport();
+
+    const customPipeline = getWebGpuRenderPipeline(scene);
+    if (customPipeline) {
+      this.customRasterPass = new WebGpuSplatRasterPass({
+        kind: "resident-sog",
+        scene,
+        pipeline: customPipeline,
+        splatCapacity: this.splatCapacity,
+        quality: {
+          gaussianScale: 1,
+          minPixelRadius: SHADER_QUALITY.minPixelRadius,
+          maxPixelRadius: SHADER_QUALITY.maxPixelRadius,
+          maxStdDev: SHADER_QUALITY.maxStdDev,
+          clipXY: SHADER_QUALITY.clipXY,
+          preBlurAmount: SHADER_QUALITY.preBlurAmount,
+          minAlpha: SHADER_QUALITY.minAlpha,
+          blurAmount: SHADER_QUALITY.blurAmount,
+          alphaClip: SHADER_QUALITY.alphaClip,
+        },
+        getBuffers: () => [
+          this.physicalBuffers?.meansL,
+          this.physicalBuffers?.meansU,
+          this.physicalBuffers?.quats,
+          this.physicalBuffers?.scales,
+          this.physicalBuffers?.color,
+          this.physicalBuffers?.state,
+          this.physicalBuffers?.scaleCodebook,
+          this.chunkTableBuffer,
+          this.sortedRefsBuffer,
+        ],
+        getRenderCount: () => this.drawSplats,
+        getVizMode: () => this.lastVizMode,
+        getEnabled: () => this.enabled,
+        getOrder: () => this.mesh.alphaIndex,
+      });
+      this.unregisterCustomRasterPass = customPipeline.register(this.customRasterPass);
+    }
   }
 
   updateActiveChunks(chunks: ResidentGlobalChunk[]): void {
@@ -296,6 +337,8 @@ class SsogResidentPageRenderPass {
 
   dispose(): void {
     this.scene.unregisterBeforeRender(this.updateViewport);
+    this.unregisterCustomRasterPass?.();
+    this.customRasterPass?.dispose();
     this.radixSortPass?.dispose();
     this.disposePhysicalBuffers();
     this.chunkTableBuffer.dispose();

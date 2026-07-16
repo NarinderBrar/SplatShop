@@ -27,6 +27,7 @@ import { SsogGpuPagePool, type SsogGpuPageAllocation } from "./SsogGpuPagePool";
 import { ChunkGpuResident } from "./ChunkGpuResident";
 import { GpuBufferWriter } from "./GpuBufferWriter";
 import { renderDiagnostics } from "./RenderDiagnostics";
+import { getWebGpuRenderPipeline } from "./customRendering/WebGpuRenderPipeline";
 import type { SsogLodTraversalRequest, SsogLodTraversalResponse } from "../workers/ssogLodTraversalTypes";
 import {
   getMainSplatViewContext,
@@ -1267,7 +1268,7 @@ class StreamingSsogRenderPass {
   private readonly chunkSortHysteresis = getSsogChunkSortHysteresis();
   private readonly globalRuntimeRebuildIntervalFrames = getSsogGlobalRuntimeRebuildIntervalFrames();
   private readonly mergedRendering = isSsogMergedRenderingEnabled();
-  private readonly globalSortMode = getSsogGlobalSortMode();
+  private readonly globalSortMode: SsogGlobalSortMode;
   private readonly forceFineScreenRatio = getSsogForceFineScreenRatio();
   private readonly forceFineViewDot = getSsogForceFineViewDot();
   private readonly selectionStableFrames = getSsogSelectionStableFrames();
@@ -1384,6 +1385,10 @@ class StreamingSsogRenderPass {
     private readonly entries: SsogChunkEntry[],
     private readonly loadChunk: SsogChunkLoader,
   ) {
+    const requestedGlobalSortMode = getSsogGlobalSortMode();
+    this.globalSortMode = getWebGpuRenderPipeline(scene) && requestedGlobalSortMode === "packed"
+      ? "off"
+      : requestedGlobalSortMode;
     this.debugBounds = new SsogDebugBounds(scene);
     this.entryKeys = entries.map((entry) => chunkKey(entry));
     this.prefetchEntryMarks = new Uint32Array(entries.length);

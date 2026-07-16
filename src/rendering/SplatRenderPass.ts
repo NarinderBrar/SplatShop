@@ -44,6 +44,8 @@ import { configureReverseDepth, type ReverseDepthStats } from "./ReverseDepth";
 import { getSplatFrameTargets, type SplatFrameTargetStats } from "./SplatFrameTargets";
 import { getSplatTemporalAccumulation, type SplatTemporalStats } from "./SplatTemporalAccumulation";
 import { getQualitySplatBudget, getSplatShaderQualityProfile } from "./qualityProfiles";
+import { getWebGpuRenderPipeline } from "./customRendering/WebGpuRenderPipeline";
+import { WebGpuSplatRasterPass } from "./customRendering/WebGpuSplatRasterPass";
 import SplatRenderPass_GLSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.glsl-vertex-source.glsl?raw";
 import SplatRenderPass_GLSL_FRAGMENT_SOURCE_raw from "./shaders/splat-render-pass.glsl-fragment-source.glsl?raw";
 import SplatRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/splat-render-pass.wgsl-vertex-source.wgsl?raw";
@@ -387,6 +389,9 @@ class SplatRenderPass {
   private dirtyPassSkips = 0;
   private radixVisibleActive = false;
   private readonly splatBuffers: SplatBuffers;
+  private customRasterPass?: WebGpuSplatRasterPass;
+  private unregisterCustomRasterPass?: () => void;
+  private customStateBuffer?: StorageBuffer;
 
   constructor(scene: Scene, splatBuffers: SplatBuffers, options: SplatRenderPassOptions = {}) {
     this.splatBuffers = splatBuffers;
@@ -447,9 +452,46 @@ class SplatRenderPass {
     };
     scene.registerBeforeRender(this.updateViewport);
     this.updateViewport();
+
+    const customPipeline = getWebGpuRenderPipeline(scene);
+    if (customPipeline && splatBuffers.storage) {
+      this.customStateBuffer = splatBuffers.storage.state;
+      this.customRasterPass = new WebGpuSplatRasterPass({
+        kind: "legacy",
+        scene,
+        pipeline: customPipeline,
+        splatCapacity: splatBuffers.stats.numSplats,
+        quality: {
+          gaussianScale: 1,
+          minPixelRadius: SHADER_QUALITY.minPixelRadius,
+          maxPixelRadius: SHADER_QUALITY.maxPixelRadius,
+          maxStdDev: SHADER_QUALITY.maxStdDev,
+          clipXY: SHADER_QUALITY.clipXY,
+          preBlurAmount: SHADER_QUALITY.preBlurAmount,
+          minAlpha: SHADER_QUALITY.minAlpha,
+          blurAmount: SHADER_QUALITY.blurAmount,
+          alphaClip: SHADER_QUALITY.alphaClip,
+        },
+        getBuffers: () => [
+          splatBuffers.storage!.centerScale,
+          splatBuffers.storage!.scale,
+          splatBuffers.storage!.rotationOpacity,
+          splatBuffers.storage!.color,
+          this.colorSegmentationPass?.getColorGroupBuffer(),
+          this.customStateBuffer,
+          splatBuffers.storage!.indices,
+        ],
+        getRenderCount: () => this.renderSplats,
+        getVizMode: () => this.lastVizMode,
+        getEnabled: () => this.enabled && !this.disposed,
+        getOrder: () => this.mesh.alphaIndex,
+      });
+      this.unregisterCustomRasterPass = customPipeline.register(this.customRasterPass);
+    }
   }
 
   setSplatStateBuffer(buffer: StorageBuffer): void {
+    this.customStateBuffer = buffer;
     this.splatBuffers.bufferVersions.rebindStorageBuffer(this.material, "splatStateBuffer", buffer);
   }
 
@@ -471,6 +513,8 @@ class SplatRenderPass {
 
   dispose(): void {
     this.disposed = true;
+    this.unregisterCustomRasterPass?.();
+    this.customRasterPass?.dispose();
     this.sortWorker?.terminate();
     this.gpuDepthKeyPass?.dispose();
     this.gpuSortHistogramPass?.dispose();
