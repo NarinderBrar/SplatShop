@@ -1020,6 +1020,20 @@ const getSsogUploadChunkBudget = (): number => {
 const getSsogGpuPageCapacitySplats = (): number =>
   Math.max(1, Math.floor(getPositiveNumberParam("ssogGpuPageSplats", 65_536)));
 
+const getSsogGpuPageCount = (cacheSplatLimit: number, pageCapacitySplats: number): number => {
+  const derived = Math.max(1, Math.ceil(cacheSplatLimit / pageCapacitySplats));
+  const explicit = new URLSearchParams(window.location.search).get("ssogGpuPageCount");
+  if (explicit !== null) {
+    const parsed = Number(explicit);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.floor(parsed);
+    }
+  }
+
+  const minPages = Math.max(1, Math.floor(getPositiveNumberParam("ssogGpuPageMinPages", 96)));
+  return Math.max(derived, minPages);
+};
+
 const isSsogLodWorkerEnabled = (): boolean => {
   const value = new URLSearchParams(window.location.search).get("ssogLodWorker");
   return value !== "false" && value !== "off";
@@ -1312,7 +1326,7 @@ class StreamingSsogRenderPass {
     const gpuPageCapacitySplats = getSsogGpuPageCapacitySplats();
     this.gpuPagePool = new SsogGpuPagePool(
       gpuPageCapacitySplats,
-      Math.max(1, Math.ceil(this.cacheSplatLimit / gpuPageCapacitySplats)),
+      getSsogGpuPageCount(this.cacheSplatLimit, gpuPageCapacitySplats),
     );
     const engine = this.scene.getEngine();
     this.gpuBufferWriter = engine instanceof WebGPUEngine ? new GpuBufferWriter(engine, "ssog-streaming") : undefined;
