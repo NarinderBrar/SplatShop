@@ -176,6 +176,7 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   residentGlobalMetadataUpdateFrames: number;
   residentGlobalMetadataSkippedFrames: number;
   residentGlobalViewSortFrames: number;
+  residentGlobalViewSortSkippedFrames: number;
   residentSignatureChangeCount: number;
   residentSignatureReasonActiveSet: number;
   residentSignatureReasonLod: number;
@@ -2106,6 +2107,7 @@ class StreamingSsogRenderPass {
       residentGlobalMetadataUpdateFrames: residentGlobalStats?.residentGlobalMetadataUpdateFrames ?? 0,
       residentGlobalMetadataSkippedFrames: residentGlobalStats?.residentGlobalMetadataSkippedFrames ?? 0,
       residentGlobalViewSortFrames: residentGlobalStats?.residentGlobalViewSortFrames ?? 0,
+      residentGlobalViewSortSkippedFrames: residentGlobalStats?.residentGlobalViewSortSkippedFrames ?? 0,
       residentSignatureChangeCount: this.residentSignatureChangeCount,
       residentSignatureReasonActiveSet: this.residentSignatureReasonActiveSet,
       residentSignatureReasonLod: this.residentSignatureReasonLod,

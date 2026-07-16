@@ -50,6 +50,7 @@ type SsogResidentPageStats = {
   residentGlobalMetadataUpdateFrames: number;
   residentGlobalMetadataSkippedFrames: number;
   residentGlobalViewSortFrames: number;
+  residentGlobalViewSortSkippedFrames: number;
 };
 
 type ResidentChunkAllocation = {
@@ -78,6 +79,8 @@ const CHUNK_TABLE_FLOATS = 16;
 const DEPTH_KEY_WORKGROUP_SIZE = 256;
 const INDEX_GATHER_WORKGROUP_SIZE = 256;
 const DEFAULT_SPLAT_CAPACITY = 65_536;
+const VIEW_SORT_POSITION_EPSILON_SQ = 1e-8;
+const VIEW_SORT_FORWARD_DOT_THRESHOLD = 1 - 1e-6;
 const DEFAULT_SCALE_CODEBOOK_CAPACITY = 4096;
 const DRAW_REF_LOCAL_BITS = 20;
 
@@ -178,6 +181,11 @@ class SsogResidentPageRenderPass {
   private metadataUpdateFrames = 0;
   private metadataSkippedFrames = 0;
   private viewSortFrames = 0;
+  private viewSortSkippedFrames = 0;
+  private metadataGeneration = 0;
+  private lastSortedMetadataGeneration = -1;
+  private readonly lastSortedCameraPosition = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private readonly lastSortedCameraForward = new Vector3(Number.NaN, Number.NaN, Number.NaN);
 
   constructor(private readonly scene: Scene) {
     const engine = scene.getEngine();
@@ -230,12 +238,27 @@ class SsogResidentPageRenderPass {
     this.ensureChunksUploaded(chunks);
     this.updateMetadata(chunks);
     this.setRenderCount(this.drawSplats);
+    this.metadataGeneration++;
     this.buildMs = performance.now() - start;
   }
 
   updateView(cameraPosition: Vector3, cameraForward: Vector3): void {
+    const metadataChanged = this.metadataGeneration !== this.lastSortedMetadataGeneration;
+    const cameraChanged =
+      !Number.isFinite(this.lastSortedCameraPosition.x) ||
+      Vector3.DistanceSquared(cameraPosition, this.lastSortedCameraPosition) > VIEW_SORT_POSITION_EPSILON_SQ ||
+      Vector3.Dot(cameraForward, this.lastSortedCameraForward) < VIEW_SORT_FORWARD_DOT_THRESHOLD;
+    if (!metadataChanged && !cameraChanged) {
+      this.viewSortSkippedFrames++;
+      return;
+    }
+
     this.viewSortFrames++;
-    this.dispatchGpuSort(cameraPosition, cameraForward);
+    if (this.dispatchGpuSort(cameraPosition, cameraForward)) {
+      this.lastSortedMetadataGeneration = this.metadataGeneration;
+      this.lastSortedCameraPosition.copyFrom(cameraPosition);
+      this.lastSortedCameraForward.copyFrom(cameraForward);
+    }
   }
 
   setVizMode(mode: number): void {
@@ -267,6 +290,7 @@ class SsogResidentPageRenderPass {
       residentGlobalMetadataUpdateFrames: this.metadataUpdateFrames,
       residentGlobalMetadataSkippedFrames: this.metadataSkippedFrames,
       residentGlobalViewSortFrames: this.viewSortFrames,
+      residentGlobalViewSortSkippedFrames: this.viewSortSkippedFrames,
     };
   }
 
@@ -417,12 +441,12 @@ class SsogResidentPageRenderPass {
     return Math.imul(hash ^ (value | 0), 16777619);
   }
 
-  private dispatchGpuSort(cameraPosition: Vector3, cameraForward: Vector3): void {
+  private dispatchGpuSort(cameraPosition: Vector3, cameraForward: Vector3): boolean {
     if (this.drawSplats <= 0 || !this.radixSortPass) {
       this.lastDepthMs = 0;
       this.lastSortMs = 0;
       this.lastGatherMs = 0;
-      return;
+      return false;
     }
 
     const minDepth = this.projectBounds(this.activeBounds.min, this.activeBounds.max, cameraPosition, cameraForward, Math.min);
@@ -453,7 +477,10 @@ class SsogResidentPageRenderPass {
     const gatherStart = performance.now();
     const gathered = sorted && this.gatherShader.dispatch(Math.ceil(this.drawSplats / INDEX_GATHER_WORKGROUP_SIZE));
     this.lastGatherMs = gathered ? performance.now() - gatherStart : 0;
-    this.bufferVersions.bump(this.sortedRefsBuffer);
+    if (gathered) {
+      this.bufferVersions.bump(this.sortedRefsBuffer);
+    }
+    return gathered;
   }
 
   private ensureChunkTableCapacity(requiredLength: number): void {
@@ -466,6 +493,9 @@ class SsogResidentPageRenderPass {
     this.chunkTableBuffer.dispose();
     this.chunkTableBuffer = createStorageBuffer(this.engine, "SsogResidentChunkTable", this.chunkTableData);
     this.bufferVersions.track(this.chunkTableBuffer);
+    if (this.depthKeyShader) {
+      this.depthKeyShader = this.createDepthKeyShader();
+    }
     this.bindStorageBuffers();
   }
 
@@ -499,7 +529,7 @@ class SsogResidentPageRenderPass {
       this.sortedOrdinalsBuffer,
       drawRefCapacity,
       undefined,
-      true,
+      !isSsogGpuSortForceVisible(),
     );
     this.depthKeyShader = this.createDepthKeyShader();
     this.gatherShader = this.createGatherShader();
@@ -771,6 +801,11 @@ class SsogResidentPageRenderPass {
     return reduce(...values);
   }
 }
+
+const isSsogGpuSortForceVisible = (): boolean => {
+  const value = new URLSearchParams(window.location.search).get("ssogGpuSortForce");
+  return value === "true" || value === "radix";
+};
 
 const createStorageBuffer = (engine: WebGPUEngine, name: string, data: Uint32Array | Float32Array): StorageBuffer => {
   const buffer = new StorageBuffer(engine, Math.max(4, data.byteLength), undefined, name);
