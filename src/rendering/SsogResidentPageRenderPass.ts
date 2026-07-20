@@ -16,6 +16,7 @@ import { WebGpuSplatRasterPass } from "./customRendering/WebGpuSplatRasterPass";
 import { GpuRadixSortPass, type GpuRadixSortStats } from "./GpuRadixSortPass";
 import { getSplatShaderQualityProfile } from "./qualityProfiles";
 import type { SsogGpuPageAllocation } from "./SsogGpuPagePool";
+import SsogResidentPageRenderPass_DRAW_REF_BUILD_SOURCE_raw from "./shaders/ssog-resident-page-render-pass.draw-ref-build-source.wgsl?raw";
 import SsogResidentPageRenderPass_DEPTH_KEY_SOURCE_raw from "./shaders/ssog-resident-page-render-pass.depth-key-source.wgsl?raw";
 import SsogResidentPageRenderPass_INDEX_GATHER_SOURCE_raw from "./shaders/ssog-resident-page-render-pass.index-gather-source.wgsl?raw";
 import SsogResidentPageRenderPass_WGSL_VERTEX_SOURCE_raw from "./shaders/ssog-resident-page-render-pass.wgsl-vertex-source.wgsl?raw";
@@ -78,6 +79,7 @@ type ResidentPhysicalBuffers = {
 const SHADER_QUALITY = getSplatShaderQualityProfile();
 const SPLATS_PER_INSTANCE = 128;
 const CHUNK_TABLE_FLOATS = 16;
+const DRAW_REF_BUILD_WORKGROUP_SIZE = 256;
 const DEPTH_KEY_WORKGROUP_SIZE = 256;
 const INDEX_GATHER_WORKGROUP_SIZE = 256;
 const DEFAULT_SPLAT_CAPACITY = 65_536;
@@ -94,6 +96,10 @@ const WGSL_FRAGMENT_SOURCE = SsogResidentPageRenderPass_WGSL_FRAGMENT_SOURCE_raw
 const DEPTH_KEY_SOURCE = SsogResidentPageRenderPass_DEPTH_KEY_SOURCE_raw.replaceAll(
   "__DEPTH_KEY_SOURCE_EXPR_0__",
   String(DEPTH_KEY_WORKGROUP_SIZE),
+);
+const DRAW_REF_BUILD_SOURCE = SsogResidentPageRenderPass_DRAW_REF_BUILD_SOURCE_raw.replaceAll(
+  "__DRAW_REF_BUILD_SOURCE_EXPR_0__",
+  String(DRAW_REF_BUILD_WORKGROUP_SIZE),
 );
 const INDEX_GATHER_SOURCE = SsogResidentPageRenderPass_INDEX_GATHER_SOURCE_raw.replaceAll(
   "__INDEX_GATHER_SOURCE_EXPR_0__",
@@ -146,6 +152,7 @@ class SsogResidentPageRenderPass {
   private physicalColorData = new Float32Array(0);
   private physicalScaleCodebookData = new Float32Array(0);
   private chunkTableBuffer: StorageBuffer;
+  private drawRefBuildBuffer: StorageBuffer;
   private drawRefsBuffer: StorageBuffer;
   private sortedOrdinalsBuffer: StorageBuffer;
   private sortedRefsBuffer: StorageBuffer;
@@ -153,11 +160,14 @@ class SsogResidentPageRenderPass {
   private depthParamsBuffer: StorageBuffer;
   private gatherParamsBuffer: StorageBuffer;
   private chunkTableData = new Float32Array(4);
+  private drawRefBuildData = new Uint32Array(4);
   private drawRefsData = new Uint32Array(1);
   private chunkTableCapacity = 4;
+  private drawRefBuildCapacity = 4;
   private drawRefCapacity = 1;
   private depthParamsData = new Float32Array(16);
   private gatherParamsData = new Uint32Array(4);
+  private drawRefBuildShader: ComputeShader;
   private depthKeyShader?: ComputeShader;
   private gatherShader: ComputeShader;
   private radixSortPass?: GpuRadixSortPass;
@@ -205,6 +215,7 @@ class SsogResidentPageRenderPass {
     this.material = this.createMaterial(scene);
     this.mesh.material = this.material;
     this.chunkTableBuffer = createStorageBuffer(engine, "SsogResidentChunkTable", this.chunkTableData);
+    this.drawRefBuildBuffer = createStorageBuffer(engine, "SsogResidentDrawRefBuild", this.drawRefBuildData);
     this.drawRefsBuffer = createStorageBuffer(engine, "SsogResidentDrawRefs", this.drawRefsData);
     this.sortedOrdinalsBuffer = createStorageBuffer(engine, "SsogResidentSortedOrdinals", new Uint32Array(1));
     this.sortedRefsBuffer = createStorageBuffer(engine, "SsogResidentSortedRefs", new Uint32Array(1));
@@ -212,6 +223,7 @@ class SsogResidentPageRenderPass {
     this.depthParamsBuffer = createStorageBuffer(engine, "SsogResidentDepthParams", this.depthParamsData);
     this.gatherParamsBuffer = createStorageBuffer(engine, "SsogResidentGatherParams", this.gatherParamsData);
     this.ensurePhysicalCapacity(DEFAULT_SPLAT_CAPACITY, DEFAULT_SCALE_CODEBOOK_CAPACITY);
+    this.drawRefBuildShader = this.createDrawRefBuildShader();
     this.depthKeyShader = this.createDepthKeyShader();
     this.gatherShader = this.createGatherShader();
     this.buildGeometry();
@@ -342,6 +354,7 @@ class SsogResidentPageRenderPass {
     this.radixSortPass?.dispose();
     this.disposePhysicalBuffers();
     this.chunkTableBuffer.dispose();
+    this.drawRefBuildBuffer.dispose();
     this.drawRefsBuffer.dispose();
     this.sortedOrdinalsBuffer.dispose();
     this.sortedRefsBuffer.dispose();
@@ -433,15 +446,27 @@ class SsogResidentPageRenderPass {
 
     if (drawRefsChanged) {
       this.ensureSortBufferCapacity(drawRefLength);
+      const buildTableLength = Math.max(4, chunks.length * 4);
+      this.ensureDrawRefBuildCapacity(buildTableLength);
       let drawOffset = 0;
       chunks.forEach((chunk, ordinal) => {
-        for (let localIndex = 0; localIndex < chunk.splatCount; localIndex++) {
-          this.drawRefsData[drawOffset++] = (ordinal << DRAW_REF_LOCAL_BITS) | localIndex;
-        }
+        const base = ordinal * 4;
+        this.drawRefBuildData[base + 0] = drawOffset;
+        this.drawRefBuildData[base + 1] = chunk.splatCount;
+        this.drawRefBuildData[base + 2] = ordinal;
+        this.drawRefBuildData[base + 3] = 0;
+        drawOffset += chunk.splatCount;
       });
-      this.drawRefsBuffer.update(this.drawRefsData, 0, drawRefLength * Uint32Array.BYTES_PER_ELEMENT);
+      const buildTableBytes = buildTableLength * Uint32Array.BYTES_PER_ELEMENT;
+      this.drawRefBuildBuffer.update(this.drawRefBuildData, 0, buildTableBytes);
+      uploadedBytes += buildTableBytes;
+
+      const generatedOnGpu = chunks.length > 0 && this.drawRefBuildShader.dispatch(chunks.length);
+      if (!generatedOnGpu) {
+        this.buildAndUploadDrawRefsOnCpu(chunks, drawRefLength);
+        uploadedBytes += drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
+      }
       this.bufferVersions.bump(this.drawRefsBuffer);
-      uploadedBytes += drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
       this.lastDrawRefsSignature = drawRefsSignature;
     }
 
@@ -482,6 +507,17 @@ class SsogResidentPageRenderPass {
 
   private hashNumber(hash: number, value: number): number {
     return Math.imul(hash ^ (value | 0), 16777619);
+  }
+
+  private buildAndUploadDrawRefsOnCpu(chunks: ResidentGlobalChunk[], drawRefLength: number): void {
+    let drawOffset = 0;
+    chunks.forEach((chunk, ordinal) => {
+      const chunkBits = ordinal << DRAW_REF_LOCAL_BITS;
+      for (let localIndex = 0; localIndex < chunk.splatCount; localIndex++) {
+        this.drawRefsData[drawOffset++] = chunkBits | localIndex;
+      }
+    });
+    this.drawRefsBuffer.update(this.drawRefsData, 0, drawRefLength * Uint32Array.BYTES_PER_ELEMENT);
   }
 
   private dispatchGpuSort(cameraPosition: Vector3, cameraForward: Vector3): boolean {
@@ -552,6 +588,18 @@ class SsogResidentPageRenderPass {
     this.recreateSortBuffers(this.drawRefCapacity);
   }
 
+  private ensureDrawRefBuildCapacity(requiredLength: number): void {
+    if (requiredLength <= this.drawRefBuildCapacity) {
+      return;
+    }
+
+    this.drawRefBuildCapacity = roundUpPowerOfTwo(requiredLength);
+    this.drawRefBuildData = new Uint32Array(this.drawRefBuildCapacity);
+    this.drawRefBuildBuffer.dispose();
+    this.drawRefBuildBuffer = createStorageBuffer(this.engine, "SsogResidentDrawRefBuild", this.drawRefBuildData);
+    this.drawRefBuildShader = this.createDrawRefBuildShader();
+  }
+
   private recreateSortBuffers(drawRefCapacity: number): void {
     this.drawRefsBuffer.dispose();
     this.sortedOrdinalsBuffer.dispose();
@@ -574,6 +622,7 @@ class SsogResidentPageRenderPass {
       undefined,
       !isSsogGpuSortForceVisible(),
     );
+    this.drawRefBuildShader = this.createDrawRefBuildShader();
     this.depthKeyShader = this.createDepthKeyShader();
     this.gatherShader = this.createGatherShader();
     this.bufferVersions.track(this.drawRefsBuffer);
@@ -686,6 +735,23 @@ class SsogResidentPageRenderPass {
     shader.setStorageBuffer("drawRefs", this.drawRefsBuffer);
     shader.setStorageBuffer("depthKeys", this.depthKeysBuffer);
     shader.setStorageBuffer("paramsBuffer", this.depthParamsBuffer);
+    return shader;
+  }
+
+  private createDrawRefBuildShader(): ComputeShader {
+    const shader = new ComputeShader(
+      "SsogResidentDrawRefBuildPass",
+      this.engine,
+      { computeSource: DRAW_REF_BUILD_SOURCE },
+      {
+        bindingsMapping: {
+          chunkBuildTable: { group: 0, binding: 0 },
+          drawRefs: { group: 0, binding: 1 },
+        },
+      },
+    );
+    shader.setStorageBuffer("chunkBuildTable", this.drawRefBuildBuffer);
+    shader.setStorageBuffer("drawRefs", this.drawRefsBuffer);
     return shader;
   }
 

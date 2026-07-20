@@ -54,7 +54,7 @@ type SogBufferStats = {
 class SogBuffers {
   readonly indices: Uint32Array;
   readonly stats: SogBufferStats;
-  readonly storage: Nullable<SogStorageBuffers>;
+  storage: Nullable<SogStorageBuffers>;
   readonly storageOffsets: SogStorageBufferOffsets = {
     centers: 0,
     meansL: 0,
@@ -74,7 +74,13 @@ class SogBuffers {
   private readonly arenaAllocations = new Map<keyof SogStorageBufferOffsets, GpuBufferWriterArenaAllocation>();
   private scaleCodebookArenaAllocation: GpuBufferWriterArenaAllocation | undefined;
 
-  constructor(engine: unknown, readonly packed: SogPackedData, writer?: GpuBufferWriter, poolKey?: string) {
+  constructor(
+    private readonly engine: unknown,
+    readonly packed: SogPackedData,
+    writer?: GpuBufferWriter,
+    poolKey?: string,
+    createGpuStorage = true,
+  ) {
     this.writer = writer;
     this.poolKey = poolKey;
     this.indices = new Uint32Array(packed.numSplats);
@@ -96,7 +102,14 @@ class SogBuffers {
       shPaletteCount: packed.shN?.paletteCount ?? 0,
       shRenderMode: packed.shN ? "loaded" : "dc",
     };
-    this.storage = engine instanceof WebGPUEngine ? this.createStorageBuffers(engine) : null;
+    this.storage = createGpuStorage && engine instanceof WebGPUEngine ? this.createStorageBuffers(engine) : null;
+  }
+
+  ensureStorage(): Nullable<SogStorageBuffers> {
+    if (!this.storage && this.engine instanceof WebGPUEngine) {
+      this.storage = this.createStorageBuffers(this.engine);
+    }
+    return this.storage;
   }
 
   dispose(): void {

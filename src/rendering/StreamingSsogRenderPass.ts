@@ -1547,6 +1547,7 @@ class StreamingSsogRenderPass {
       return null;
     }
 
+    gpu.resident.buffers.ensureStorage();
     const pass = new PackedSogRenderPass(this.scene, gpu.resident.buffers);
     pass.setVizMode(this.activeVizMode);
     pass.setEnabled(true);
@@ -3449,11 +3450,17 @@ class StreamingSsogRenderPass {
       return;
     }
 
-    this.evictGpuChunksForUpload(decoded);
-    const buffers = new SogBuffers(this.scene.getEngine(), chunk.data, this.gpuBufferWriter, "ssog-streaming-chunk");
     const active = this.selectedKeys.has(key) || this.fallbackKeys.has(key);
-    const pageAllocation = this.gpuPagePool.allocateChunk(key, chunk.data.numSplats);
     const needsStandalonePass = this.shouldUseStandaloneChunkPass(active);
+    this.evictGpuChunksForUpload(decoded);
+    const buffers = new SogBuffers(
+      this.scene.getEngine(),
+      chunk.data,
+      this.gpuBufferWriter,
+      "ssog-streaming-chunk",
+      this.globalSortMode !== "resident" || needsStandalonePass,
+    );
+    const pageAllocation = this.gpuPagePool.allocateChunk(key, chunk.data.numSplats);
     const pass = needsStandalonePass ? new PackedSogRenderPass(this.scene, buffers) : null;
     const resident = pass ? null : new ChunkGpuResident(buffers, pageAllocation);
     if (pass) {
@@ -3514,15 +3521,8 @@ class StreamingSsogRenderPass {
       this.evictDecodedCache();
     }
 
-    if (this.globalSortMode === "resident") {
-      this.updateResidentGlobalRuntime();
-    } else if (this.globalSortMode === "packed") {
-      this.updatePackedGlobalRuntime();
-    } else if (this.globalSortMode === "expanded") {
-      this.updateExpandedRuntime();
-    } else {
-      this.updateMergedRuntime();
-    }
+    // updateLodSelection refreshes the selected global runtime after eviction.
+    // Rebuilding here duplicates signature scans and view updates in the same frame.
   }
 
   private evictGpuChunksForUpload(decoded: DecodedChunk): void {
