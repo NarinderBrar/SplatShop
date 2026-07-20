@@ -201,7 +201,11 @@ class SsogResidentPageRenderPass {
   private customRasterPass?: WebGpuSplatRasterPass;
   private unregisterCustomRasterPass?: () => void;
 
-  constructor(private readonly scene: Scene) {
+  constructor(
+    private readonly scene: Scene,
+    initialSplatCapacity = DEFAULT_SPLAT_CAPACITY,
+    initialScaleCodebookCapacity = DEFAULT_SCALE_CODEBOOK_CAPACITY,
+  ) {
     const engine = scene.getEngine();
     if (!(engine instanceof WebGPUEngine)) {
       throw new Error("Resident SSOG rendering requires Babylon WebGPU storage buffers.");
@@ -222,7 +226,7 @@ class SsogResidentPageRenderPass {
     this.depthKeysBuffer = createStorageBuffer(engine, "SsogResidentDepthKeys", new Uint32Array(1));
     this.depthParamsBuffer = createStorageBuffer(engine, "SsogResidentDepthParams", this.depthParamsData);
     this.gatherParamsBuffer = createStorageBuffer(engine, "SsogResidentGatherParams", this.gatherParamsData);
-    this.ensurePhysicalCapacity(DEFAULT_SPLAT_CAPACITY, DEFAULT_SCALE_CODEBOOK_CAPACITY);
+    this.ensurePhysicalCapacity(initialSplatCapacity, initialScaleCodebookCapacity);
     this.drawRefBuildShader = this.createDrawRefBuildShader();
     this.depthKeyShader = this.createDepthKeyShader();
     this.gatherShader = this.createGatherShader();

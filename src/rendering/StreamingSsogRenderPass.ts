@@ -1446,6 +1446,18 @@ class StreamingSsogRenderPass {
           getSsogHiZGridSize("ssogHiZGridHeight", 54),
         )
       : undefined;
+    if (this.globalSortMode === "resident") {
+      const initialResidentSplats = Math.min(this.sourceSplats, this.cacheSplatLimit);
+      const residentChunkCapacity = Number.isFinite(this.cacheChunkLimit)
+        ? Math.min(this.entries.length, this.cacheChunkLimit)
+        : this.entries.length;
+      this.residentGlobalRuntime = new SsogResidentPageRenderPass(
+        this.scene,
+        initialResidentSplats,
+        residentChunkCapacity * 256,
+      );
+      this.residentGlobalRuntime.setEnabled(false);
+    }
     this.mainView = getMainSplatViewContext(scene, this.qualityPreset);
     this.updateObserver = () => this.updateLodSelection(this.mainView);
     scene.registerBeforeRender(this.updateObserver);
@@ -4235,7 +4247,7 @@ class StreamingSsogRenderPass {
     const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
 
     if (activeEntries.length === 0) {
-      this.disposeResidentGlobalRuntime();
+      this.residentGlobalRuntime?.setEnabled(false);
       this.globalSortFallbackReason = "";
       this.lastResidentGlobalSignature = Number.NaN;
       return;
