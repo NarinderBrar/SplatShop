@@ -1218,6 +1218,13 @@ class StreamingSsogRenderPass {
   private readonly prefetchKeys = new Set<string>();
   private readonly nearPrefetchKeys = new Set<string>();
   private readonly fallbackKeys = new Set<string>();
+  private readonly previousSelectedEntriesByNode = new Map<number, SsogChunkEntry>();
+  private readonly nextStableSelectionKeys = new Set<string>();
+  private readonly activePendingSelectionNodeIds = new Set<number>();
+  private readonly pendingReplacementSelectionNodeIds = new Set<number>();
+  private readonly residentFallbackNodeIds = new Set<number>();
+  private readonly stableSelectionScratch: SelectedSsogItem[] = [];
+  private readonly residentSelectionScratch: SelectedSsogItem[] = [];
   private readonly recentlyEvictedKeyFrames = new Map<string, number>();
   private readonly visibleEntryIndices = new ChunkIndexBuffer();
   private readonly prefetchFrustumEntryIndices = new ChunkIndexBuffer();
@@ -2946,7 +2953,6 @@ class StreamingSsogRenderPass {
     this.generation++;
     this.lastLodCameraPosition.copyFrom(cameraPosition);
     this.lastLodCameraForward.copyFrom(cameraForward);
-    this.updateLoadedChunkSortDepth(cameraPosition, cameraForward);
     if (this.globalSortMode === "resident") {
       this.updateResidentGlobalRuntime(cameraPosition, cameraForward);
     } else if (this.globalSortMode === "packed") {
@@ -4166,26 +4172,31 @@ class StreamingSsogRenderPass {
   }
 
   private resolveResidentSelection(selected: SelectedSsogItem[]): SelectedSsogItem[] {
-    const fallbackNodes = new Set<number>();
-    const resident = selected.map((item): SelectedSsogItem => {
+    const fallbackNodes = this.residentFallbackNodeIds;
+    const resident = this.residentSelectionScratch;
+    fallbackNodes.clear();
+    resident.length = 0;
+    for (const item of selected) {
       if (this.gpuLoaded.has(item.key)) {
-        return item;
+        resident.push(item);
+        continue;
       }
 
       const fallback = this.getBestResidentFallbackForItem(item);
       if (!fallback) {
-        return item;
+        resident.push(item);
+        continue;
       }
 
       fallbackNodes.add(item.nodeId);
-      return {
+      resident.push({
         ...item,
         value: fallback.entry,
         key: chunkKey(fallback.entry),
         lod: fallback.entry.lod,
         count: fallback.entry.count,
-      };
-    });
+      });
+    }
 
     this.pendingReplacementNodes = Math.max(this.pendingReplacementNodes, fallbackNodes.size);
     return resident;
@@ -4207,7 +4218,16 @@ class StreamingSsogRenderPass {
       return selected;
     }
 
-    const previousByNode = new Map<number, SsogChunkEntry>();
+    const previousByNode = this.previousSelectedEntriesByNode;
+    const nextKeys = this.nextStableSelectionKeys;
+    const activePendingNodes = this.activePendingSelectionNodeIds;
+    const pendingReplacementNodes = this.pendingReplacementSelectionNodeIds;
+    const stable = this.stableSelectionScratch;
+    previousByNode.clear();
+    nextKeys.clear();
+    activePendingNodes.clear();
+    pendingReplacementNodes.clear();
+    stable.length = 0;
     this.selectedKeys.forEach((key) => {
       const entry = this.entriesByKey.get(key);
       if (entry) {
@@ -4215,38 +4235,41 @@ class StreamingSsogRenderPass {
       }
     });
 
-    const nextKeys = new Set(selected.map((item) => item.key));
-    const activePendingNodes = new Set<number>();
-    const pendingReplacementNodes = new Set<number>();
-    const stable = selected.map((item): SelectedSsogItem => {
+    for (const item of selected) {
+      nextKeys.add(item.key);
+    }
+    for (const item of selected) {
       const previous = previousByNode.get(item.nodeId);
       const previousKey = previous ? chunkKey(previous) : undefined;
       if (!previous || !previousKey || previousKey === item.key || !this.gpuLoaded.has(previousKey)) {
         this.pendingSelections.delete(item.nodeId);
-        return item;
+        stable.push(item);
+        continue;
       }
 
       const lockedFrames = this.transitionLocks.get(item.nodeId) ?? 0;
       if (lockedFrames > 0) {
         pendingReplacementNodes.add(item.nodeId);
-        return {
+        stable.push({
           ...item,
           value: previous,
           key: previousKey,
           lod: previous.lod,
           count: previous.count,
-        };
+        });
+        continue;
       }
 
       if (!this.gpuLoaded.has(item.key)) {
         pendingReplacementNodes.add(item.nodeId);
-        return {
+        stable.push({
           ...item,
           value: previous,
           key: previousKey,
           lod: previous.lod,
           count: previous.count,
-        };
+        });
+        continue;
       }
 
       const pending = this.pendingSelections.get(item.nodeId);
@@ -4255,34 +4278,39 @@ class StreamingSsogRenderPass {
       activePendingNodes.add(item.nodeId);
       if (frames < this.selectionStableFrames) {
         pendingReplacementNodes.add(item.nodeId);
-        return {
+        stable.push({
           ...item,
           value: previous,
           key: previousKey,
           lod: previous.lod,
           count: previous.count,
-        };
+        });
+        continue;
       }
 
       this.pendingSelections.delete(item.nodeId);
       this.transitionLocks.set(item.nodeId, this.selectionStableFrames);
       this.lodTransitionCount++;
-      return item;
-    });
+      stable.push(item);
+    }
 
-    Array.from(this.pendingSelections.keys()).forEach((nodeId) => {
+    for (const nodeId of this.pendingSelections.keys()) {
       const pending = this.pendingSelections.get(nodeId);
       if (!pending || (!activePendingNodes.has(nodeId) && !nextKeys.has(pending.key))) {
         this.pendingSelections.delete(nodeId);
       }
-    });
+    }
 
     this.pendingReplacementNodes = pendingReplacementNodes.size;
     return stable;
   }
 
   private updateLoadedChunkSortDepth(cameraPosition: Vector3, cameraForward: Vector3): void {
-    if (this.expandedRuntime || this.packedGlobalRuntime) {
+    if (
+      this.expandedRuntime ||
+      this.packedGlobalRuntime ||
+      (this.globalSortMode === "resident" && this.residentGlobalRuntime && !this.globalSortBuildPending)
+    ) {
       return;
     }
 
@@ -4304,27 +4332,26 @@ class StreamingSsogRenderPass {
   }
 
   private getChunkViewDepth(entry: SsogChunkEntry, cameraPosition: Vector3, cameraForward: Vector3): number {
-    const min = Vector3.FromArray(entry.bound.min);
-    const max = Vector3.FromArray(entry.bound.max);
-    const center = min.add(max).scaleInPlace(0.5);
-    const centerDepth = Vector3.Dot(center.subtract(cameraPosition), cameraForward);
+    const min = entry.bound.min;
+    const max = entry.bound.max;
+    const centerX = (min[0] + max[0]) * 0.5;
+    const centerY = (min[1] + max[1]) * 0.5;
+    const centerZ = (min[2] + max[2]) * 0.5;
+    const centerDepth =
+      (centerX - cameraPosition.x) * cameraForward.x +
+      (centerY - cameraPosition.y) * cameraForward.y +
+      (centerZ - cameraPosition.z) * cameraForward.z;
     if (this.chunkSortMode === "center") {
       return centerDepth;
     }
 
-    let minDepth = Number.POSITIVE_INFINITY;
-    let maxDepth = Number.NEGATIVE_INFINITY;
-    for (const x of [min.x, max.x]) {
-      for (const y of [min.y, max.y]) {
-        for (const z of [min.z, max.z]) {
-          const depth = Vector3.Dot(new Vector3(x, y, z).subtract(cameraPosition), cameraForward);
-          minDepth = Math.min(minDepth, depth);
-          maxDepth = Math.max(maxDepth, depth);
-        }
-      }
-    }
-
-    return this.chunkSortMode === "far" ? maxDepth : minDepth;
+    const projectedExtent =
+      Math.abs((max[0] - min[0]) * 0.5 * cameraForward.x) +
+      Math.abs((max[1] - min[1]) * 0.5 * cameraForward.y) +
+      Math.abs((max[2] - min[2]) * 0.5 * cameraForward.z);
+    return this.chunkSortMode === "far"
+      ? centerDepth + projectedExtent
+      : centerDepth - projectedExtent;
   }
 
   private canRebuildGlobalRuntime(hasRuntime: boolean, force = false): boolean {
