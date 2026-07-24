@@ -35,6 +35,9 @@ type SsogGpuPagePoolStats = {
 class SsogGpuPagePool {
   private readonly pageOwners: Array<string | undefined>;
   private readonly chunkPages = new Map<string, SsogGpuPageAllocation>();
+  private freePages: number;
+  private overflowChunks = 0;
+  private overflowPages = 0;
   private residentSplats = 0;
   private neededPages = 0;
   private freeablePages = 0;
@@ -42,9 +45,12 @@ class SsogGpuPagePool {
   private overflowAllocationRequests = 0;
   private freedPages = 0;
   private reusedKeys = 0;
+  private statsDirty = true;
+  private cachedStats?: SsogGpuPagePoolStats;
 
   constructor(private readonly pageCapacitySplats: number, pageCount: number) {
     this.pageOwners = new Array(Math.max(1, pageCount));
+    this.freePages = this.pageOwners.length;
   }
 
   allocateChunk(key: string, splats: number): SsogGpuPageAllocation {
@@ -53,6 +59,7 @@ class SsogGpuPagePool {
       this.freeChunk(key);
     }
     this.allocationRequests++;
+    this.statsDirty = true;
 
     const requiredPages = this.getRequiredPages(splats);
     const pages: number[] = [];
@@ -60,6 +67,7 @@ class SsogGpuPagePool {
       if (this.pageOwners[index] === undefined) {
         this.pageOwners[index] = key;
         pages.push(index);
+        this.freePages--;
       }
     }
 
@@ -71,6 +79,8 @@ class SsogGpuPagePool {
     };
     if (allocation.overflowPages > 0) {
       this.overflowAllocationRequests++;
+      this.overflowChunks++;
+      this.overflowPages += allocation.overflowPages;
     }
     this.chunkPages.set(key, allocation);
     this.residentSplats += splats;
@@ -90,13 +100,15 @@ class SsogGpuPagePool {
   }
 
   getFreePageCount(): number {
-    let freePages = 0;
-    this.pageOwners.forEach((owner) => {
-      if (owner === undefined) {
-        freePages++;
-      }
-    });
-    return freePages;
+    return this.freePages;
+  }
+
+  getOverflowPageCount(): number {
+    return this.overflowPages;
+  }
+
+  getPressure(): number {
+    return (this.pageOwners.length - this.freePages) / Math.max(1, this.pageOwners.length);
   }
 
   updateNeededChunks(neededKeys: ReadonlySet<string>): void {
@@ -111,6 +123,7 @@ class SsogGpuPagePool {
     });
     this.neededPages = neededPages;
     this.freeablePages = freeablePages;
+    this.statsDirty = true;
   }
 
   freeChunk(key: string): void {
@@ -123,64 +136,68 @@ class SsogGpuPagePool {
       if (this.pageOwners[page] === key) {
         this.pageOwners[page] = undefined;
         this.freedPages++;
+        this.freePages++;
       }
+    }
+    if (allocation.overflowPages > 0) {
+      this.overflowChunks--;
+      this.overflowPages -= allocation.overflowPages;
     }
     this.residentSplats -= allocation.splats;
     this.chunkPages.delete(key);
+    this.statsDirty = true;
   }
 
   clear(): void {
     this.pageOwners.fill(undefined);
     this.chunkPages.clear();
+    this.freePages = this.pageOwners.length;
+    this.overflowChunks = 0;
+    this.overflowPages = 0;
     this.residentSplats = 0;
     this.neededPages = 0;
     this.freeablePages = 0;
+    this.statsDirty = true;
   }
 
   getStats(): SsogGpuPagePoolStats {
-    let usedPages = 0;
-    let freePages = 0;
+    if (!this.statsDirty && this.cachedStats) {
+      return this.cachedStats;
+    }
+
     let currentFreeRun = 0;
     let largestFreeRun = 0;
-    this.pageOwners.forEach((owner) => {
+    for (let index = 0; index < this.pageOwners.length; index++) {
+      const owner = this.pageOwners[index];
       if (owner !== undefined) {
-        usedPages++;
         currentFreeRun = 0;
       } else {
-        freePages++;
         currentFreeRun++;
         largestFreeRun = Math.max(largestFreeRun, currentFreeRun);
       }
-    });
-
-    let overflowChunks = 0;
-    let overflowPages = 0;
-    this.chunkPages.forEach((allocation) => {
-      if (allocation.overflowPages > 0) {
-        overflowChunks++;
-        overflowPages += allocation.overflowPages;
-      }
-    });
-
-    return {
+    }
+    const usedPages = this.pageOwners.length - this.freePages;
+    this.cachedStats = {
       pageCapacitySplats: this.pageCapacitySplats,
       totalPages: this.pageOwners.length,
       usedPages,
-      freePages,
+      freePages: this.freePages,
       neededPages: this.neededPages,
       freeablePages: this.freeablePages,
       largestFreeRun,
-      fragmentation: freePages <= 0 ? 0 : 1 - largestFreeRun / freePages,
+      fragmentation: this.freePages <= 0 ? 0 : 1 - largestFreeRun / this.freePages,
       allocatedChunks: this.chunkPages.size,
       residentSplats: this.residentSplats,
-      overflowChunks,
-      overflowPages,
+      overflowChunks: this.overflowChunks,
+      overflowPages: this.overflowPages,
       pressure: usedPages / Math.max(1, this.pageOwners.length),
       allocationRequests: this.allocationRequests,
       overflowAllocationRequests: this.overflowAllocationRequests,
       freedPages: this.freedPages,
       reusedKeys: this.reusedKeys,
     };
+    this.statsDirty = false;
+    return this.cachedStats;
   }
 
   private createPageSpans(pages: number[], splats: number): SsogGpuPageSpan[] {

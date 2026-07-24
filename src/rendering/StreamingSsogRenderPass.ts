@@ -505,16 +505,22 @@ class SsogCandidateSoA {
 
 class SsogGlobalSplatBudgetCoordinator {
   private static readonly registrations = new Map<symbol, SsogBudgetRegistration>();
+  private static readonly allocations = new Map<symbol, number>();
+  private static allocationsDirty = true;
 
   static register(handle: symbol, sourceSplats: number, lodScale: number): void {
     this.registrations.set(handle, {
       sourceSplats: Math.max(0, Math.floor(sourceSplats)),
       lodScale: Math.max(0.01, lodScale),
     });
+    this.allocationsDirty = true;
   }
 
   static unregister(handle: symbol): void {
-    this.registrations.delete(handle);
+    if (this.registrations.delete(handle)) {
+      this.allocations.delete(handle);
+      this.allocationsDirty = true;
+    }
   }
 
   static updateLodScale(handle: symbol, lodScale: number): void {
@@ -522,7 +528,11 @@ class SsogGlobalSplatBudgetCoordinator {
     if (!registration) {
       return;
     }
-    registration.lodScale = Math.max(0.01, lodScale);
+    const nextLodScale = Math.max(0.01, lodScale);
+    if (registration.lodScale !== nextLodScale) {
+      registration.lodScale = nextLodScale;
+      this.allocationsDirty = true;
+    }
   }
 
   static getAllocation(handle: symbol): number {
@@ -530,23 +540,37 @@ class SsogGlobalSplatBudgetCoordinator {
     if (!registration) {
       return 0;
     }
+    if (this.allocationsDirty) {
+      this.recomputeAllocations();
+    }
+    return this.allocations.get(handle) ?? 0;
+  }
 
-    const registrations = Array.from(this.registrations.values());
-    const totalSourceSplats = registrations.reduce((sum, item) => sum + item.sourceSplats, 0);
+  private static recomputeAllocations(): void {
+    let totalSourceSplats = 0;
+    let totalWeight = 0;
+    for (const item of this.registrations.values()) {
+      totalSourceSplats += item.sourceSplats;
+      totalWeight += item.sourceSplats * item.lodScale;
+    }
     const totalBudget = getSplatBudget(totalSourceSplats);
+    this.allocations.clear();
     if (totalBudget >= totalSourceSplats) {
-      return registration.sourceSplats;
+      for (const [handle, item] of this.registrations) {
+        this.allocations.set(handle, item.sourceSplats);
+      }
+      this.allocationsDirty = false;
+      return;
     }
 
-    const totalWeight = registrations.reduce((sum, item) => sum + item.sourceSplats * item.lodScale, 0);
-    if (totalWeight <= 0) {
-      return Math.min(registration.sourceSplats, totalBudget);
+    for (const [handle, item] of this.registrations) {
+      const allocation =
+        totalWeight <= 0
+          ? Math.min(item.sourceSplats, totalBudget)
+          : Math.floor((totalBudget * item.sourceSplats * item.lodScale) / totalWeight);
+      this.allocations.set(handle, Math.max(1, Math.min(item.sourceSplats, allocation)));
     }
-
-    const weightedBudget = Math.floor(
-      (totalBudget * registration.sourceSplats * registration.lodScale) / totalWeight,
-    );
-    return Math.max(1, Math.min(registration.sourceSplats, weightedBudget));
+    this.allocationsDirty = false;
   }
 }
 
@@ -2436,7 +2460,7 @@ class StreamingSsogRenderPass {
       Number.isFinite(this.cacheChunkLimit) ? this.gpuLoaded.size / Math.max(1, this.cacheChunkLimit) : 0,
       this.decodedCacheSplats / Math.max(1, this.cacheSplatLimit),
       this.decodedCacheBytes / Math.max(1, this.decodedCacheBudget),
-      this.gpuPagePool.getStats().pressure,
+      this.gpuPagePool.getPressure(),
     );
     const queuePressure =
       (this.pending.size + this.decodedUploadQueue.size + this.queued.size) / Math.max(1, this.baseMaxPendingLoads * 3);
@@ -3533,7 +3557,7 @@ class StreamingSsogRenderPass {
     }
 
     const requiredPages = this.gpuPagePool.getRequiredPages(decoded.chunk.data.numSplats);
-    let releasablePages = this.gpuPagePool.getStats().freePages;
+    let releasablePages = this.gpuPagePool.getFreePageCount();
     let releasableChunks = Number.isFinite(this.cacheChunkLimit) && this.gpuLoaded.size >= this.cacheChunkLimit ? 0 : 1;
     for (const [key, gpu] of this.gpuLoaded) {
       if (this.isGpuChunkProtected(key, gpu)) {
@@ -3624,8 +3648,8 @@ class StreamingSsogRenderPass {
   }
 
   private evictInactiveChunks(): void {
-    const initialPageStats = this.gpuPagePool.getStats();
-    const pagePressure = initialPageStats.pressure > 0.98 || initialPageStats.overflowPages > 0;
+    const pagePressure =
+      this.gpuPagePool.getPressure() > 0.98 || this.gpuPagePool.getOverflowPageCount() > 0;
     const inactive = Array.from(this.gpuLoaded.entries())
       .filter(([key, gpu]) => {
         const protectedChunk = this.isGpuChunkProtected(key, gpu);
@@ -3641,9 +3665,9 @@ class StreamingSsogRenderPass {
     let evictedChunks = 0;
     let evictedPages = 0;
     for (const [key, gpu] of inactive) {
-      const pageStats = this.gpuPagePool.getStats();
       const overCache = this.gpuLoaded.size > this.cacheChunkLimit;
-      const overPages = pageStats.pressure > 0.98 || pageStats.overflowPages > 0;
+      const overPages =
+        this.gpuPagePool.getPressure() > 0.98 || this.gpuPagePool.getOverflowPageCount() > 0;
       if (!overCache && !overPages) {
         break;
       }
@@ -3664,10 +3688,13 @@ class StreamingSsogRenderPass {
   }
 
   private evictGpuChunksForUpload(decoded: DecodedChunk): void {
-    const pageStats = this.gpuPagePool.getStats();
-    const requiredPages = Math.max(1, Math.ceil(decoded.chunk.data.numSplats / pageStats.pageCapacitySplats));
+    const requiredPages = Math.max(
+      1,
+      Math.ceil(decoded.chunk.data.numSplats / this.gpuPagePool.getPageCapacitySplats()),
+    );
     const needsChunkRoom = Number.isFinite(this.cacheChunkLimit) && this.gpuLoaded.size >= this.cacheChunkLimit;
-    const needsPageRoom = pageStats.freePages < requiredPages || pageStats.overflowPages > 0;
+    const needsPageRoom =
+      this.gpuPagePool.getFreePageCount() < requiredPages || this.gpuPagePool.getOverflowPageCount() > 0;
     if (!needsChunkRoom && !needsPageRoom) {
       return;
     }
@@ -3683,9 +3710,9 @@ class StreamingSsogRenderPass {
     let evictedChunks = 0;
     let evictedPages = 0;
     for (const [key, gpu] of candidates) {
-      const stats = this.gpuPagePool.getStats();
       const hasChunkRoom = !Number.isFinite(this.cacheChunkLimit) || this.gpuLoaded.size < this.cacheChunkLimit;
-      const hasPageRoom = stats.freePages >= requiredPages && stats.overflowPages === 0;
+      const hasPageRoom =
+        this.gpuPagePool.getFreePageCount() >= requiredPages && this.gpuPagePool.getOverflowPageCount() === 0;
       if (hasChunkRoom && hasPageRoom) {
         break;
       }
