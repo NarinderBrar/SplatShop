@@ -37,7 +37,9 @@ class CameraManager {
     this.camera.attachControl(canvas, true);
     // Splat blending is view-order dependent. Camera inertia can advance the
     // visible view between completed sort frames, especially for large SSOGs.
+    // Babylon controls panning inertia separately from orbit/zoom inertia.
     this.camera.inertia = 0;
+    this.camera.panningInertia = 0;
     // Babylon divides pointer movement by angular sensibility, so a lower
     // value makes short drags produce a more responsive orbit.
     this.camera.angularSensibilityX = ORBIT_ANGULAR_SENSIBILITY;
