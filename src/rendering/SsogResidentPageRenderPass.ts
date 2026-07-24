@@ -66,6 +66,14 @@ type ResidentChunkAllocation = {
   meansMaxs: [number, number, number];
 };
 
+type ActiveChunkState = {
+  generation: number;
+  splatCount: number;
+  attributeBytes: number;
+  boundsMin: [number, number, number];
+  boundsMax: [number, number, number];
+};
+
 type ResidentPhysicalBuffers = {
   meansL: StorageBuffer;
   meansU: StorageBuffer;
@@ -144,6 +152,8 @@ class SsogResidentPageRenderPass {
   private splatCount = 0;
   private scaleCodebookCount = 0;
   private readonly allocations = new Map<string, ResidentChunkAllocation>();
+  private readonly activeChunkStates = new Map<string, ActiveChunkState>();
+  private activeChunkGeneration = 0;
   private physicalMeansLData = new Uint32Array(0);
   private physicalMeansUData = new Uint32Array(0);
   private physicalQuatsData = new Uint32Array(0);
@@ -184,8 +194,6 @@ class SsogResidentPageRenderPass {
   private lastViewportWidth = 0;
   private lastViewportHeight = 0;
   private lastVizMode = 0;
-  private lastChunkTableSignature = Number.NaN;
-  private lastDrawRefsSignature = Number.NaN;
   private activeBounds: { min: [number, number, number]; max: [number, number, number] } = {
     min: [0, 0, 0],
     max: [0, 0, 0],
@@ -288,11 +296,8 @@ class SsogResidentPageRenderPass {
 
   updateActiveChunks(chunks: ResidentGlobalChunk[]): void {
     const start = performance.now();
-    this.activeChunks = chunks.length;
-    this.drawSplats = chunks.reduce((sum, chunk) => sum + chunk.splatCount, 0);
-    this.attributeBytesReused = chunks.reduce((sum, chunk) => sum + getResidentAttributeBytes(chunk), 0);
-    this.activeBounds = this.computeActiveBounds(chunks);
-    this.ensureChunksUploaded(chunks);
+    const newChunks = this.updateActiveChunkStats(chunks);
+    this.ensureChunksUploaded(newChunks);
     this.updateMetadata(chunks);
     this.setRenderCount(this.drawSplats);
     this.metadataGeneration++;
@@ -369,10 +374,84 @@ class SsogResidentPageRenderPass {
     this.material.dispose();
   }
 
-  private ensureChunksUploaded(chunks: ResidentGlobalChunk[]): void {
+  private updateActiveChunkStats(chunks: ResidentGlobalChunk[]): ResidentGlobalChunk[] {
+    this.activeChunkGeneration++;
+    if (this.activeChunkGeneration >= 0xffffffff) {
+      this.activeChunkGeneration = 1;
+      for (const state of this.activeChunkStates.values()) {
+        state.generation = 0;
+      }
+    }
+
+    const generation = this.activeChunkGeneration;
+    const newChunks: ResidentGlobalChunk[] = [];
+    let boundsDirty = false;
+    for (const chunk of chunks) {
+      const state = this.activeChunkStates.get(chunk.key);
+      if (state) {
+        state.generation = generation;
+        if (state.splatCount !== chunk.splatCount) {
+          this.drawSplats += chunk.splatCount - state.splatCount;
+          state.splatCount = chunk.splatCount;
+        }
+        if (!this.boundsEqual(state, chunk)) {
+          boundsDirty ||= this.stateTouchesActiveBounds(state);
+          state.boundsMin = [...chunk.boundsMin];
+          state.boundsMax = [...chunk.boundsMax];
+          this.expandActiveBounds(chunk.boundsMin, chunk.boundsMax);
+        }
+      } else {
+        const attributeBytes = getResidentAttributeBytes(chunk);
+        this.activeChunkStates.set(chunk.key, {
+          generation,
+          splatCount: chunk.splatCount,
+          attributeBytes,
+          boundsMin: [...chunk.boundsMin],
+          boundsMax: [...chunk.boundsMax],
+        });
+        this.drawSplats += chunk.splatCount;
+        this.attributeBytesReused += attributeBytes;
+        if (this.activeChunkStates.size === 1) {
+          this.activeBounds = {
+            min: [...chunk.boundsMin],
+            max: [...chunk.boundsMax],
+          };
+        } else {
+          this.expandActiveBounds(chunk.boundsMin, chunk.boundsMax);
+        }
+      }
+      if (!this.allocations.has(chunk.key)) {
+        newChunks.push(chunk);
+      }
+    }
+
+    for (const [key, state] of this.activeChunkStates) {
+      if (state.generation === generation) {
+        continue;
+      }
+      boundsDirty ||= this.stateTouchesActiveBounds(state);
+      this.drawSplats -= state.splatCount;
+      this.attributeBytesReused -= state.attributeBytes;
+      this.activeChunkStates.delete(key);
+    }
+
+    this.activeChunks = chunks.length;
+    if (chunks.length === 0) {
+      this.drawSplats = 0;
+      this.attributeBytesReused = 0;
+      this.activeBounds = {
+        min: [0, 0, 0],
+        max: [0, 0, 0],
+      };
+    } else if (boundsDirty) {
+      this.activeBounds = this.computeActiveBounds(chunks);
+    }
+    return newChunks;
+  }
+
+  private ensureChunksUploaded(newChunks: ResidentGlobalChunk[]): void {
     let requiredSplats = this.splatCount;
     let requiredScaleCodebook = this.scaleCodebookCount;
-    const newChunks = chunks.filter((chunk) => !this.allocations.has(chunk.key));
     for (const chunk of newChunks) {
       requiredSplats += chunk.splatCount;
       requiredScaleCodebook += chunk.buffers.packed.scaleCodebook.length;
@@ -418,99 +497,44 @@ class SsogResidentPageRenderPass {
   }
 
   private updateMetadata(chunks: ResidentGlobalChunk[]): void {
-    const chunkTableSignature = this.computeChunkTableSignature(chunks);
-    const drawRefsSignature = this.computeDrawRefsSignature(chunks);
-    const chunkTableChanged = chunkTableSignature !== this.lastChunkTableSignature;
-    const drawRefsChanged = drawRefsSignature !== this.lastDrawRefsSignature;
-    if (!chunkTableChanged && !drawRefsChanged) {
-      this.metadataBytesUploaded = 0;
-      this.metadataSkippedFrames++;
-      return;
-    }
-
     const chunkTableLength = Math.max(4, chunks.length * CHUNK_TABLE_FLOATS);
     const drawRefLength = Math.max(1, this.drawSplats);
-    let uploadedBytes = 0;
-
-    if (chunkTableChanged) {
-      this.ensureChunkTableCapacity(chunkTableLength);
-      this.chunkTableData.fill(0, 0, chunkTableLength);
-      chunks.forEach((chunk, ordinal) => {
-        const allocation = this.allocations.get(chunk.key);
-        if (!allocation) {
-          return;
-        }
+    const buildTableLength = Math.max(4, chunks.length * 4);
+    this.ensureChunkTableCapacity(chunkTableLength);
+    this.ensureSortBufferCapacity(drawRefLength);
+    this.ensureDrawRefBuildCapacity(buildTableLength);
+    this.chunkTableData.fill(0, 0, chunkTableLength);
+    let drawOffset = 0;
+    for (let ordinal = 0; ordinal < chunks.length; ordinal++) {
+      const chunk = chunks[ordinal];
+      const allocation = this.allocations.get(chunk.key);
+      if (allocation) {
         this.writeChunkTableRow(ordinal, allocation, chunk);
-      });
-      this.chunkTableBuffer.update(this.chunkTableData, 0, chunkTableLength * Float32Array.BYTES_PER_ELEMENT);
-      this.bufferVersions.bump(this.chunkTableBuffer);
-      uploadedBytes += chunkTableLength * Float32Array.BYTES_PER_ELEMENT;
-      this.lastChunkTableSignature = chunkTableSignature;
-    }
-
-    if (drawRefsChanged) {
-      this.ensureSortBufferCapacity(drawRefLength);
-      const buildTableLength = Math.max(4, chunks.length * 4);
-      this.ensureDrawRefBuildCapacity(buildTableLength);
-      let drawOffset = 0;
-      chunks.forEach((chunk, ordinal) => {
-        const base = ordinal * 4;
-        this.drawRefBuildData[base + 0] = drawOffset;
-        this.drawRefBuildData[base + 1] = chunk.splatCount;
-        this.drawRefBuildData[base + 2] = ordinal;
-        this.drawRefBuildData[base + 3] = 0;
-        drawOffset += chunk.splatCount;
-      });
-      const buildTableBytes = buildTableLength * Uint32Array.BYTES_PER_ELEMENT;
-      this.drawRefBuildBuffer.update(this.drawRefBuildData, 0, buildTableBytes);
-      uploadedBytes += buildTableBytes;
-
-      const generatedOnGpu = chunks.length > 0 && this.drawRefBuildShader.dispatch(chunks.length);
-      if (!generatedOnGpu) {
-        this.buildAndUploadDrawRefsOnCpu(chunks, drawRefLength);
-        uploadedBytes += drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
       }
-      this.bufferVersions.bump(this.drawRefsBuffer);
-      this.lastDrawRefsSignature = drawRefsSignature;
+      const base = ordinal * 4;
+      this.drawRefBuildData[base + 0] = drawOffset;
+      this.drawRefBuildData[base + 1] = chunk.splatCount;
+      this.drawRefBuildData[base + 2] = ordinal;
+      this.drawRefBuildData[base + 3] = 0;
+      drawOffset += chunk.splatCount;
     }
 
+    const chunkTableBytes = chunkTableLength * Float32Array.BYTES_PER_ELEMENT;
+    const buildTableBytes = buildTableLength * Uint32Array.BYTES_PER_ELEMENT;
+    this.chunkTableBuffer.update(this.chunkTableData, 0, chunkTableBytes);
+    this.drawRefBuildBuffer.update(this.drawRefBuildData, 0, buildTableBytes);
+    this.bufferVersions.bump(this.chunkTableBuffer);
+
+    let uploadedBytes = chunkTableBytes + buildTableBytes;
+    const generatedOnGpu = chunks.length > 0 && this.drawRefBuildShader.dispatch(chunks.length);
+    if (!generatedOnGpu) {
+      this.buildAndUploadDrawRefsOnCpu(chunks, drawRefLength);
+      uploadedBytes += drawRefLength * Uint32Array.BYTES_PER_ELEMENT;
+    }
+    this.bufferVersions.bump(this.drawRefsBuffer);
     this.metadataBytesUploaded = uploadedBytes;
     this.metadataUpdateFrames++;
     this.rebuilds++;
-  }
-
-  private computeChunkTableSignature(chunks: ResidentGlobalChunk[]): number {
-    let hash = 0x811c9dc5;
-    for (const chunk of chunks) {
-      hash = this.hashString(hash, chunk.key);
-      hash = this.hashNumber(hash, chunk.splatCount);
-      hash = this.hashNumber(hash, chunk.lod);
-      hash = this.hashNumber(hash, chunk.pageAllocation.splats);
-      hash = this.hashNumber(hash, chunk.pageAllocation.spans.length);
-      hash = this.hashNumber(hash, chunk.pageAllocation.overflowPages);
-    }
-    return hash >>> 0;
-  }
-
-  private computeDrawRefsSignature(chunks: ResidentGlobalChunk[]): number {
-    let hash = 0x811c9dc5;
-    for (const chunk of chunks) {
-      hash = this.hashString(hash, chunk.key);
-      hash = this.hashNumber(hash, chunk.splatCount);
-    }
-    return hash >>> 0;
-  }
-
-  private hashString(hash: number, value: string): number {
-    let out = this.hashNumber(hash, value.length);
-    for (let index = 0; index < value.length; index++) {
-      out = this.hashNumber(out, value.charCodeAt(index));
-    }
-    return out;
-  }
-
-  private hashNumber(hash: number, value: number): number {
-    return Math.imul(hash ^ (value | 0), 16777619);
   }
 
   private buildAndUploadDrawRefsOnCpu(chunks: ResidentGlobalChunk[], drawRefLength: number): void {
@@ -890,6 +914,39 @@ class SsogResidentPageRenderPass {
       }
     }
     return { min, max };
+  }
+
+  private boundsEqual(state: ActiveChunkState, chunk: ResidentGlobalChunk): boolean {
+    return (
+      state.boundsMin[0] === chunk.boundsMin[0] &&
+      state.boundsMin[1] === chunk.boundsMin[1] &&
+      state.boundsMin[2] === chunk.boundsMin[2] &&
+      state.boundsMax[0] === chunk.boundsMax[0] &&
+      state.boundsMax[1] === chunk.boundsMax[1] &&
+      state.boundsMax[2] === chunk.boundsMax[2]
+    );
+  }
+
+  private stateTouchesActiveBounds(state: ActiveChunkState): boolean {
+    for (let axis = 0; axis < 3; axis++) {
+      if (
+        state.boundsMin[axis] === this.activeBounds.min[axis] ||
+        state.boundsMax[axis] === this.activeBounds.max[axis]
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private expandActiveBounds(
+    min: [number, number, number],
+    max: [number, number, number],
+  ): void {
+    for (let axis = 0; axis < 3; axis++) {
+      this.activeBounds.min[axis] = Math.min(this.activeBounds.min[axis], min[axis]);
+      this.activeBounds.max[axis] = Math.max(this.activeBounds.max[axis], max[axis]);
+    }
   }
 
   private projectBounds(
