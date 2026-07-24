@@ -58,7 +58,7 @@ const HISTOGRAM_SOURCE = ComputeTileOrderPass_HISTOGRAM_SOURCE_raw.replaceAll("_
 
 const PREFIX_SOURCE = ComputeTileOrderPass_PREFIX_SOURCE_raw.replaceAll("__PREFIX_SOURCE_EXPR_0__", String(PREFIX_WORKGROUP_SIZE));
 
-const getScatterSource = (remapToPacked: boolean): string => ComputeTileOrderPass_SCATTER_SOURCE_raw.replaceAll("__TEMPLATE_EXPR_0__", String(remapToPacked ? "@group(0) @binding(5) var<storage, read> ordinalToPackedBuffer: array<u32>;" : "")).replaceAll("__TEMPLATE_EXPR_1__", String(MAX_TILES)).replaceAll("__TEMPLATE_EXPR_2__", String(WORKGROUP_SIZE)).replaceAll("__TEMPLATE_EXPR_3__", String(remapToPacked ? "ordinalToPackedBuffer[index]" : "index"));
+const getScatterSource = (remapToPacked: boolean): string => ComputeTileOrderPass_SCATTER_SOURCE_raw.replaceAll("__TEMPLATE_EXPR_0__", String(remapToPacked ? "@group(0) @binding(7) var<storage, read> ordinalToPackedBuffer: array<u32>;" : "")).replaceAll("__TEMPLATE_EXPR_1__", String(MAX_TILES)).replaceAll("__TEMPLATE_EXPR_2__", String(WORKGROUP_SIZE)).replaceAll("__TEMPLATE_EXPR_3__", String(remapToPacked ? "ordinalToPackedBuffer[splatIndex]" : "splatIndex"));
 
 type ComputeTileOrderStats = {
   enabled: boolean;
@@ -106,11 +106,12 @@ class ComputeTileOrderPass {
     scene: Scene,
     private readonly centerBuffer: StorageBuffer,
     private readonly tileStatsPass: ComputeTileStatsPass,
-    private readonly splatCount: number,
+    _splatCount: number,
     private readonly ordinalToPackedBuffer?: StorageBuffer,
     private readonly centerOffset = 0,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
+    const tileListCapacity = this.tileStatsPass.getStats().tileListCapacity;
     const bucketValueCount = MAX_TILES * this.bucketCount;
     this.bucketCounters = new StorageBuffer(engine, bucketValueCount * 4, undefined, "ComputeTileOrderCounters");
     this.bucketCounters.update(new Uint32Array(bucketValueCount));
@@ -118,11 +119,11 @@ class ComputeTileOrderPass {
     this.bucketOffsets.update(new Uint32Array(bucketValueCount));
     this.orderedTileSplatList = new StorageBuffer(
       engine,
-      Math.max(1, this.splatCount) * 4,
+      Math.max(1, tileListCapacity) * 4,
       undefined,
       "ComputeTileOrderedSplatList",
     );
-    this.orderedTileSplatList.update(new Uint32Array(Math.max(1, this.splatCount)));
+    this.orderedTileSplatList.update(new Uint32Array(Math.max(1, tileListCapacity)));
     this.params = new StorageBuffer(engine, this.paramsData.byteLength, undefined, "ComputeTileOrderParams");
 
     this.clearShader = new ComputeShader("ComputeTileOrderClear", engine, { computeSource: CLEAR_SOURCE }, {
@@ -154,11 +155,15 @@ class ComputeTileOrderPass {
       bindingsMapping: {
         centerBuffer: { group: 0, binding: 0 },
         bucketCounters: { group: 0, binding: 1 },
-        paramsBuffer: { group: 0, binding: 2 },
+        tileOffsets: { group: 0, binding: 2 },
+        tileSplatList: { group: 0, binding: 3 },
+        paramsBuffer: { group: 0, binding: 4 },
       },
     });
     this.histogramShader.setStorageBuffer("centerBuffer", this.centerBuffer);
     this.histogramShader.setStorageBuffer("bucketCounters", this.bucketCounters);
+    this.histogramShader.setStorageBuffer("tileOffsets", this.tileStatsPass.getTileOffsetsBuffer());
+    this.histogramShader.setStorageBuffer("tileSplatList", this.tileStatsPass.getTileSplatListBuffer());
     this.histogramShader.setStorageBuffer("paramsBuffer", this.params);
 
     this.prefixShader = new ComputeShader("ComputeTileOrderPrefix", engine, { computeSource: PREFIX_SOURCE }, {
@@ -184,9 +189,11 @@ class ComputeTileOrderPass {
         bucketOffsets: { group: 0, binding: 1 },
         bucketCounters: { group: 0, binding: 2 },
         orderedTileSplatList: { group: 0, binding: 3 },
-        paramsBuffer: { group: 0, binding: 4 },
+        tileOffsets: { group: 0, binding: 4 },
+        tileSplatList: { group: 0, binding: 5 },
+        paramsBuffer: { group: 0, binding: 6 },
         ...(this.ordinalToPackedBuffer
-          ? { ordinalToPackedBuffer: { group: 0, binding: 5 } }
+          ? { ordinalToPackedBuffer: { group: 0, binding: 7 } }
           : {}),
       },
       },
@@ -195,6 +202,8 @@ class ComputeTileOrderPass {
     this.scatterShader.setStorageBuffer("bucketOffsets", this.bucketOffsets);
     this.scatterShader.setStorageBuffer("bucketCounters", this.bucketCounters);
     this.scatterShader.setStorageBuffer("orderedTileSplatList", this.orderedTileSplatList);
+    this.scatterShader.setStorageBuffer("tileOffsets", this.tileStatsPass.getTileOffsetsBuffer());
+    this.scatterShader.setStorageBuffer("tileSplatList", this.tileStatsPass.getTileSplatListBuffer());
     this.scatterShader.setStorageBuffer("paramsBuffer", this.params);
     if (this.ordinalToPackedBuffer) {
       this.scatterShader.setStorageBuffer("ordinalToPackedBuffer", this.ordinalToPackedBuffer);
@@ -220,7 +229,7 @@ class ComputeTileOrderPass {
     transform: Matrix,
     viewportWidth: number,
     viewportHeight: number,
-    splatCount = this.splatCount,
+    _splatCount = 0,
     minDepth = 0,
     maxDepth = 1,
   ): boolean {
@@ -239,7 +248,7 @@ class ComputeTileOrderPass {
     this.paramsData[18] = tileStats.tileSize;
     this.paramsData[19] = tileStats.tileCols;
     this.paramsData[20] = tileStats.tileRows;
-    this.paramsData[21] = Math.min(this.splatCount, Math.max(0, Math.floor(splatCount)));
+    this.paramsData[21] = tileStats.tileListCapacity;
     this.paramsData[24] = tileStats.tileCount;
     this.paramsData[25] = this.bucketCount;
     this.paramsData[26] = Number.isFinite(minDepth) ? minDepth : 0;
@@ -250,18 +259,18 @@ class ComputeTileOrderPass {
     const bucketValueCount = tileStats.tileCount * this.bucketCount;
     const cleared = this.clearShader.dispatch(Math.ceil(bucketValueCount / WORKGROUP_SIZE));
     const histogrammed =
-      cleared && this.histogramShader.dispatch(Math.ceil(this.paramsData[21] / WORKGROUP_SIZE));
+      cleared && this.histogramShader.dispatch(Math.ceil(tileStats.tileListCapacity / WORKGROUP_SIZE));
     const prefixed =
       histogrammed && this.prefixShader.dispatch(Math.ceil(tileStats.tileCount / PREFIX_WORKGROUP_SIZE));
     const clearedAgain =
       prefixed && this.clearCountersShader.dispatch(Math.ceil(bucketValueCount / WORKGROUP_SIZE));
     const scattered =
-      clearedAgain && this.scatterShader.dispatch(Math.ceil(this.paramsData[21] / WORKGROUP_SIZE));
+      clearedAgain && this.scatterShader.dispatch(Math.ceil(tileStats.tileListCapacity / WORKGROUP_SIZE));
 
     if (scattered) {
       const trackedTileCount = Math.min(tileStats.tileCount, MAX_TILES);
-      const orderedSplats = Math.min(tileStats.visibleSplats, this.paramsData[21]);
-      const truncatedSplats = Math.max(0, tileStats.visibleSplats - orderedSplats) + tileStats.overflowSplats;
+      const orderedSplats = Math.min(tileStats.tileListEntries, this.paramsData[21]);
+      const truncatedSplats = Math.max(0, tileStats.tileListEntries - orderedSplats) + tileStats.overflowSplats;
       this.stats = {
         enabled: true,
         dispatched: true,

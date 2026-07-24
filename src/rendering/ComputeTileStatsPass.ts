@@ -13,13 +13,24 @@ import ComputeTileStatsPass_BIN_SOURCE_raw from "./shaders/compute-tile-stats-pa
 import ComputeTileStatsPass_PREFIX_SOURCE_raw from "./shaders/compute-tile-stats-pass.prefix-source.wgsl?raw";
 import ComputeTileStatsPass_CLEAR_CURSORS_SOURCE_raw from "./shaders/compute-tile-stats-pass.clear-cursors-source.wgsl?raw";
 import ComputeTileStatsPass_SCATTER_SOURCE_raw from "./shaders/compute-tile-stats-pass.scatter-source.wgsl?raw";
+import ComputeTileStatsPass_SNUGBOX_HELPERS_raw from "./shaders/compute-tile-stats-pass.snugbox-helpers.wgsl?raw";
+import ComputeTileStatsPass_SNUGBOX_BIN_SOURCE_raw from "./shaders/compute-tile-stats-pass.snugbox-bin-source.wgsl?raw";
+import ComputeTileStatsPass_SNUGBOX_SCATTER_SOURCE_raw from "./shaders/compute-tile-stats-pass.snugbox-scatter-source.wgsl?raw";
 
 const WORKGROUP_SIZE = 256;
 const DEFAULT_TILE_SIZE = 32;
 const MAX_TILES = 8192;
 const STATS_OFFSET = MAX_TILES;
-const COUNTER_COUNT = MAX_TILES + 4;
+const PAIR_COUNT_OFFSET = STATS_OFFSET;
+const VISIBLE_SPLAT_COUNT_OFFSET = STATS_OFFSET + 1;
+const BEHIND_SPLAT_COUNT_OFFSET = STATS_OFFSET + 2;
+const CLIPPED_SPLAT_COUNT_OFFSET = STATS_OFFSET + 3;
+const OVERFLOW_PAIR_COUNT_OFFSET = STATS_OFFSET + 4;
+const COUNTER_COUNT = MAX_TILES + 5;
 const OFFSET_COUNT = MAX_TILES + 1;
+const PARAM_FLOAT_COUNT = 32;
+const DEFAULT_SNUGBOX_PAIR_CAPACITY_MULTIPLIER = 4;
+const MAX_SNUGBOX_PAIR_CAPACITY = 65_535 * WORKGROUP_SIZE;
 
 const withParamsBase = (source: string, paramsBase: number): string =>
   source.replaceAll("paramsBuffer[", `paramsBuffer[${paramsBase} + `);
@@ -34,16 +45,22 @@ const getBinSource = (paramsBase: number): string =>
   withParamsBase(
     ComputeTileStatsPass_BIN_SOURCE_raw
       .replaceAll("__BIN_SOURCE_EXPR_0__", String(WORKGROUP_SIZE))
-      .replaceAll("__BIN_SOURCE_EXPR_1__", String(STATS_OFFSET + 1))
-      .replaceAll("__BIN_SOURCE_EXPR_2__", String(STATS_OFFSET + 2))
-      .replaceAll("__BIN_SOURCE_EXPR_3__", String(MAX_TILES))
-      .replaceAll("__BIN_SOURCE_EXPR_4__", String(STATS_OFFSET + 3))
-      .replaceAll("__BIN_SOURCE_EXPR_5__", String(STATS_OFFSET)),
+      .replaceAll("__BEHIND_OFFSET__", String(BEHIND_SPLAT_COUNT_OFFSET))
+      .replaceAll("__CLIPPED_OFFSET__", String(CLIPPED_SPLAT_COUNT_OFFSET))
+      .replaceAll("__MAX_TILES__", String(MAX_TILES))
+      .replaceAll("__OVERFLOW_OFFSET__", String(OVERFLOW_PAIR_COUNT_OFFSET))
+      .replaceAll("__PAIR_OFFSET__", String(PAIR_COUNT_OFFSET))
+      .replaceAll("__VISIBLE_OFFSET__", String(VISIBLE_SPLAT_COUNT_OFFSET)),
     paramsBase,
   );
 
 const getPrefixSource = (paramsBase: number): string =>
-  withParamsBase(ComputeTileStatsPass_PREFIX_SOURCE_raw, paramsBase);
+  withParamsBase(
+    ComputeTileStatsPass_PREFIX_SOURCE_raw
+      .replaceAll("__PAIR_OFFSET__", String(PAIR_COUNT_OFFSET))
+      .replaceAll("__OVERFLOW_OFFSET__", String(OVERFLOW_PAIR_COUNT_OFFSET)),
+    paramsBase,
+  );
 
 const getClearCursorsSource = (paramsBase: number): string =>
   withParamsBase(
@@ -58,13 +75,44 @@ const getScatterSource = (paramsBase: number): string =>
   withParamsBase(
     ComputeTileStatsPass_SCATTER_SOURCE_raw
       .replaceAll("__SCATTER_SOURCE_EXPR_0__", String(WORKGROUP_SIZE))
-      .replaceAll("__SCATTER_SOURCE_EXPR_1__", String(MAX_TILES))
-      .replaceAll("__SCATTER_SOURCE_EXPR_2__", String(STATS_OFFSET + 3)),
+      .replaceAll("__MAX_TILES__", String(MAX_TILES))
+      .replaceAll("__OVERFLOW_OFFSET__", String(OVERFLOW_PAIR_COUNT_OFFSET)),
     paramsBase,
   );
 
+const getSnugBoxSource = (source: string, paramsBase: number): string =>
+  withParamsBase(
+    source
+      .replace("__SNUGBOX_HELPERS__", ComputeTileStatsPass_SNUGBOX_HELPERS_raw)
+      .replaceAll("__WORKGROUP_SIZE__", String(WORKGROUP_SIZE))
+      .replaceAll("__MAX_TILES__", String(MAX_TILES))
+      .replaceAll("__PAIR_OFFSET__", String(PAIR_COUNT_OFFSET))
+      .replaceAll("__VISIBLE_OFFSET__", String(VISIBLE_SPLAT_COUNT_OFFSET))
+      .replaceAll("__BEHIND_OFFSET__", String(BEHIND_SPLAT_COUNT_OFFSET))
+      .replaceAll("__CLIPPED_OFFSET__", String(CLIPPED_SPLAT_COUNT_OFFSET))
+      .replaceAll("__OVERFLOW_OFFSET__", String(OVERFLOW_PAIR_COUNT_OFFSET)),
+    paramsBase,
+  );
+
+type ComputeTileSnugBoxOptions = {
+  quatsBuffer: StorageBuffer;
+  scalesBuffer: StorageBuffer;
+  colorBuffer: StorageBuffer;
+  scaleCodebookBuffer: StorageBuffer;
+  chunkInfoBuffer: StorageBuffer;
+  ordinalToPackedBuffer: StorageBuffer;
+  alphaClip: number;
+  preBlurAmount: number;
+  maxStdDev: number;
+  maxPixelRadius: number;
+  minPixelRadius: number;
+  blurAmount: number;
+  pairCapacityMultiplier?: number;
+};
+
 type ComputeTileStats = {
   enabled: boolean;
+  binningMode: "center" | "snugbox";
   dispatched: boolean;
   tileSize: number;
   tileCount: number;
@@ -103,11 +151,12 @@ class ComputeTileStatsPass {
   private readonly tileSplatList: StorageBuffer;
   private readonly params: StorageBuffer;
   private readonly paramsSlice?: GpuUniformArenaFloatSlice;
-  private readonly paramsData = new Float32Array(25);
+  private readonly paramsData = new Float32Array(PARAM_FLOAT_COUNT);
   private readonly counterReadback = new Uint32Array(COUNTER_COUNT);
   private readonly offsetReadback = new Uint32Array(OFFSET_COUNT);
   private readonly cursorReadback = new Uint32Array(MAX_TILES);
   private readonly readbackPool: GpuReadbackBufferPool;
+  private readonly tileListCapacity: number;
   private readPending = false;
   private stats: ComputeTileStats;
 
@@ -118,6 +167,7 @@ class ComputeTileStatsPass {
     private readonly tileSize = DEFAULT_TILE_SIZE,
     private readonly centerOffset = 0,
     paramsArena?: GpuUniformArena,
+    private readonly snugBox?: ComputeTileSnugBoxOptions,
   ) {
     const engine = scene.getEngine() as WebGPUEngine;
     this.readbackPool = new GpuReadbackBufferPool(engine, "ComputeTileStats");
@@ -130,7 +180,17 @@ class ComputeTileStatsPass {
     const tileCursorsData = new Uint32Array(MAX_TILES);
     this.tileCursors = new StorageBuffer(engine, tileCursorsData.byteLength, undefined, "ComputeTileCursors");
     this.tileCursors.update(tileCursorsData);
-    const tileSplatListData = new Uint32Array(Math.max(1, this.splatCount));
+    const requestedPairCapacity = snugBox
+      ? Math.floor(
+          this.splatCount *
+            Math.max(1, snugBox.pairCapacityMultiplier ?? DEFAULT_SNUGBOX_PAIR_CAPACITY_MULTIPLIER),
+        )
+      : this.splatCount;
+    this.tileListCapacity = Math.max(
+      1,
+      Math.min(MAX_SNUGBOX_PAIR_CAPACITY, Math.max(this.splatCount, requestedPairCapacity)),
+    );
+    const tileSplatListData = new Uint32Array(this.tileListCapacity);
     this.tileSplatList = new StorageBuffer(
       engine,
       tileSplatListData.byteLength,
@@ -160,18 +220,35 @@ class ComputeTileStatsPass {
     this.binShader = new ComputeShader(
       "ComputeTileStatsBin",
       engine,
-      { computeSource: getBinSource(paramsBase) },
+      {
+        computeSource: snugBox
+          ? getSnugBoxSource(ComputeTileStatsPass_SNUGBOX_BIN_SOURCE_raw, paramsBase)
+          : getBinSource(paramsBase),
+      },
       {
         bindingsMapping: {
           centerBuffer: { group: 0, binding: 0 },
           counters: { group: 0, binding: 1 },
           paramsBuffer: { group: 0, binding: 2 },
+          ...(snugBox
+            ? {
+                quatsBuffer: { group: 0, binding: 3 },
+                scalesBuffer: { group: 0, binding: 4 },
+                colorBuffer: { group: 0, binding: 5 },
+                scaleCodebookBuffer: { group: 0, binding: 6 },
+                chunkInfoBuffer: { group: 0, binding: 7 },
+                ordinalToPackedBuffer: { group: 0, binding: 8 },
+              }
+            : {}),
         },
       },
     );
     this.binShader.setStorageBuffer("centerBuffer", this.centerBuffer);
     this.binShader.setStorageBuffer("counters", this.counters);
     this.binShader.setStorageBuffer("paramsBuffer", this.params);
+    if (snugBox) {
+      this.bindSnugBoxBuffers(this.binShader, snugBox);
+    }
 
     this.prefixShader = new ComputeShader(
       "ComputeTilePrefix",
@@ -206,7 +283,11 @@ class ComputeTileStatsPass {
     this.scatterShader = new ComputeShader(
       "ComputeTileScatter",
       engine,
-      { computeSource: getScatterSource(paramsBase) },
+      {
+        computeSource: snugBox
+          ? getSnugBoxSource(ComputeTileStatsPass_SNUGBOX_SCATTER_SOURCE_raw, paramsBase)
+          : getScatterSource(paramsBase),
+      },
       {
         bindingsMapping: {
           centerBuffer: { group: 0, binding: 0 },
@@ -215,6 +296,16 @@ class ComputeTileStatsPass {
           tileSplatList: { group: 0, binding: 3 },
           counters: { group: 0, binding: 4 },
           paramsBuffer: { group: 0, binding: 5 },
+          ...(snugBox
+            ? {
+                quatsBuffer: { group: 0, binding: 6 },
+                scalesBuffer: { group: 0, binding: 7 },
+                colorBuffer: { group: 0, binding: 8 },
+                scaleCodebookBuffer: { group: 0, binding: 9 },
+                chunkInfoBuffer: { group: 0, binding: 10 },
+                ordinalToPackedBuffer: { group: 0, binding: 11 },
+              }
+            : {}),
         },
       },
     );
@@ -224,9 +315,13 @@ class ComputeTileStatsPass {
     this.scatterShader.setStorageBuffer("tileSplatList", this.tileSplatList);
     this.scatterShader.setStorageBuffer("counters", this.counters);
     this.scatterShader.setStorageBuffer("paramsBuffer", this.params);
+    if (snugBox) {
+      this.bindSnugBoxBuffers(this.scatterShader, snugBox);
+    }
 
     this.stats = {
       enabled: true,
+      binningMode: snugBox ? "snugbox" : "center",
       dispatched: false,
       tileSize: this.tileSize,
       tileCount: 0,
@@ -242,7 +337,7 @@ class ComputeTileStatsPass {
       tileListScatterDispatched: false,
       tileListValidated: false,
       tileListEntries: 0,
-      tileListCapacity: this.splatCount,
+      tileListCapacity: this.tileListCapacity,
       tileOffsetEntries: 0,
       tileCursorEntries: 0,
       tileListMismatchedTiles: 0,
@@ -286,6 +381,13 @@ class ComputeTileStatsPass {
     this.paramsData[22] = COUNTER_COUNT;
     this.paramsData[23] = tileCount;
     this.paramsData[24] = this.centerOffset;
+    this.paramsData[25] = this.tileListCapacity;
+    this.paramsData[26] = this.snugBox?.alphaClip ?? 0;
+    this.paramsData[27] = this.snugBox?.preBlurAmount ?? 0;
+    this.paramsData[28] = this.snugBox?.maxStdDev ?? 0;
+    this.paramsData[29] = this.snugBox?.maxPixelRadius ?? 0;
+    this.paramsData[30] = this.snugBox?.minPixelRadius ?? 0;
+    this.paramsData[31] = this.snugBox?.blurAmount ?? 1;
     this.updateParams();
 
     const cleared = this.clearShader.dispatch(Math.ceil(COUNTER_COUNT / WORKGROUP_SIZE));
@@ -301,6 +403,7 @@ class ComputeTileStatsPass {
       this.stats = {
         ...this.stats,
         dispatched: true,
+        tileListValidated: false,
         tileOffsetsDispatched: offsetsDispatched,
         tileListScatterDispatched: scatterDispatched,
         tileCount,
@@ -365,8 +468,9 @@ class ComputeTileStatsPass {
             occupiedTiles++;
             maxTileOccupancy = Math.max(maxTileOccupancy, value);
           }
-          cursorEntries += cursors[i];
-          if (cursors[i] !== value) {
+          const acceptedCursorEntries = Math.min(cursors[i], value);
+          cursorEntries += acceptedCursorEntries;
+          if (acceptedCursorEntries !== value) {
             mismatchedTiles++;
           }
           if (i > 0 && offsets[i] < offsets[i - 1]) {
@@ -376,12 +480,13 @@ class ComputeTileStatsPass {
         if (offsets[tileCount] < offsets[Math.max(0, tileCount - 1)]) {
           offsetsMonotonic = false;
         }
-        const visibleSplats = counters[STATS_OFFSET];
+        const tileListEntries = counters[PAIR_COUNT_OFFSET];
+        const visibleSplats = counters[VISIBLE_SPLAT_COUNT_OFFSET];
         const offsetEntries = offsets[tileCount];
         const tileListValidated =
           offsetsMonotonic &&
-          offsetEntries === visibleSplats &&
-          cursorEntries === visibleSplats &&
+          offsetEntries === tileListEntries &&
+          cursorEntries === tileListEntries &&
           mismatchedTiles === 0;
         this.stats = {
           ...this.stats,
@@ -390,13 +495,13 @@ class ComputeTileStatsPass {
           tileOccupancy: counters.slice(0, tileCount),
           visibleSplats,
           tileListValidated,
-          tileListEntries: visibleSplats,
+          tileListEntries,
           tileOffsetEntries: offsetEntries,
           tileCursorEntries: cursorEntries,
           tileListMismatchedTiles: mismatchedTiles,
-          behindSplats: counters[STATS_OFFSET + 1],
-          clippedSplats: counters[STATS_OFFSET + 2],
-          overflowSplats: counters[STATS_OFFSET + 3],
+          behindSplats: counters[BEHIND_SPLAT_COUNT_OFFSET],
+          clippedSplats: counters[CLIPPED_SPLAT_COUNT_OFFSET],
+          overflowSplats: counters[OVERFLOW_PAIR_COUNT_OFFSET],
         };
       })
       .catch(() => {
@@ -409,7 +514,16 @@ class ComputeTileStatsPass {
         this.readPending = false;
       });
   }
+
+  private bindSnugBoxBuffers(shader: ComputeShader, options: ComputeTileSnugBoxOptions): void {
+    shader.setStorageBuffer("quatsBuffer", options.quatsBuffer);
+    shader.setStorageBuffer("scalesBuffer", options.scalesBuffer);
+    shader.setStorageBuffer("colorBuffer", options.colorBuffer);
+    shader.setStorageBuffer("scaleCodebookBuffer", options.scaleCodebookBuffer);
+    shader.setStorageBuffer("chunkInfoBuffer", options.chunkInfoBuffer);
+    shader.setStorageBuffer("ordinalToPackedBuffer", options.ordinalToPackedBuffer);
+  }
 }
 
 export { ComputeTileStatsPass };
-export type { ComputeTileStats };
+export type { ComputeTileSnugBoxOptions, ComputeTileStats };

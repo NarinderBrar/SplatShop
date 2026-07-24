@@ -151,6 +151,7 @@ type PackedSogRenderStats = {
   shPaletteCount: number;
   shRenderMode: "dc" | "loaded" | "cpu";
   computeTileStatsEnabled: boolean;
+  computeTileBinningMode: "center" | "snugbox";
   computeTileStatsDispatched: boolean;
   computeTileSize: number;
   computeTileCount: number;
@@ -949,6 +950,7 @@ class PackedSogRenderPass {
   private getComputeTileStats(): Pick<
     PackedSogRenderStats,
     | "computeTileStatsEnabled"
+    | "computeTileBinningMode"
     | "computeTileStatsDispatched"
     | "computeTileSize"
     | "computeTileCount"
@@ -1009,6 +1011,7 @@ class PackedSogRenderPass {
       const orderStats: ComputeTileOrderStats | undefined = this.computeTileOrderPass?.getStats();
     return {
       computeTileStatsEnabled: stats?.enabled ?? false,
+      computeTileBinningMode: stats?.binningMode ?? "center",
       computeTileStatsDispatched: stats?.dispatched ?? false,
       computeTileSize: stats?.tileSize ?? 0,
       computeTileCount: stats?.tileCount ?? 0,

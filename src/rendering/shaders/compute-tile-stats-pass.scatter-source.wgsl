@@ -42,14 +42,18 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
   let tileX = min(tileCols - 1u, u32(clamp(floor(pixel.x / tileSize), 0.0, f32(tileCols - 1u))));
   let tileY = min(tileRows - 1u, u32(clamp(floor(pixel.y / tileSize), 0.0, f32(tileRows - 1u))));
   let tileIndex = tileY * tileCols + tileX;
-  if (tileIndex >= tileCount || tileIndex >= __SCATTER_SOURCE_EXPR_1__u) {
+  if (tileIndex >= tileCount || tileIndex >= __MAX_TILES__u) {
     return;
   }
 
   let localIndex = atomicAdd(&tileCursors[tileIndex], 1u);
+  let accepted = atomicLoad(&counters[tileIndex]);
+  if (localIndex >= accepted) {
+    return;
+  }
   let dst = tileOffsets[tileIndex] + localIndex;
-  if (dst >= splatCount) {
-    atomicAdd(&counters[__SCATTER_SOURCE_EXPR_2__u], 1u);
+  if (dst >= u32(paramsBuffer[25])) {
+    atomicAdd(&counters[__OVERFLOW_OFFSET__u], 1u);
     return;
   }
   tileSplatList[dst] = index;

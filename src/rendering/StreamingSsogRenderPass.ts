@@ -1386,7 +1386,12 @@ class StreamingSsogRenderPass {
     private readonly loadChunk: SsogChunkLoader,
   ) {
     const requestedGlobalSortMode = getSsogGlobalSortMode();
-    this.globalSortMode = getWebGpuRenderPipeline(scene) && requestedGlobalSortMode === "packed"
+    const computeTileRendererRequested =
+      new URLSearchParams(window.location.search).get("renderer") === "compute";
+    this.globalSortMode =
+      getWebGpuRenderPipeline(scene) &&
+      requestedGlobalSortMode === "packed" &&
+      !computeTileRendererRequested
       ? "off"
       : requestedGlobalSortMode;
     this.debugBounds = new SsogDebugBounds(scene);
@@ -1742,6 +1747,9 @@ class StreamingSsogRenderPass {
           ? "loaded"
           : "dc",
       computeTileStatsEnabled: activeStats.some((item) => item.computeTileStatsEnabled),
+      computeTileBinningMode: activeStats.some((item) => item.computeTileBinningMode === "snugbox")
+        ? "snugbox"
+        : "center",
       computeTileStatsDispatched: activeStats.some((item) => item.computeTileStatsDispatched),
       computeTileSize: first?.computeTileSize ?? 0,
       computeTileCount: activeStats.reduce((sum, item) => sum + item.computeTileCount, 0),

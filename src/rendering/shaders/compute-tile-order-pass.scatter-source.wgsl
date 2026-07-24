@@ -2,7 +2,9 @@
 @group(0) @binding(1) var<storage, read> bucketOffsets: array<u32>;
 @group(0) @binding(2) var<storage, read_write> bucketCounters: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> orderedTileSplatList: array<u32>;
-@group(0) @binding(4) var<storage, read> paramsBuffer: array<f32>;
+@group(0) @binding(4) var<storage, read> tileOffsets: array<u32>;
+@group(0) @binding(5) var<storage, read> tileSplatList: array<u32>;
+@group(0) @binding(6) var<storage, read> paramsBuffer: array<f32>;
 __TEMPLATE_EXPR_0__
 
 fn transformCenter(center: vec3f) -> vec4f {
@@ -14,54 +16,48 @@ fn transformCenter(center: vec3f) -> vec4f {
   );
 }
 
-fn tileAndBucket(index: u32) -> vec2u {
-  let centerOffset = u32(paramsBuffer[28]);
-  let clip = transformCenter(centerBuffer[centerOffset + index].xyz);
-  if (clip.w <= 0.000001) {
-    return vec2u(4294967295u);
+fn tileForEntry(entryIndex: u32, tileCount: u32) -> u32 {
+  var low = 0u;
+  var high = tileCount;
+  while (low < high) {
+    let midpoint = low + (high - low) / 2u;
+    if (tileOffsets[midpoint + 1u] <= entryIndex) {
+      low = midpoint + 1u;
+    } else {
+      high = midpoint;
+    }
   }
-  let ndc = clip.xy / clip.w;
-  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) {
-    return vec2u(4294967295u);
-  }
-
-  let viewport = vec2f(paramsBuffer[16], paramsBuffer[17]);
-  let tileSize = paramsBuffer[18];
-  let tileCols = u32(paramsBuffer[19]);
-  let tileRows = u32(paramsBuffer[20]);
-  let tileCount = u32(paramsBuffer[24]);
-  let bucketCount = u32(paramsBuffer[25]);
-  let minDepth = paramsBuffer[26];
-  let maxDepth = max(minDepth + 0.000001, paramsBuffer[27]);
-  let pixel = (ndc * vec2f(0.5, -0.5) + vec2f(0.5)) * viewport;
-  let tileX = min(tileCols - 1u, u32(clamp(floor(pixel.x / tileSize), 0.0, f32(tileCols - 1u))));
-  let tileY = min(tileRows - 1u, u32(clamp(floor(pixel.y / tileSize), 0.0, f32(tileRows - 1u))));
-  let tileIndex = tileY * tileCols + tileX;
-  if (tileIndex >= tileCount || tileIndex >= __TEMPLATE_EXPR_1__u) {
-    return vec2u(4294967295u);
-  }
-
-  let t = clamp((clip.w - minDepth) / (maxDepth - minDepth), 0.0, 0.999999);
-  let bucket = min(bucketCount - 1u, u32(floor(t * f32(bucketCount))));
-  return vec2u(tileIndex, bucket);
+  return low;
 }
 
 @compute @workgroup_size(__TEMPLATE_EXPR_2__)
 fn main(@builtin(global_invocation_id) globalId: vec3u) {
-  let index = globalId.x;
-  let splatCount = u32(paramsBuffer[21]);
-  if (index >= splatCount) {
+  let entryIndex = globalId.x;
+  let tileCount = u32(paramsBuffer[24]);
+  if (tileCount == 0u || entryIndex >= tileOffsets[tileCount]) {
     return;
   }
-  let tb = tileAndBucket(index);
-  if (tb.x == 4294967295u) {
+
+  let tileIndex = tileForEntry(entryIndex, tileCount);
+  if (tileIndex >= tileCount || tileIndex >= __TEMPLATE_EXPR_1__u) {
     return;
   }
+  let splatIndex = tileSplatList[entryIndex];
+  let centerOffset = u32(paramsBuffer[28]);
+  let clip = transformCenter(centerBuffer[centerOffset + splatIndex].xyz);
+  if (clip.w <= 0.000001) {
+    return;
+  }
+
   let bucketCount = u32(paramsBuffer[25]);
-  let bucketIndex = tb.x * bucketCount + tb.y;
+  let minDepth = paramsBuffer[26];
+  let maxDepth = max(minDepth + 0.000001, paramsBuffer[27]);
+  let t = clamp((clip.w - minDepth) / (maxDepth - minDepth), 0.0, 0.999999);
+  let bucket = min(bucketCount - 1u, u32(floor(t * f32(bucketCount))));
+  let bucketIndex = tileIndex * bucketCount + bucket;
   let local = atomicAdd(&bucketCounters[bucketIndex], 1u);
   let dst = bucketOffsets[bucketIndex] + local;
-  if (dst < splatCount) {
+  if (dst < u32(paramsBuffer[21])) {
     orderedTileSplatList[dst] = __TEMPLATE_EXPR_3__;
   }
 }

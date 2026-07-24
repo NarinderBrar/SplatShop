@@ -22,13 +22,13 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
   let centerOffset = u32(paramsBuffer[24]);
   let clip = transformCenter(centerBuffer[centerOffset + index].xyz);
   if (clip.w <= 0.000001) {
-    atomicAdd(&counters[__BIN_SOURCE_EXPR_1__u], 1u);
+    atomicAdd(&counters[__BEHIND_OFFSET__u], 1u);
     return;
   }
 
   let ndc = clip.xy / clip.w;
   if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) {
-    atomicAdd(&counters[__BIN_SOURCE_EXPR_2__u], 1u);
+    atomicAdd(&counters[__CLIPPED_OFFSET__u], 1u);
     return;
   }
 
@@ -40,11 +40,12 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
   let tileX = min(tileCols - 1u, u32(clamp(floor(pixel.x / tileSize), 0.0, f32(tileCols - 1u))));
   let tileY = min(tileRows - 1u, u32(clamp(floor(pixel.y / tileSize), 0.0, f32(tileRows - 1u))));
   let tileIndex = tileY * tileCols + tileX;
-  if (tileIndex >= __BIN_SOURCE_EXPR_3__u) {
-    atomicAdd(&counters[__BIN_SOURCE_EXPR_4__u], 1u);
+  if (tileIndex >= __MAX_TILES__u) {
+    atomicAdd(&counters[__OVERFLOW_OFFSET__u], 1u);
     return;
   }
 
   atomicAdd(&counters[tileIndex], 1u);
-  atomicAdd(&counters[__BIN_SOURCE_EXPR_5__u], 1u);
+  atomicAdd(&counters[__PAIR_OFFSET__u], 1u);
+  atomicAdd(&counters[__VISIBLE_OFFSET__u], 1u);
 }

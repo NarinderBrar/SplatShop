@@ -556,7 +556,9 @@ class ViewerDebugStats {
         ? `Compute list mismatches: ${formatCount(renderStats.computeTileListMismatchedTiles)}`
         : "",
       renderStats.computeTileStatsEnabled
-        ? `Compute binning: ${formatMs(renderStats.lastComputeTileStatsMs)} ms / offsets ${formatMs(renderStats.lastComputeTileOffsetMs)} ms / scatter ${formatMs(renderStats.lastComputeTileListScatterMs)} ms`
+        ? `Compute binning: ${renderStats.computeTileBinningMode} / ${(
+            renderStats.computeTileListEntries / Math.max(1, renderStats.computeVisibleSplats)
+          ).toFixed(2)} pairs/visible / ${formatMs(renderStats.lastComputeTileStatsMs)} ms / offsets ${formatMs(renderStats.lastComputeTileOffsetMs)} ms / scatter ${formatMs(renderStats.lastComputeTileListScatterMs)} ms`
         : "",
       renderStats.computeTileStatsEnabled
         ? `Compute update interval: ${formatCount(renderStats.computeTileUpdateInterval)} frame${renderStats.computeTileUpdateInterval === 1 ? "" : "s"}`

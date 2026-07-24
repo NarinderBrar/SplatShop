@@ -184,6 +184,9 @@ class CompositeSplatRenderPass {
           ? "loaded"
           : "dc",
       computeTileStatsEnabled: stats.some((item) => item.computeTileStatsEnabled),
+      computeTileBinningMode: stats.some((item) => item.computeTileBinningMode === "snugbox")
+        ? "snugbox"
+        : "center",
       computeTileStatsDispatched: stats.some((item) => item.computeTileStatsDispatched),
       computeTileSize: first?.computeTileSize ?? 0,
       computeTileCount: stats.reduce((sum, item) => sum + item.computeTileCount, 0),

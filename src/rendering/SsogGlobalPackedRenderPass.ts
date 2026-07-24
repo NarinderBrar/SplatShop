@@ -120,6 +120,7 @@ type SsogGlobalPackedStats = {
   shPaletteCount: number;
   shRenderMode: "dc" | "loaded" | "cpu";
   computeTileStatsEnabled: boolean;
+  computeTileBinningMode: "center" | "snugbox";
   computeTileStatsDispatched: boolean;
   computeTileSize: number;
   computeTileCount: number;
@@ -610,7 +611,34 @@ class SsogGlobalPackedRenderPass {
         }
     }
     if (this.buffers.centers && isSsogComputeTileStatsEnabled(this.rendererBackend.requested)) {
-      this.computeTileStatsPass = new ComputeTileStatsPass(scene, this.buffers.centers, this.numSplats);
+      const snugBoxEnabled =
+        isSsogComputeTileSnugBoxEnabled(this.rendererBackend.requested) &&
+        !!this.buffers.ordinalToPacked;
+      this.computeTileStatsPass = new ComputeTileStatsPass(
+        scene,
+        this.buffers.centers,
+        this.numSplats,
+        undefined,
+        0,
+        undefined,
+        snugBoxEnabled && this.buffers.ordinalToPacked
+          ? {
+              quatsBuffer: this.buffers.quats,
+              scalesBuffer: this.buffers.scales,
+              colorBuffer: this.buffers.color,
+              scaleCodebookBuffer: this.buffers.scaleCodebook,
+              chunkInfoBuffer: this.buffers.chunkInfo,
+              ordinalToPackedBuffer: this.buffers.ordinalToPacked,
+              alphaClip: Math.max(SHADER_QUALITY.minAlpha, SHADER_QUALITY.alphaClip),
+              preBlurAmount: SHADER_QUALITY.preBlurAmount,
+              maxStdDev: SHADER_QUALITY.maxStdDev,
+              maxPixelRadius: SHADER_QUALITY.maxPixelRadius,
+              minPixelRadius: SHADER_QUALITY.minPixelRadius,
+              blurAmount: SHADER_QUALITY.blurAmount,
+              pairCapacityMultiplier: getSsogSnugBoxPairCapacityMultiplier(),
+            }
+          : undefined,
+      );
       if (isSsogComputeTileDepthEnabled(this.rendererBackend.requested)) {
         this.computeTileDepthRangePass = new ComputeTileDepthRangePass(
           scene,
@@ -999,7 +1027,15 @@ class SsogGlobalPackedRenderPass {
 
     const cameraPosition = camera.globalPosition;
     const cameraForward = camera.getDirection(Vector3.Forward());
+    const tileStats = this.computeTileStatsPass?.getStats();
+    const tilePipelineInitialized =
+      (tileStats?.tileListScatterDispatched ?? false) &&
+      (tileStats?.tileListValidated ?? false) &&
+      (!this.computeTileDepthRangePass || this.computeTileDepthRangePass.getStats().dispatched) &&
+      (!this.computeTileWorkQueuePass || this.computeTileWorkQueuePass.getStats().dispatched) &&
+      (!this.computeTileOrderPass || this.computeTileOrderPass.getStats().dispatched);
     const dirty =
+      !tilePipelineInitialized ||
       this.viewport.x !== this.lastComputeTileViewportWidth ||
       this.viewport.y !== this.lastComputeTileViewportHeight ||
       !Number.isFinite(this.lastComputeTileCameraPosition.x) ||
@@ -1051,6 +1087,7 @@ class SsogGlobalPackedRenderPass {
   private getComputeTileStats(): Pick<
     SsogGlobalPackedStats,
     | "computeTileStatsEnabled"
+    | "computeTileBinningMode"
     | "computeTileStatsDispatched"
     | "computeTileSize"
     | "computeTileCount"
@@ -1116,6 +1153,7 @@ class SsogGlobalPackedRenderPass {
     const orderStats: ComputeTileOrderStats | undefined = this.computeTileOrderPass?.getStats();
     return {
       computeTileStatsEnabled: stats?.enabled ?? false,
+      computeTileBinningMode: stats?.binningMode ?? "center",
       computeTileStatsDispatched: stats?.dispatched ?? false,
       computeTileSize: stats?.tileSize ?? 0,
       computeTileCount: stats?.tileCount ?? 0,
@@ -1895,6 +1933,19 @@ const isSsogComputeTileStatsEnabled = (requested: RequestedRendererMode): boolea
     params.get("computeTileOrder") === "depth-bucket" ||
     isSsogComputeTileRasterPreviewEnabled(requested)
   );
+};
+
+const isSsogComputeTileSnugBoxEnabled = (requested: RequestedRendererMode): boolean => {
+  const value = new URLSearchParams(window.location.search).get("computeTileSnugBox");
+  if (value === "false") {
+    return false;
+  }
+  return requested === "compute" || value === "true";
+};
+
+const getSsogSnugBoxPairCapacityMultiplier = (): number => {
+  const value = Number(new URLSearchParams(window.location.search).get("computeTileSnugBoxPairCapacity"));
+  return Number.isFinite(value) && value >= 1 ? Math.min(32, value) : 4;
 };
 
 const isSsogComputeTileDepthEnabled = (requested: RequestedRendererMode): boolean => {
