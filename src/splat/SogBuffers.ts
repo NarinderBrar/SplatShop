@@ -52,7 +52,7 @@ type SogBufferStats = {
 };
 
 class SogBuffers {
-  readonly indices: Uint32Array;
+  indices: Uint32Array;
   readonly stats: SogBufferStats;
   storage: Nullable<SogStorageBuffers>;
   readonly storageOffsets: SogStorageBufferOffsets = {
@@ -83,13 +83,10 @@ class SogBuffers {
   ) {
     this.writer = writer;
     this.poolKey = poolKey;
-    this.indices = new Uint32Array(packed.numSplats);
-    for (let i = 0; i < this.indices.length; i++) {
-      this.indices[i] = i;
-    }
+    this.indices = createGpuStorage ? this.createIdentityIndices() : new Uint32Array(0);
 
     this.dcColorData = this.createDcColorData();
-    this.colorData = this.dcColorData.slice();
+    this.colorData = packed.shN ? this.dcColorData.slice() : this.dcColorData;
     this.stats = {
       numSplats: packed.numSplats,
       boundsMin: packed.boundsMin,
@@ -107,6 +104,9 @@ class SogBuffers {
 
   ensureStorage(): Nullable<SogStorageBuffers> {
     if (!this.storage && this.engine instanceof WebGPUEngine) {
+      if (this.indices.length !== this.packed.numSplats) {
+        this.indices = this.createIdentityIndices();
+      }
       this.storage = this.createStorageBuffers(this.engine);
     }
     return this.storage;
@@ -300,6 +300,14 @@ class SogBuffers {
       out[offset + 3] = chan(pixel, 3) / 255;
     }
     return out;
+  }
+
+  private createIdentityIndices(): Uint32Array {
+    const indices = new Uint32Array(this.packed.numSplats);
+    for (let index = 0; index < indices.length; index++) {
+      indices[index] = index;
+    }
+    return indices;
   }
 
   private releaseOptionalStorageBuffer(name: string, buffer: StorageBuffer | undefined): void {
