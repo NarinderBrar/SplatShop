@@ -2954,9 +2954,9 @@ class StreamingSsogRenderPass {
     this.activeChunks = Math.max(renderSelected.length, activeChunks);
     this.selectedLods = Math.max(this.selectedLodValues.size, activeLods.size);
     this.updateHiZOcclusion();
-    this.dropStaleQueuedChunks();
-    this.dropStaleDecodedUploads();
     if (!uploadOnly) {
+      this.dropStaleQueuedChunks();
+      this.dropStaleDecodedUploads();
       for (let index = 0; index < stableSelected.length; index++) {
         this.requestChunk(stableSelected[index].value);
       }

@@ -66,8 +66,8 @@ class SogBuffers {
     scaleCodebook: 0,
   };
   readonly bufferVersions = new BufferVersionTracker();
-  private readonly dcColorData: Float32Array;
-  private readonly colorData: Float32Array;
+  private dcColorData?: Float32Array;
+  private colorData?: Float32Array;
 
   private readonly writer: GpuBufferWriter | undefined;
   private readonly poolKey: string | undefined;
@@ -85,8 +85,9 @@ class SogBuffers {
     this.poolKey = poolKey;
     this.indices = createGpuStorage ? this.createIdentityIndices() : new Uint32Array(0);
 
-    this.dcColorData = this.createDcColorData();
-    this.colorData = packed.shN ? this.dcColorData.slice() : this.dcColorData;
+    if (createGpuStorage) {
+      this.ensureColorData();
+    }
     this.stats = {
       numSplats: packed.numSplats,
       boundsMin: packed.boundsMin,
@@ -165,7 +166,7 @@ class SogBuffers {
       quats: this.makeArenaStorageBuffer("quats", "SogQuats", this.packed.quats, make),
       scales: this.makeArenaStorageBuffer("scales", "SogScales", this.packed.scales, make),
       sh0: make("SogSh0", this.packed.sh0),
-      color: this.makeFloat32ArenaStorageBuffer("color", "SogColor", this.colorData, make),
+      color: this.makeFloat32ArenaStorageBuffer("color", "SogColor", this.ensureColorData(), make),
       state: this.makeArenaStorageBuffer("state", "SogStateDefault", state, make),
       scaleCodebook: this.makeScaleCodebookBuffer(make),
       sh0Codebook: make("SogSh0Codebook", this.packed.sh0Codebook),
@@ -246,7 +247,8 @@ class SogBuffers {
     const codebook = shN.codebook;
     const centroids = shN.centroids;
     const labels = shN.labels;
-    const colors = this.colorData;
+    const dcColors = this.ensureDcColorData();
+    const colors = this.ensureColorData();
     const centers = this.packed.centers;
     const stride = shN.centroidWidth;
 
@@ -262,9 +264,9 @@ class SogBuffers {
       const paletteX = paletteIndex % 64;
       const paletteY = Math.floor(paletteIndex / 64);
       const colorOffset = i * 4;
-      let r = this.dcColorData[colorOffset + 0];
-      let g = this.dcColorData[colorOffset + 1];
-      let b = this.dcColorData[colorOffset + 2];
+      let r = dcColors[colorOffset + 0];
+      let g = dcColors[colorOffset + 1];
+      let b = dcColors[colorOffset + 2];
 
       for (let coeff = 0; coeff < coeffs; coeff++) {
         const pixel = centroids[paletteY * stride + paletteX * coeffs + coeff];
@@ -286,6 +288,21 @@ class SogBuffers {
   }
 
   getSelectionColorData(): Float32Array {
+    return this.ensureColorData();
+  }
+
+  private ensureDcColorData(): Float32Array {
+    if (!this.dcColorData) {
+      this.dcColorData = this.createDcColorData();
+    }
+    return this.dcColorData;
+  }
+
+  private ensureColorData(): Float32Array {
+    if (!this.colorData) {
+      const dcColorData = this.ensureDcColorData();
+      this.colorData = this.packed.shN ? dcColorData.slice() : dcColorData;
+    }
     return this.colorData;
   }
 
