@@ -202,6 +202,8 @@ class SsogResidentPageRenderPass {
   private metadataSkippedFrames = 0;
   private viewSortFrames = 0;
   private viewSortSkippedFrames = 0;
+  private readonly viewSortIntervalFrames = getSsogResidentViewSortIntervalFrames();
+  private viewSortIntervalFrame = 0;
   private metadataGeneration = 0;
   private lastSortedMetadataGeneration = -1;
   private readonly lastSortedCameraPosition = new Vector3(Number.NaN, Number.NaN, Number.NaN);
@@ -311,8 +313,18 @@ class SsogResidentPageRenderPass {
       Vector3.DistanceSquared(cameraPosition, this.lastSortedCameraPosition) > VIEW_SORT_POSITION_EPSILON_SQ ||
       Vector3.Dot(cameraForward, this.lastSortedCameraForward) < VIEW_SORT_FORWARD_DOT_THRESHOLD;
     if (!metadataChanged && !cameraChanged) {
+      this.viewSortIntervalFrame = 0;
       this.viewSortSkippedFrames++;
       return;
+    }
+    if (!metadataChanged && cameraChanged && this.viewSortIntervalFrames > 1) {
+      this.viewSortIntervalFrame = (this.viewSortIntervalFrame + 1) % this.viewSortIntervalFrames;
+      if (this.viewSortIntervalFrame !== 0) {
+        this.viewSortSkippedFrames++;
+        return;
+      }
+    } else {
+      this.viewSortIntervalFrame = 0;
     }
 
     this.viewSortFrames++;
@@ -975,6 +987,11 @@ class SsogResidentPageRenderPass {
 const isSsogGpuSortForceVisible = (): boolean => {
   const value = new URLSearchParams(window.location.search).get("ssogGpuSortForce");
   return value === "true" || value === "radix";
+};
+
+const getSsogResidentViewSortIntervalFrames = (): number => {
+  const value = Number(new URLSearchParams(window.location.search).get("ssogResidentViewSortInterval") ?? 2);
+  return Number.isFinite(value) ? Math.max(1, Math.min(4, Math.floor(value))) : 2;
 };
 
 const createStorageBuffer = (engine: WebGPUEngine, name: string, data: Uint32Array | Float32Array): StorageBuffer => {
