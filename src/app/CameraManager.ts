@@ -9,6 +9,7 @@ const MIN_RADIUS_SCALE = 0.035;
 const MIN_RADIUS_FALLBACK = 0.08;
 const TARGET_SCROLL_STEP_SCALE = 0.035;
 const ORBIT_ANGULAR_SENSIBILITY = 500;
+const CAMERA_INERTIA = 0.9;
 
 const getViewerUpVector = (): Vector3 => {
   const value = new URLSearchParams(window.location.search).get("up");
@@ -35,11 +36,10 @@ class CameraManager {
     );
     this.camera.upVector = getViewerUpVector();
     this.camera.attachControl(canvas, true);
-    // Splat blending is view-order dependent. Camera inertia can advance the
-    // visible view between completed sort frames, especially for large SSOGs.
     // Babylon controls panning inertia separately from orbit/zoom inertia.
-    this.camera.inertia = 0;
-    this.camera.panningInertia = 0;
+    // Keep them aligned so every camera gesture has the same smooth slowdown.
+    this.camera.inertia = CAMERA_INERTIA;
+    this.camera.panningInertia = CAMERA_INERTIA;
     // Babylon divides pointer movement by angular sensibility, so a lower
     // value makes short drags produce a more responsive orbit.
     this.camera.angularSensibilityX = ORBIT_ANGULAR_SENSIBILITY;
