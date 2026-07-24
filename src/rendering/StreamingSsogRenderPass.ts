@@ -183,6 +183,9 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   residentSignatureReasonLod: number;
   residentSignatureReasonSplats: number;
   residentSignatureReasonPageAlloc: number;
+  residentMetadataRevision: number;
+  residentMetadataScans: number;
+  residentMetadataScanSkips: number;
   packedMetadataMode: "none" | "shared" | "per-chunk";
   packedMetadataGroups: number;
   packedMergeCompatible: boolean;
@@ -1364,6 +1367,10 @@ class StreamingSsogRenderPass {
   private readonly packedMetadataFingerprints = new WeakMap<SogPackedData, string>();
   private lastGlobalSortBuildMs = 0;
   private lastResidentGlobalSignature = Number.NaN;
+  private residentMetadataRevision = 1;
+  private lastAppliedResidentMetadataRevision = -1;
+  private residentMetadataScans = 0;
+  private residentMetadataScanSkips = 0;
   private lastResidentGlobalActiveKeys: string[] = [];
   private lastResidentGlobalLodMap: Map<string, number> = new Map();
   private lastResidentGlobalNodeState: Map<number, ResidentNodeState> = new Map();
@@ -2185,6 +2192,9 @@ class StreamingSsogRenderPass {
       residentSignatureReasonLod: this.residentSignatureReasonLod,
       residentSignatureReasonSplats: this.residentSignatureReasonSplats,
       residentSignatureReasonPageAlloc: this.residentSignatureReasonPageAlloc,
+      residentMetadataRevision: this.residentMetadataRevision,
+      residentMetadataScans: this.residentMetadataScans,
+      residentMetadataScanSkips: this.residentMetadataScanSkips,
       packedMetadataMode: packedMetadata.mode,
       packedMetadataGroups: packedMetadata.groups,
       packedMergeCompatible: packedMetadata.mergeCompatible,
@@ -2794,6 +2804,15 @@ class StreamingSsogRenderPass {
     for (const item of stableSelected) {
       stableSelectedByNode.set(item.nodeId, item);
     }
+    let selectedMembershipChanged = this.selectedKeys.size !== renderSelected.length;
+    if (!selectedMembershipChanged) {
+      for (let index = 0; index < renderSelected.length; index++) {
+        if (!this.selectedKeys.has(renderSelected[index].key)) {
+          selectedMembershipChanged = true;
+          break;
+        }
+      }
+    }
     this.selectedKeys.clear();
     for (let index = 0; index < renderSelected.length; index++) {
       this.selectedKeys.add(renderSelected[index].key);
@@ -2875,11 +2894,13 @@ class StreamingSsogRenderPass {
     const activeLods = this.activeLodValues;
     activeLods.clear();
     let activeChunks = 0;
+    let activeMembershipChanged = false;
     for (const [key, gpu] of this.gpuLoaded) {
       const selected = this.selectedKeys.has(key);
       const fallback = this.fallbackKeys.has(key);
       const wasActive = gpu.active;
       gpu.active = selected || fallback;
+      activeMembershipChanged ||= gpu.active !== wasActive;
       if (gpu.active !== wasActive || selected || fallback || this.prefetchKeys.has(key)) {
         this.markGpuPageTableDirty();
       }
@@ -2901,6 +2922,9 @@ class StreamingSsogRenderPass {
           this.debugBounds.ensure(key, cached.entry, "loaded-waiting");
         }
       }
+    }
+    if (selectedMembershipChanged || activeMembershipChanged) {
+      this.markResidentMetadataDirty();
     }
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
     this.activeChunks = Math.max(renderSelected.length, activeChunks);
@@ -2924,7 +2948,7 @@ class StreamingSsogRenderPass {
     this.lastLodCameraForward.copyFrom(cameraForward);
     this.updateLoadedChunkSortDepth(cameraPosition, cameraForward);
     if (this.globalSortMode === "resident") {
-      this.updateResidentGlobalRuntime();
+      this.updateResidentGlobalRuntime(cameraPosition, cameraForward);
     } else if (this.globalSortMode === "packed") {
       this.updatePackedGlobalRuntime();
     } else if (this.globalSortMode === "expanded") {
@@ -3637,6 +3661,9 @@ class StreamingSsogRenderPass {
       lastUsedFrame: this.generation,
       pageAllocation,
     });
+    if (active) {
+      this.markResidentMetadataDirty();
+    }
     this.markGpuPageTableDirty();
     if (active && this.isChunkRepresentedByReadyRenderPath(key)) {
       this.debugBounds.dispose(key);
@@ -3735,6 +3762,9 @@ class StreamingSsogRenderPass {
     this.disposeGpuResidentContents(gpu);
     this.gpuPagePool.freeChunk(key);
     this.gpuLoaded.delete(key);
+    if (gpu.active) {
+      this.markResidentMetadataDirty();
+    }
     this.markGpuPageTableDirty();
     this.debugBounds.dispose(key);
     this.recentlyEvictedKeyFrames.set(key, this.generation);
@@ -3833,7 +3863,12 @@ class StreamingSsogRenderPass {
       }
       gpu.pageAllocation = this.gpuPagePool.allocateChunk(key, cached.chunk.data.numSplats);
     }
+    this.markResidentMetadataDirty();
     this.markGpuPageTableDirty();
+  }
+
+  private markResidentMetadataDirty(): void {
+    this.residentMetadataRevision++;
   }
 
   private markGpuPageTableDirty(): void {
@@ -4388,7 +4423,7 @@ class StreamingSsogRenderPass {
     this.markGlobalRuntimeRebuilt();
   }
 
-  private updateResidentGlobalRuntime(): void {
+  private updateResidentGlobalRuntime(cameraPosition: Vector3, cameraForward: Vector3): void {
     if (this.globalSortMode !== "resident") {
       this.disposeResidentGlobalRuntime();
       return;
@@ -4397,25 +4432,37 @@ class StreamingSsogRenderPass {
     this.disposePackedGlobalRuntime();
     this.disposeExpandedRuntime();
     this.disposeMergedRuntimes();
+    if (
+      this.residentGlobalRuntime &&
+      this.lastAppliedResidentMetadataRevision === this.residentMetadataRevision
+    ) {
+      this.residentMetadataScanSkips++;
+      this.residentGlobalRuntime.updateView(cameraPosition, cameraForward);
+      this.residentGlobalRuntime.setVizMode(this.activeVizMode);
+      this.residentGlobalRuntime.setEnabled(true);
+      this.globalSortFallbackReason = "";
+      this.lastGlobalSortBuildMs = this.residentGlobalRuntime.getStats().residentGlobalBuildMs;
+      return;
+    }
+
+    this.residentMetadataScans++;
     const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
 
     if (activeEntries.length === 0) {
       this.residentGlobalRuntime?.setEnabled(false);
       this.globalSortFallbackReason = "";
       this.lastResidentGlobalSignature = Number.NaN;
+      this.lastAppliedResidentMetadataRevision = this.residentMetadataRevision;
       return;
     }
 
     if (!this.canBuildGlobalRuntime(activeEntries)) {
       this.setGlobalSortBuildPending(true);
       activeEntries.forEach(([key]) => this.ensureFullPass(key)?.setEnabled(true));
+      this.lastAppliedResidentMetadataRevision = this.residentMetadataRevision;
       return;
     }
     this.setGlobalSortBuildPending(false);
-
-    const camera = this.scene.activeCamera;
-    const cameraPosition = camera?.globalPosition ?? new Vector3(0, 0, 0);
-    const cameraForward = camera?.getDirection(Vector3.Forward()) ?? Vector3.Forward();
 
     if (!this.residentGlobalRuntime) {
       this.residentGlobalRuntime = new SsogResidentPageRenderPass(this.scene);
@@ -4445,6 +4492,7 @@ class StreamingSsogRenderPass {
       this.residentGlobalRuntime.updateActiveChunks(chunks);
       this.lastResidentGlobalSignature = residentSignature;
     }
+    this.lastAppliedResidentMetadataRevision = this.residentMetadataRevision;
     this.residentGlobalRuntime.updateView(cameraPosition, cameraForward);
     this.residentGlobalRuntime.setVizMode(this.activeVizMode);
     this.residentGlobalRuntime.setEnabled(true);
@@ -4740,6 +4788,7 @@ class StreamingSsogRenderPass {
   private disposeResidentGlobalRuntime(): void {
     if (!this.residentGlobalRuntime) {
       this.lastResidentGlobalSignature = Number.NaN;
+      this.lastAppliedResidentMetadataRevision = -1;
       this.lastResidentGlobalActiveKeys = [];
       this.lastResidentGlobalLodMap = new Map();
       this.lastResidentGlobalNodeState = new Map();
@@ -4750,6 +4799,7 @@ class StreamingSsogRenderPass {
     this.residentGlobalRuntime.dispose();
     this.residentGlobalRuntime = undefined;
     this.lastResidentGlobalSignature = Number.NaN;
+    this.lastAppliedResidentMetadataRevision = -1;
     this.lastResidentGlobalActiveKeys = [];
     this.lastResidentGlobalLodMap = new Map();
     this.lastResidentGlobalNodeState = new Map();

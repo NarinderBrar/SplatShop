@@ -381,6 +381,9 @@ class ViewerDebugStats {
       residentSignatureReasonLod?: number;
       residentSignatureReasonSplats?: number;
       residentSignatureReasonPageAlloc?: number;
+      residentMetadataRevision?: number;
+      residentMetadataScans?: number;
+      residentMetadataScanSkips?: number;
       packedMetadataMode?: string;
       packedMetadataGroups?: number;
       packedMergeCompatible?: boolean;
@@ -740,6 +743,9 @@ class ViewerDebugStats {
         : "",
       (streamingStats.residentSignatureChangeCount ?? 0) > 0
         ? `SSOG signature changes: ${formatCount(streamingStats.residentSignatureChangeCount ?? 0)} / active_set ${formatCount(streamingStats.residentSignatureReasonActiveSet ?? 0)} / lod ${formatCount(streamingStats.residentSignatureReasonLod ?? 0)} / splats ${formatCount(streamingStats.residentSignatureReasonSplats ?? 0)} / page_alloc ${formatCount(streamingStats.residentSignatureReasonPageAlloc ?? 0)}`
+        : "",
+      streamingStats.residentMetadataRevision !== undefined
+        ? `SSOG metadata scans: revision ${formatCount(streamingStats.residentMetadataRevision)} / scans ${formatCount(streamingStats.residentMetadataScans ?? 0)} / skipped ${formatCount(streamingStats.residentMetadataScanSkips ?? 0)}`
         : "",
       streamingStats.packedMetadataMode !== undefined
         ? `SSOG packed metadata: ${streamingStats.packedMetadataMode} / groups ${formatCount(streamingStats.packedMetadataGroups ?? 0)} / merge ${streamingStats.packedMergeCompatible ? "yes" : "no"}`
