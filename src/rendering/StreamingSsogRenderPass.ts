@@ -1190,6 +1190,7 @@ const getChunkCenterDistance = (entry: SsogChunkEntry, cameraPosition: Vector3):
 
 class StreamingSsogRenderPass {
   private readonly gpuLoaded = new Map<string, GpuResidentChunk>();
+  private readonly activeGpuChunks = new Map<string, GpuResidentChunk>();
   private readonly decodedCache = new Map<string, CachedDecodedChunk>();
   private decodedCacheBytes = 0;
   private decodedCacheSplats = 0;
@@ -1549,6 +1550,7 @@ class StreamingSsogRenderPass {
     this.gpuPageTableBuffer?.dispose();
     this.gpuPageTableBuffer = undefined;
     this.gpuLoaded.clear();
+    this.activeGpuChunks.clear();
     this.decodedCache.clear();
     this.pending.clear();
     this.pendingEntries.clear();
@@ -2916,6 +2918,13 @@ class StreamingSsogRenderPass {
       const wasActive = gpu.active;
       gpu.active = selected || fallback;
       activeMembershipChanged ||= gpu.active !== wasActive;
+      if (gpu.active !== wasActive) {
+        if (gpu.active) {
+          this.activeGpuChunks.set(key, gpu);
+        } else {
+          this.activeGpuChunks.delete(key);
+        }
+      }
       if (gpu.active !== wasActive || selected || fallback || this.prefetchKeys.has(key)) {
         this.markGpuPageTableDirty();
       }
@@ -3669,15 +3678,17 @@ class StreamingSsogRenderPass {
       pass.setVizMode(this.activeVizMode);
       pass.setEnabled(true);
     }
-    this.gpuLoaded.set(key, {
+    const gpu: GpuResidentChunk = {
       buffers,
       pass,
       resident,
       active,
       lastUsedFrame: this.generation,
       pageAllocation,
-    });
+    };
+    this.gpuLoaded.set(key, gpu);
     if (active) {
+      this.activeGpuChunks.set(key, gpu);
       this.markResidentMetadataDirty();
     }
     this.markGpuPageTableDirty();
@@ -3778,6 +3789,7 @@ class StreamingSsogRenderPass {
     this.disposeGpuResidentContents(gpu);
     this.gpuPagePool.freeChunk(key);
     this.gpuLoaded.delete(key);
+    this.activeGpuChunks.delete(key);
     if (gpu.active) {
       this.markResidentMetadataDirty();
     }
@@ -3874,6 +3886,7 @@ class StreamingSsogRenderPass {
       const cached = this.decodedCache.get(key);
       if (!cached) {
         this.gpuLoaded.delete(key);
+        this.activeGpuChunks.delete(key);
         this.disposeGpuResidentContents(gpu);
         continue;
       }
@@ -4483,9 +4496,9 @@ class StreamingSsogRenderPass {
     }
 
     this.residentMetadataScans++;
-    const activeEntries = Array.from(this.gpuLoaded.entries()).filter(([, gpu]) => gpu.active);
+    const activeEntries = this.activeGpuChunks;
 
-    if (activeEntries.length === 0) {
+    if (activeEntries.size === 0) {
       this.residentGlobalRuntime?.setEnabled(false);
       this.globalSortFallbackReason = "";
       this.lastResidentGlobalSignature = Number.NaN;
@@ -4493,9 +4506,11 @@ class StreamingSsogRenderPass {
       return;
     }
 
-    if (!this.canBuildGlobalRuntime(activeEntries)) {
+    if (!this.canBuildResidentGlobalRuntime()) {
       this.setGlobalSortBuildPending(true);
-      activeEntries.forEach(([key]) => this.ensureFullPass(key)?.setEnabled(true));
+      for (const key of activeEntries.keys()) {
+        this.ensureFullPass(key)?.setEnabled(true);
+      }
       this.lastAppliedResidentMetadataRevision = this.residentMetadataRevision;
       return;
     }
@@ -4509,23 +4524,22 @@ class StreamingSsogRenderPass {
     const residentMetadataChanged = residentSignature !== this.lastResidentGlobalSignature;
     if (residentMetadataChanged) {
       this.diffResidentGlobalSignature(activeEntries);
-      const chunks = activeEntries
-        .map(([key, gpu]): ResidentGlobalChunk | undefined => {
-          const cached = this.decodedCache.get(key);
-          if (!cached || !gpu.pageAllocation) {
-            return undefined;
-          }
-          return {
-            key,
-            buffers: gpu.buffers,
-            pageAllocation: gpu.pageAllocation,
-            splatCount: cached.chunk.data.numSplats,
-            boundsMin: cached.entry.bound.min,
-            boundsMax: cached.entry.bound.max,
-            lod: cached.entry.lod,
-          };
-        })
-        .filter((chunk): chunk is ResidentGlobalChunk => !!chunk);
+      const chunks: ResidentGlobalChunk[] = [];
+      for (const [key, gpu] of activeEntries) {
+        const cached = this.decodedCache.get(key);
+        if (!cached || !gpu.pageAllocation) {
+          continue;
+        }
+        chunks.push({
+          key,
+          buffers: gpu.buffers,
+          pageAllocation: gpu.pageAllocation,
+          splatCount: cached.chunk.data.numSplats,
+          boundsMin: cached.entry.bound.min,
+          boundsMax: cached.entry.bound.max,
+          lod: cached.entry.lod,
+        });
+      }
       this.residentGlobalRuntime.updateActiveChunks(chunks);
       this.lastResidentGlobalSignature = residentSignature;
     }
@@ -4533,12 +4547,14 @@ class StreamingSsogRenderPass {
     this.residentGlobalRuntime.updateView(cameraPosition, cameraForward);
     this.residentGlobalRuntime.setVizMode(this.activeVizMode);
     this.residentGlobalRuntime.setEnabled(true);
-    activeEntries.forEach(([, gpu]) => gpu.pass?.setEnabled(false));
+    for (const gpu of activeEntries.values()) {
+      gpu.pass?.setEnabled(false);
+    }
     this.globalSortFallbackReason = "";
     this.lastGlobalSortBuildMs = this.residentGlobalRuntime.getStats().residentGlobalBuildMs;
   }
 
-  private computeResidentGlobalSignature(activeEntries: Array<[string, GpuResidentChunk]>): number {
+  private computeResidentGlobalSignature(activeEntries: Iterable<[string, GpuResidentChunk]>): number {
     let hash = 0x811c9dc5;
     for (const [key, gpu] of activeEntries) {
       const cached = this.decodedCache.get(key);
@@ -4570,7 +4586,7 @@ class StreamingSsogRenderPass {
     return Math.imul(hash ^ (value | 0), 16777619);
   }
 
-  private diffResidentGlobalSignature(activeEntries: Array<[string, GpuResidentChunk]>): void {
+  private diffResidentGlobalSignature(activeEntries: Iterable<[string, GpuResidentChunk]>): void {
     const newKeys: string[] = [];
     const newLodMap = new Map<string, number>();
     const newNodeState = new Map<number, ResidentNodeState>();
@@ -4931,6 +4947,19 @@ class StreamingSsogRenderPass {
     const loadedActiveKeys = new Set(activeEntries.map(([key]) => key));
     for (const key of this.selectedKeys) {
       if (!loadedActiveKeys.has(key)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private canBuildResidentGlobalRuntime(): boolean {
+    if (this.progressiveGlobalBuild || this.selectedKeys.size === 0) {
+      return true;
+    }
+
+    for (const key of this.selectedKeys) {
+      if (!this.activeGpuChunks.has(key)) {
         return false;
       }
     }
