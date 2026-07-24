@@ -839,6 +839,12 @@ class ViewerDebugStats {
       `Sort: ${formatMs(renderStats.lastSortMs)} ms`,
       `Upload: ${formatMs(renderStats.lastUploadMs)} ms`,
       `LOD build: ${formatMs(renderStats.lastLodBuildMs)} ms`,
+      "lastSsogMaintenanceMs" in renderStats
+        ? `SSOG stages: maintenance ${formatMs(Number(renderStats.lastSsogMaintenanceMs ?? 0))} ms / full LOD ${formatMs(Number("lastFullLodSelectionMs" in renderStats ? renderStats.lastFullLodSelectionMs : 0))} ms / residency ${formatMs(Number("lastResidencyRefreshMs" in renderStats ? renderStats.lastResidencyRefreshMs : 0))} ms`
+        : "",
+      "fullLodSelectionCount" in renderStats
+        ? `SSOG refreshes: full ${formatCount(Number(renderStats.fullLodSelectionCount ?? 0))} / residency ${formatCount(Number("residencyRefreshCount" in renderStats ? renderStats.residencyRefreshCount : 0))} / upload-only ${formatCount(Number("uploadOnlyResidencyRefreshCount" in renderStats ? renderStats.uploadOnlyResidencyRefreshCount : 0))}`
+        : "",
       `Sort pending: ${renderStats.sortPending ? "yes" : "no"}`,
       "sortQueued" in renderStats
         ? `Sort queued: ${(renderStats as typeof renderStats & { sortQueued?: boolean }).sortQueued ? "yes" : "no"} / coalesced ${formatCount(Number((renderStats as typeof renderStats & { sortCoalesced?: number }).sortCoalesced ?? 0))}`

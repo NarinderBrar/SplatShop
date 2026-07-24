@@ -194,6 +194,12 @@ type StreamingSsogRenderStats = PackedSogRenderStats & {
   lastGlobalSortBuildMs: number;
   lastChunkLoadMs: number;
   lastChunkUploadMs: number;
+  lastSsogMaintenanceMs: number;
+  lastFullLodSelectionMs: number;
+  lastResidencyRefreshMs: number;
+  fullLodSelectionCount: number;
+  residencyRefreshCount: number;
+  uploadOnlyResidencyRefreshCount: number;
   uploadBudgetBytes: number;
   uploadChunkBudget: number;
   staleQueuedChunksDropped: number;
@@ -1310,6 +1316,11 @@ class StreamingSsogRenderPass {
   private lastQualityCameraForward = new Vector3(0, 0, 0);
   private lastLodCameraPosition = new Vector3(Number.POSITIVE_INFINITY, 0, 0);
   private lastLodCameraForward = new Vector3(0, 0, 0);
+  private selectionDirty = true;
+  private residencyDirty = true;
+  private cachedStableSelection: SelectedSsogItem[] = [];
+  private cachedVisibleSelection?: SsogLodSelection<SsogChunkEntry>;
+  private cachedPrefetchSelection?: SsogLodSelection<SsogChunkEntry>;
   private activeChunks = 0;
   private selectedLods = 0;
   private selectedNodes = 0;
@@ -1343,6 +1354,12 @@ class StreamingSsogRenderPass {
   private lastGlobalRuntimeRebuildFrame = Number.NEGATIVE_INFINITY;
   private lastChunkLoadMs = 0;
   private lastChunkUploadMs = 0;
+  private lastSsogMaintenanceMs = 0;
+  private lastFullLodSelectionMs = 0;
+  private lastResidencyRefreshMs = 0;
+  private fullLodSelectionCount = 0;
+  private residencyRefreshCount = 0;
+  private uploadOnlyResidencyRefreshCount = 0;
   private attemptedUploadChunksThisFrame = 0;
   private uploadedBytesThisFrame = 0;
   private uploadedChunksThisFrame = 0;
@@ -2145,6 +2162,12 @@ class StreamingSsogRenderPass {
       lastGlobalSortBuildMs: this.lastGlobalSortBuildMs,
       lastChunkLoadMs: this.lastChunkLoadMs,
       lastChunkUploadMs: this.lastChunkUploadMs,
+      lastSsogMaintenanceMs: this.lastSsogMaintenanceMs,
+      lastFullLodSelectionMs: this.lastFullLodSelectionMs,
+      lastResidencyRefreshMs: this.lastResidencyRefreshMs,
+      fullLodSelectionCount: this.fullLodSelectionCount,
+      residencyRefreshCount: this.residencyRefreshCount,
+      uploadOnlyResidencyRefreshCount: this.uploadOnlyResidencyRefreshCount,
       uploadBudgetBytes: Number.isFinite(this.uploadBudgetBytes) ? this.uploadBudgetBytes : -1,
       uploadChunkBudget: Number.isFinite(this.uploadChunkBudget) ? this.uploadChunkBudget : -1,
       staleQueuedChunksDropped: this.staleQueuedChunksDropped,
@@ -2563,6 +2586,7 @@ class StreamingSsogRenderPass {
   }
 
   private updateLodSelection(view = this.mainView, force = false): void {
+    const maintenanceStart = performance.now();
     this.frame = (this.frame + 1) % this.lodSelectIntervalFrames;
     this.gpuBufferWriter?.beginFrame();
     const camera = resolveSplatViewCamera(this.scene, view);
@@ -2575,7 +2599,7 @@ class StreamingSsogRenderPass {
     const cameraForward = camera.getDirection(Vector3.Forward());
     this.updateInteractionQualityState(cameraPosition, cameraForward);
     this.updateAdaptiveQuality();
-    force = this.processRendererCommandQueue() > 0 || force;
+    this.processRendererCommandQueue();
     this.attemptedUploadChunksThisFrame = 0;
     this.uploadedBytesThisFrame = 0;
     this.uploadedChunksThisFrame = 0;
@@ -2583,13 +2607,35 @@ class StreamingSsogRenderPass {
     this.deferredUploadChunks = this.decodedUploadQueue.size;
     this.deferredUploadBytes = this.getDecodedUploadQueueBytes();
     this.dropStaleDecodedUploads();
-    force = this.processDecodedUploadQueue() > 0 || force;
+    const uploadedChunks = this.processDecodedUploadQueue();
+    if (uploadedChunks > 0) {
+      this.residencyDirty = true;
+    }
 
     this.updateLoadedChunkSortDepth(cameraPosition, cameraForward);
     const initial = !Number.isFinite(this.lastLodCameraPosition.x);
     const moved = Vector3.DistanceSquared(cameraPosition, this.lastLodCameraPosition) > this.lodMoveEpsilonSq;
     const turned = Vector3.Dot(cameraForward, this.lastLodCameraForward) < this.lodForwardDotThreshold;
-    if (!force && this.frame !== 1 && !initial && !moved && !turned) {
+    const shouldRunFullSelection =
+      force || this.selectionDirty || this.frame === 1 || initial || moved || turned;
+    if (!shouldRunFullSelection) {
+      if (
+        this.residencyDirty &&
+        this.cachedVisibleSelection &&
+        this.cachedPrefetchSelection
+      ) {
+        this.refreshResidencyFromSelection(
+          this.cachedStableSelection,
+          this.cachedVisibleSelection,
+          this.cachedPrefetchSelection,
+          cameraPosition,
+          cameraForward,
+          true,
+        );
+      } else {
+        this.updateGlobalRuntimeView(cameraPosition, cameraForward);
+      }
+      this.lastSsogMaintenanceMs = performance.now() - maintenanceStart;
       return;
     }
 
@@ -2679,6 +2725,40 @@ class StreamingSsogRenderPass {
         : selection;
 
     const stableSelected = this.stabilizeSelection(selection.selected);
+    this.cachedStableSelection = stableSelected.slice();
+    this.cachedVisibleSelection = {
+      ...selection,
+      selected: selection.selected.slice(),
+    };
+    this.cachedPrefetchSelection = {
+      ...prefetchSelection,
+      selected: prefetchSelection.selected.slice(),
+    };
+    this.selectionDirty = false;
+    this.residencyDirty = true;
+    this.fullLodSelectionCount++;
+    this.lastFullLodSelectionMs = performance.now() - start;
+    this.refreshResidencyFromSelection(
+      stableSelected,
+      selection,
+      prefetchSelection,
+      cameraPosition,
+      cameraForward,
+      false,
+    );
+    this.lastLodBuildMs = performance.now() - start;
+    this.lastSsogMaintenanceMs = performance.now() - maintenanceStart;
+  }
+
+  private refreshResidencyFromSelection(
+    stableSelected: SelectedSsogItem[],
+    selection: SsogLodSelection<SsogChunkEntry>,
+    prefetchSelection: SsogLodSelection<SsogChunkEntry>,
+    cameraPosition: Vector3,
+    cameraForward: Vector3,
+    uploadOnly: boolean,
+  ): void {
+    const start = performance.now();
     const renderSelected = this.resolveResidentSelection(stableSelected);
     const stableSelectedByNode = this.stableSelectedByNode;
     stableSelectedByNode.clear();
@@ -2825,7 +2905,18 @@ class StreamingSsogRenderPass {
     }
     this.countGlobalSortBuildPendingFrame();
     this.disposeDebugChunkBoundsForReadyRenderedNodes();
-    this.lastLodBuildMs = performance.now() - start;
+    this.residencyDirty = false;
+    this.lastResidencyRefreshMs = performance.now() - start;
+    this.residencyRefreshCount++;
+    if (uploadOnly) {
+      this.uploadOnlyResidencyRefreshCount++;
+    }
+  }
+
+  private updateGlobalRuntimeView(cameraPosition: Vector3, cameraForward: Vector3): void {
+    if (this.globalSortMode === "resident" && this.residentGlobalRuntime) {
+      this.residentGlobalRuntime.updateView(cameraPosition, cameraForward);
+    }
   }
 
   private buildLodCandidateBuffers(
