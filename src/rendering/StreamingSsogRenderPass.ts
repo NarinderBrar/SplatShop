@@ -2807,9 +2807,11 @@ class StreamingSsogRenderPass {
     const start = performance.now();
     const renderSelected = this.resolveResidentSelection(stableSelected);
     const stableSelectedByNode = this.stableSelectedByNode;
-    stableSelectedByNode.clear();
-    for (const item of stableSelected) {
-      stableSelectedByNode.set(item.nodeId, item);
+    if (!uploadOnly) {
+      stableSelectedByNode.clear();
+      for (const item of stableSelected) {
+        stableSelectedByNode.set(item.nodeId, item);
+      }
     }
     let selectedMembershipChanged = this.selectedKeys.size !== renderSelected.length;
     if (!selectedMembershipChanged) {
@@ -2824,9 +2826,11 @@ class StreamingSsogRenderPass {
     for (let index = 0; index < renderSelected.length; index++) {
       this.selectedKeys.add(renderSelected[index].key);
     }
-    this.desiredKeys.clear();
-    for (let index = 0; index < stableSelected.length; index++) {
-      this.desiredKeys.add(stableSelected[index].key);
+    if (!uploadOnly) {
+      this.desiredKeys.clear();
+      for (let index = 0; index < stableSelected.length; index++) {
+        this.desiredKeys.add(stableSelected[index].key);
+      }
     }
     this.fallbackKeys.clear();
     const missingSelectedNodeIds = this.missingSelectedNodeIds;
@@ -2862,22 +2866,24 @@ class StreamingSsogRenderPass {
     this.coarseFallbackNodes = this.coarseFallbackNodeIds.size;
     this.updateResidencyFallbackStats(stableSelected, renderSelected);
 
-    this.updateFallbackReasonStats(stableSelected, selection.selectedSplats);
+    if (!uploadOnly) {
+      this.updateFallbackReasonStats(stableSelected, selection.selectedSplats);
 
-    this.prefetchKeys.clear();
-    this.nearPrefetchKeys.clear();
-    for (let index = 0; index < this.nearPrefetchEntryIndices.length; index++) {
-      const entryIndex = this.nearPrefetchEntryIndices.data[index];
-      const key = this.entryKeys[entryIndex];
-      if (key) {
-        this.nearPrefetchKeys.add(key);
+      this.prefetchKeys.clear();
+      this.nearPrefetchKeys.clear();
+      for (let index = 0; index < this.nearPrefetchEntryIndices.length; index++) {
+        const entryIndex = this.nearPrefetchEntryIndices.data[index];
+        const key = this.entryKeys[entryIndex];
+        if (key) {
+          this.nearPrefetchKeys.add(key);
+        }
       }
-    }
-    for (let index = 0; index < prefetchSelection.selected.length; index++) {
-      const item = prefetchSelection.selected[index];
-      if (!this.selectedKeys.has(item.key)) {
-        this.prefetchKeys.add(item.key);
-        this.desiredKeys.add(item.key);
+      for (let index = 0; index < prefetchSelection.selected.length; index++) {
+        const item = prefetchSelection.selected[index];
+        if (!this.selectedKeys.has(item.key)) {
+          this.prefetchKeys.add(item.key);
+          this.desiredKeys.add(item.key);
+        }
       }
     }
     this.updateNeededGpuPages();
@@ -2896,8 +2902,10 @@ class StreamingSsogRenderPass {
     this.selectedNodes = this.renderSelectedNodeIds.size;
     this.selectedSplats = renderSelectedSplats;
     this.finestSelectedNodes = this.finestSelectedNodeIds.size;
-    this.requestedChunks = prefetchSelection.selected.length;
-    this.requestedSplats = prefetchSelection.selectedSplats;
+    if (!uploadOnly) {
+      this.requestedChunks = prefetchSelection.selected.length;
+      this.requestedSplats = prefetchSelection.selectedSplats;
+    }
     const activeLods = this.activeLodValues;
     activeLods.clear();
     let activeChunks = 0;
@@ -2939,14 +2947,16 @@ class StreamingSsogRenderPass {
     this.updateHiZOcclusion();
     this.dropStaleQueuedChunks();
     this.dropStaleDecodedUploads();
-    for (let index = 0; index < stableSelected.length; index++) {
-      this.requestChunk(stableSelected[index].value);
-    }
-    for (let index = 0; index < selection.selected.length; index++) {
-      this.requestChunk(selection.selected[index].value);
-    }
-    for (let index = 0; index < prefetchSelection.selected.length; index++) {
-      this.requestChunk(prefetchSelection.selected[index].value);
+    if (!uploadOnly) {
+      for (let index = 0; index < stableSelected.length; index++) {
+        this.requestChunk(stableSelected[index].value);
+      }
+      for (let index = 0; index < selection.selected.length; index++) {
+        this.requestChunk(selection.selected[index].value);
+      }
+      for (let index = 0; index < prefetchSelection.selected.length; index++) {
+        this.requestChunk(prefetchSelection.selected[index].value);
+      }
     }
     this.pumpChunkQueue();
     this.evictInactiveChunks();
